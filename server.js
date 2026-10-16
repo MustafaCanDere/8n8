@@ -2,13 +2,14 @@
 'use strict';
 /* 8n8 — local workflow automation server.
    Serves the editor, the REST API, live events, webhooks, hosted forms and the scheduler. */
+if (Number(process.versions.node.split('.')[0]) < 20) { console.error(`\n  8n8 için Node.js 20 ya da daha yeni bir sürüm gerekir (şu an ${process.version}). https://nodejs.org adresinden LTS sürümünü kurun.\n`); process.exit(1); }
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const store = require('./lib/store');
 const engine = require('./lib/engine');
-const { NODES, describe, defaults, CREDENTIAL_TYPES } = require('./lib/nodes');
+const { NODES, describe, defaults, CREDENTIAL_TYPES, testCredential } = require('./lib/nodes');
 const { nextRun } = require('./lib/cron');
 const templates = require('./lib/templates');
 const aiBuilder = require('./lib/ai-builder');
@@ -69,8 +70,11 @@ function arm(wf) {
         if (p.mode === 'cron') at = nextRun(p.cron).getTime();
         else at = Date.now() + Math.max(5000, (Number(p.every) || 1) * ({ s: 1000, m: 60000, h: 3600000, d: 86400000 }[p.unit] || 60000));
       } catch (e) { console.error(`"${wf.name}" zamanlayıcı hatası: ${e.message}`); return; }
-      const delay = Math.min(at - Date.now(), 2 ** 31 - 1);
-      const timer = setTimeout(() => { if (Date.now() >= at - 50) fire(); schedule(); }, delay);
+      waitUntil(at);
+    };
+    // setTimeout tops out at ~24.8 days, so long waits are done in steps without moving the target time
+    const waitUntil = at => {
+      const timer = setTimeout(() => { if (Date.now() >= at - 50) { fire(); schedule(); } else waitUntil(at); }, Math.min(Math.max(0, at - Date.now()), 2 ** 31 - 1));
       timers.set(key, { timer, next: at });
     };
     schedule();
@@ -78,16 +82,16 @@ function arm(wf) {
 }
 /* polling triggers (RSS, Telegram, folder watch): call node.poll() on an interval, start a run for new items */
 const pollState = new Map(); // `${wfId}:${nodeId}` -> { lastPoll, lastError, found }
+const pollBusy = new Set();
 function armPoll(wf, n) {
   const key = `${wf.id}:${n.id}`;
   const def = NODES[n.type];
   const p = { ...defaults(n.type), ...n.params };
   const every = Math.max(5000, (Number(p.every) || 1) * ({ s: 1000, m: 60000, h: 3600000 }[p.unit] || 60000));
-  let busy = false;
   const tick = async () => {
     const cur = store.getWorkflow(wf.id);
-    if (!cur?.active || busy) return;
-    busy = true;
+    if (!cur?.active || pollBusy.has(key)) return; // shared across re-arms, so an autosave never runs two polls at once
+    pollBusy.add(key);
     const st = pollState.get(key) || {};
     try {
       const memory = () => { const d = store.getStatic(wf.id); d[n.id] ??= {}; return d[n.id]; };
@@ -99,7 +103,7 @@ function armPoll(wf, n) {
         for (const b of batches) engine.start(cur, { triggerId: n.id, triggerData: { items: b }, mode: 'yoklama' });
       }
     } catch (e) { Object.assign(st, { lastPoll: new Date().toISOString(), lastError: e.message }); }
-    finally { pollState.set(key, st); busy = false; }
+    finally { pollState.set(key, st); pollBusy.delete(key); }
   };
   const schedule = () => { const timer = setTimeout(async () => { await tick(); if (timers.get(key)?.timer === timer) schedule(); }, every); timers.set(key, { timer, next: Date.now() + every }); };
   const last = Date.parse(pollState.get(key)?.lastPoll || 0) || 0;
@@ -143,9 +147,12 @@ async function handleWebhook(req, res, p, test) {
   let responded = false;
   const respond = r => {
     if (responded || res.headersSent) return false;
-    responded = true;
+    const status = Number(r.status) || 200;
+    if (!Number.isInteger(status) || status < 100 || status > 599) throw new Error(`Geçersiz durum kodu: ${r.status} (100-599 arası olmalı)`);
     const isJSON = String(r.headers?.['Content-Type'] || '').includes('json');
-    send(res, r.status || 200, isJSON ? (r.body ?? null) : String(r.body ?? ''), r.headers || {});
+    try { send(res, status, isJSON ? (r.body ?? null) : String(r.body ?? ''), r.headers || {}); }
+    catch (e) { throw new Error(`Yanıt gönderilemedi: ${e.message}`); } // e.g. a header value with a line break; the caller still answers with 500
+    responded = true;
     return true;
   };
   const { exec, done } = engine.start(hit.wf, { triggerId: hit.node.id, triggerData: { request }, mode: test ? 'webhook testi' : 'webhook', respond });
@@ -272,7 +279,12 @@ const route = (method, pattern, fn) => routes.push({ method, re: new RegExp(`^${
 route('GET', '/api/info', () => ({ version: pkg.version, url: PUBLIC_URL, data: store.DATA, files: store.DIRS.files, password: !!PASSWORD, host: HOST, node: process.version }));
 route('GET', '/api/node-types', () => describe());
 route('GET', '/api/workflows', () => store.listWorkflows().map(workflowSummary));
+function checkTypes(nodes) {
+  const unknown = (Array.isArray(nodes) ? nodes : []).find(n => n && !NODES[n.type]);
+  if (unknown) throw new HttpError(400, `Bilinmeyen node türü: ${String(unknown.type).slice(0, 60)} ("${String(unknown.name || '').slice(0, 60)}")`);
+}
 route('POST', '/api/workflows', async ({ body }) => {
+  checkTypes(body.nodes);
   const wf = store.saveWorkflow({ ...body, id: undefined, active: false });
   return wf;
 });
@@ -282,6 +294,7 @@ route('GET', '/api/workflows/:id', ({ params }) => {
 });
 route('PUT', '/api/workflows/:id', ({ params, body }) => {
   const cur = store.getWorkflow(params.id); if (!cur) throw new HttpError(404, 'Akış bulunamadı');
+  checkTypes(body.nodes);
   const next = { ...cur, ...body, id: cur.id };
   if (next.active) validateActivation(next);
   const wf = store.saveWorkflow(next);
@@ -302,7 +315,7 @@ route('GET', '/api/workflows/:id/versions', ({ params }) => store.listVersions(p
 route('POST', '/api/workflows/:id/versions/:vid/restore', ({ params }) => {
   const wf = store.getWorkflow(params.id); if (!wf) throw new HttpError(404, 'Akış bulunamadı');
   const v = store.listVersions(params.id).find(x => x.id === params.vid); if (!v) throw new HttpError(404, 'Sürüm bulunamadı');
-  const saved = store.saveWorkflow({ ...wf, nodes: v.nodes, edges: v.edges, name: v.name });
+  const saved = store.saveWorkflow({ ...wf, nodes: v.nodes, edges: v.edges, name: v.name }, { forceVersion: true });
   arm(saved); return saved;
 });
 route('GET', '/api/executions', ({ query }) => ({ items: store.listExecutions({ workflowId: query.workflowId, status: query.status, limit: query.limit }), running: engine.runningIds() }));
@@ -316,7 +329,11 @@ route('POST', '/api/executions/:id/retry', ({ params, body }) => {
   const { exec } = engine.start(source, { triggerId: e.triggerId, triggerData: e.triggerData, mode: 'yeniden deneme', retryOf: e.id });
   return { executionId: exec.id };
 });
-route('DELETE', '/api/executions', ({ query }) => { for (const e of store.listExecutions({ workflowId: query.workflowId, limit: 1000 })) store.deleteExecution(e.id); return { ok: true }; });
+route('DELETE', '/api/executions', ({ query }) => {
+  const running = new Set(engine.runningIds()); let n = 0;
+  for (const e of store.listExecutions({ workflowId: query.workflowId || undefined, status: query.status || undefined, all: true })) if (!running.has(e.id)) { store.deleteExecution(e.id); n++; }
+  return { ok: true, silinen: n };
+});
 route('GET', '/api/credentials', () => store.listCredentials());
 route('GET', '/api/credentials/:id', ({ params }) => {
   const c = store.getCredentialData(params.id); if (!c) throw new HttpError(404, 'Kimlik bilgisi bulunamadı');
@@ -326,7 +343,17 @@ route('GET', '/api/credentials/:id', ({ params }) => {
   return { id: c.id, name: c.name, type: c.type, data, filled };
 });
 route('POST', '/api/credentials', ({ body }) => { if (!describe().credentialTypes[body.type]) throw new HttpError(400, 'Bilinmeyen kimlik bilgisi türü'); return store.saveCredential(body); });
-route('PUT', '/api/credentials/:id', ({ params, body }) => store.saveCredential({ ...body, id: params.id }));
+route('POST', '/api/credentials/test', async ({ body }) => {
+  const t = describe().credentialTypes[body.type]; if (!t) throw new HttpError(400, 'Bilinmeyen kimlik bilgisi türü');
+  const saved = body.id ? store.getCredentialData(body.id) : null;
+  const data = Object.fromEntries(t.fields.map(f => [f.key, body.data?.[f.key] || (f.secret && saved?.type === body.type ? saved.data[f.key] : '') || '']));
+  try { const msg = await testCredential(body.type, data); return { ok: true, message: msg || 'Bu tür için deneme yok' }; }
+  catch (e) { return { ok: false, message: e.message }; }
+});
+route('PUT', '/api/credentials/:id', ({ params, body }) => {
+  const cur = store.listCredentials().find(c => c.id === params.id); if (!cur) throw new HttpError(404, 'Kimlik bilgisi bulunamadı');
+  return store.saveCredential({ ...body, id: params.id, type: cur.type });
+});
 route('DELETE', '/api/credentials/:id', ({ params }) => { store.deleteCredential(params.id); return { ok: true }; });
 route('GET', '/api/variables', () => store.getVariables());
 route('PUT', '/api/variables', ({ body }) => store.setVariables(body));
@@ -399,15 +426,35 @@ const STATIC = {
   '/favicon.svg': ['public/favicon.svg', 'image/svg+xml'],
 };
 
+/* DNS-rebinding guard: while 8n8 listens only on this computer, the editor and API answer only to
+   requests addressed to this computer (or to N8N8_URL / N8N8_ALLOWED_HOSTS). Public webhook, form and
+   chat addresses are not affected, so tunnels keep working. */
+const LOOPBACK = ['127.0.0.1', 'localhost', '::1'].includes(HOST);
+const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', new URL(PUBLIC_URL).hostname, ...String(process.env.N8N8_ALLOWED_HOSTS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean)]);
+function hostAllowed(req) {
+  if (!LOOPBACK) return true;
+  const h = String(req.headers.host || '').toLowerCase().replace(/:\d+$/, '');
+  if (!ALLOWED_HOSTS.has(h)) return false;
+  const o = req.headers.origin;
+  if (o && req.method !== 'GET' && req.method !== 'HEAD') { try { if (!ALLOWED_HOSTS.has(new URL(o).hostname.toLowerCase()) && `[${new URL(o).hostname}]` !== h) return false; } catch { return false; } }
+  return true;
+}
+const UNAUTH = res => send(res, 401, 'Giriş gerekli', { 'WWW-Authenticate': 'Basic realm="8n8"' });
+
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://x');
-  const p = decodeURIComponent(url.pathname);
+  let url, p;
+  try { url = new URL(req.url, 'http://x'); p = decodeURIComponent(url.pathname); }
+  catch { return send(res, 400, 'Geçersiz adres'); }
   try {
     let m;
-    if ((m = p.match(/^\/(webhook|webhook-test)\/(.+)$/))) return await handleWebhook(req, res, cleanPath(m[2]), m[1] === 'webhook-test');
-    if ((m = p.match(/^\/(form|form-test)\/(.+)$/))) return await handleForm(req, res, cleanPath(m[2]), m[1] === 'form-test');
-    if ((m = p.match(/^\/(sohbet|sohbet-test)\/(.+)$/))) return await handleChat(req, res, cleanPath(m[2]), m[1] === 'sohbet-test');
-    if (!authorized(req)) return send(res, 401, 'Giriş gerekli', { 'WWW-Authenticate': 'Basic realm="8n8"' });
+    if ((m = p.match(/^\/(webhook|webhook-test|form|form-test|sohbet|sohbet-test)\/(.+)$/))) {
+      const test = m[1].endsWith('-test');
+      if (test && (!authorized(req) || !hostAllowed(req))) return UNAUTH(res); // test addresses run drafts: editor users only
+      const kind = m[1].replace('-test', '');
+      return await (kind === 'webhook' ? handleWebhook : kind === 'form' ? handleForm : handleChat)(req, res, cleanPath(m[2]), test);
+    }
+    if (!hostAllowed(req)) return send(res, 403, 'Bu adresten erişime izin verilmiyor. Başka bir adres kullanıyorsanız N8N8_ALLOWED_HOSTS ile ekleyin.');
+    if (!authorized(req)) return UNAUTH(res);
     if ((req.method === 'GET' || req.method === 'HEAD') && STATIC[p]) {
       const [file, type] = STATIC[p];
       return send(res, 200, fs.readFileSync(path.join(__dirname, file)), { 'Content-Type': type });
@@ -456,6 +503,8 @@ server.listen(PORT, HOST, () => {
   console.log('  Kapatmak için bu pencerede Ctrl+C\n');
   openBrowser(PUBLIC_URL);
 });
+// one failed background save or a stray promise must not take every workflow down with it
+process.on('unhandledRejection', e => console.error('Beklenmeyen hata:', e));
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { console.log('\n  8n8 kapatılıyor…'); for (const id of engine.runningIds()) engine.stop(id); setTimeout(() => process.exit(0), 300); });
 
 module.exports = { server };

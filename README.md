@@ -4,7 +4,7 @@
 
 ## Kurulum
 
-1. [Node.js](https://nodejs.org) kurun. Sürüm 18 ya da daha yenisi gerekir; "LTS" sürümü yeterlidir.
+1. [Node.js](https://nodejs.org) kurun. Sürüm 20 ya da daha yenisi gerekir (SQLite için 22.5+); "LTS" sürümü yeterlidir.
 2. Bu klasördeki başlatma dosyasını çalıştırın:
    - **Windows:** `baslat.bat` dosyasına çift tıklayın.
    - **macOS:** `baslat.command` dosyasına çift tıklayın. İlk seferde macOS izin isterse dosyaya sağ tıklayıp "Aç"ı seçin.
@@ -36,10 +36,10 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 
 **Tetikleyiciler:** Manuel, Zamanlayıcı (aralık ya da cron ifadesi), Webhook (`/webhook/<yol>`, isteğe bağlı başlık / Bearer / Basic kimlik doğrulaması), Form (`/form/<yol>` adresinde hazır web formu), Sohbet (`/sohbet/<yol>` adresinde hazır sohbet sayfası), RSS yeni yazı, Telegram mesajı gelince, Klasör izleyici, Hata tetikleyici, Alt akış girişi
 
-**Node'lar (48 tür)**
+**Node'lar (50 tür)**
 - **Eylemler:** HTTP isteği, Webhook'a yanıt ver, Başka akışı çalıştır, RSS oku
 - **Yapay zekâ:** Claude, Claude ajanı (araç kullanan, hafızalı ajan)
-- **Uygulamalar:** Telegram, Slack / Discord, E-posta (SMTP)
+- **Uygulamalar:** Veritabanı (PostgreSQL, MySQL / MariaDB, SQLite), Google E-Tablolar, Telegram, Slack / Discord, E-posta (SMTP)
 - **Veri:** Veri tablosu, Alanları ayarla, Alanları yeniden adlandır, Filtrele, Sırala, Sınırla, Tekrarları kaldır, Yeni öğeleri bul, Listeyi ayır, Topla, Özetle, Veri setlerini karşılaştır, Tarih ve saat, Şifreleme / hash, Dosya oku, Dosyaya yaz (JSON, CSV, metin)
 - **Dönüştürme:** HTML'den veri çıkar (CSS seçici), XML ⇄ JSON, Markdown ⇄ HTML, Metin işlemleri
 - **Mantık ve akış:** Döngü (parça parça işle), Eğer, Yönlendir (switch), Birleştir, Kod (JavaScript), Bekle, Hiçbir şey yapma, Hata ver
@@ -50,6 +50,10 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 **Veri tabloları:** Tablolar sayfasında programın içinde tablo oluşturun, hücreleri yerinde düzenleyin, CSV içe ve dışa aktarın. Veri tablosu node'u satır ekler, varsa günceller, arar, günceller ve siler.
 
 **Claude ajanı:** Ajan; web isteği, hesap makinesi, saat, veri tabloları ve araç olarak seçtiğiniz başka akışları kendisi kullanarak cevap verir. Sohbet tetikleyicisiyle birlikte konuşma geçmişini hatırlar (akış ayarlarındaki "Hafızayı temizle" ile sıfırlanır).
+
+**Veritabanları ve Google E-Tablolar:** Veritabanı node'u SQL sorgusu çalıştırır ya da tablo adı ve eşleştirme sütunuyla satır okur, ekler, ekler-ya-da-günceller, günceller ve siler. Değerleri SQL'e `$1, $2` yer tutucularıyla verin; bu SQL enjeksiyonuna karşı korur. Google E-Tablolar için Google Cloud'da bir hizmet hesabı açıp JSON anahtarını kimlik bilgisi olarak ekleyin ve tabloyu o hesabın e-posta adresiyle paylaşın.
+
+**Bağlantıyı dene:** Kimlik bilgisi penceresindeki düğme Claude, Telegram, SMTP, veritabanı ve Google bilgilerinin çalışıp çalışmadığını kaydetmeden önce gösterir.
 
 **Çalıştırma ayarları**
 - Node başına: hata olursa yeniden dene (deneme sayısı, bekleme süresi), hataya rağmen devam et, not
@@ -65,6 +69,8 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 - `{{ $json.urunler.map(u => u.fiyat).reduce((a, b) => a + b, 0) }}` ok fonksiyonlarıyla liste işlemleri
 
 **Güvenlik**
+- Editör ve API yalnızca bu bilgisayarın adresiyle gelen isteklere yanıt verir; kötü niyetli bir web sitesi tarayıcınız üzerinden 8n8'e ulaşamaz.
+- İfadeler (`{{ }}`) kod çalıştıramaz; yalnızca veri okuma ve hesaplama yapabilir.
 - API anahtarları ve şifreler AES-256-GCM ile şifrelenerek saklanır ve tarayıcıya geri gönderilmez.
 - Program varsayılan olarak yalnızca bu bilgisayardan erişilebilir (127.0.0.1).
 - `N8N8_PASSWORD` tanımlarsanız arayüz şifre ister.
@@ -81,6 +87,9 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 | `N8N8_ENCRYPTION_KEY` | otomatik | Kimlik bilgilerini şifreleyen anahtar. Tanımlanmazsa veri klasöründeki `anahtar` dosyasında üretilir |
 | `N8N8_MAX_EXECUTIONS` | `1000` | Saklanacak en fazla çalıştırma sayısı |
 | `N8N8_NO_OPEN` | yok | Tanımlıysa tarayıcı kendiliğinden açılmaz |
+| `N8N8_ALLOWED_HOSTS` | yok | Editöre `localhost` dışında bir adla (ör. `benimpc.local`) erişiyorsanız, virgülle o adlar |
+| `N8N8_CODE_MEMORY_MB` | `256` | Kod node'unun kullanabileceği en fazla bellek |
+| `N8N8_CODE_SANDBOX` | açık | `0` yapılırsa Kod node'u kısıtlı süreç yerine programın içinde çalışır (daha hızlı ama korumasız) |
 
 Örnek (macOS / Linux): `PORT=8080 N8N8_PASSWORD=gizli npm start`
 Örnek (Windows): `set PORT=8080 && npm start`
@@ -114,10 +123,10 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 
 ## Sınırlar
 
-- **Kod node'u güvenlik sınırı değildir.** Kod, programın kendi içinde ayrı bir bağlamda çalışır. Yalnızca güvendiğiniz kodu çalıştırın ve başkalarından aldığınız akışları içe aktarmadan önce Kod node'larını okuyun.
-- Telegram tetikleyicisi botun mesajlarını sorgulayarak alır; botta tanımlı bir webhook varsa çalışmaz.
+- Kod node'u ayrı ve kısıtlı bir süreçte çalışır: dosyalara, başka programlara ve API anahtarlarınıza erişemez, bellek ve süre sınırı vardır. İnternete (fetch) erişebilir; başkalarından aldığınız akışlardaki kodu yine de okuyun.
+- Telegram tetikleyicisi botun mesajlarını sorgulayarak alır; botta webhook kuruluysa (ayar açıkken) onu kaldırır.
 - RSS, Telegram ve klasör tetikleyicileri yalnızca program açıkken kontrol eder.
-- Google, Notion, veritabanı gibi servislere hazır node yok. API'si olan her servise HTTP isteği node'u ve uygun kimlik bilgisiyle bağlanabilirsiniz.
+- Google E-Tablolar dışındaki Google servisleri (Gmail, Drive) ve Notion gibi servisler için hazır node yok; OAuth girişi desteklenmiyor. API'si olan her servise HTTP isteği node'u ve API anahtarıyla bağlanabilirsiniz.
 - Tek kullanıcı içindir; ekip hesabı ve yetki yönetimi yoktur.
 
 ## Test
@@ -126,4 +135,4 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 npm test
 ```
 
-Testler (20 adet) geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, döngü, veri tabloları, sohbet ve Claude ajanı, Claude ile akış oluşturma, n8n içe aktarma, RSS ve klasör izleyici denenir. Claude, SMTP ve RSS için sahte yerel sunucular kullanılır; internet ve API anahtarı gerekmez.
+Testler (26 adet) geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, döngü, veri tabloları, sohbet ve Claude ajanı, Claude ile akış oluşturma, n8n içe aktarma, RSS ve klasör izleyici, Kod node'unun kısıtlı süreci, SQLite, Google E-Tablolar, Telegram tetikleyicisi ve bozuk isteklere dayanıklılık denenir. Claude, Google, Telegram, SMTP ve RSS için sahte yerel sunucular kullanılır; internet ve API anahtarı gerekmez.

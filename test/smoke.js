@@ -327,6 +327,99 @@ test('RSS oku ve klasör izleyici', async () => {
   assert.equal(outOf(await waitExec(items[0].id), 'son')[0].ad, 'yeni.txt');
 });
 
+test('Kod node\'u ayrı süreçte çalışır: dosya, program ve ortam değişkenlerine erişemez', async () => {
+  const w = await api('POST', '/api/workflows', wf('kum havuzu', [
+    ['manual', { data: '[{"n":4}]' }],
+    ['code', { code: 'return items.map(i => ({ kare: i.json.n ** 2, gun: helpers.formatDate("2026-01-02", "DD.MM") }));' }, { name: 'iyi' }],
+    ['code', { code: 'const p = this.constructor.constructor("return process")(); return [{ env: Object.keys(p.env).length }];' }, { name: 'ortam' }],
+    ['code', { code: 'const p = this.constructor.constructor("return process")(); return [{ x: p.getBuiltinModule("fs").readFileSync("/etc/hosts", "utf8") }];' }, { name: 'dosya', settings: { continueOnFail: true } }],
+    ['code', { code: 'while (true) {}' }, { name: 'sonsuz', settings: { continueOnFail: true } }],
+  ], [[0, 1], [0, 2], [0, 3], [0, 4]]));
+  const sonsuz = w.nodes.find(n => n.name === 'sonsuz'); sonsuz.params.timeout = 1;
+  await api('PUT', `/api/workflows/${w.id}`, { nodes: w.nodes });
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId, 15000);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(outOf(e, 'iyi'), [{ kare: 16, gun: '02.01' }]);
+  assert.equal(outOf(e, 'ortam')[0].env, 0, 'ortam değişkenleri boş olmalı');
+  assert.match(JSON.stringify(outOf(e, 'dosya')), /erişemez/);
+  assert.match(JSON.stringify(outOf(e, 'sonsuz')), /1 sn içinde bitmedi/);
+});
+
+test('İfadeler kod çalıştıramaz; ?. zinciri ve 1e-5 doğru', async () => {
+  const w = await api('POST', '/api/workflows', wf('ifade', [
+    ['manual', { data: '[{"a":null}]' }],
+    ['set', { fields: [{ key: 'v', value: "{{ Object.getOwnPropertyDescriptor(Object.getPrototypeOf(x=>1),'constructor').value.call(null,'return process.version')() }}" }], keep: false }, { name: 'kaçış', settings: { continueOnFail: true } }],
+    ['set', { fields: [{ key: 'v', value: '{{ $json.a?.b.c ?? "yok" }}' }, { key: 'k', value: '{{ 1e-5 * 1e5 }}' }], keep: false }, { name: 'zincir' }],
+  ], [[0, 1], [0, 2]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.ok(!JSON.stringify(outOf(e, 'kaçış')).includes(process.version.slice(1)), 'Node sürümü sızmamalı');
+  assert.deepEqual(outOf(e, 'zincir'), [{ v: 'yok', k: 1 }]);
+});
+
+test('Veritabanı node\'u (SQLite): tablo kur, ekle, güncelle, oku', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'sqlite', name: 'yerel', data: { file: 'test.db' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'sqlite', id: cred.id, data: {} })).ok, true);
+  const w = await api('POST', '/api/workflows', wf('sql', [
+    ['manual', { data: '[{"eposta":"a@x.com","ad":"Ayşe","puan":5},{"eposta":"b@x.com","ad":"Can","puan":3}]' }],
+    ['database', { credential: cred.id, op: 'query', sql: 'CREATE TABLE IF NOT EXISTS kisi (id INTEGER PRIMARY KEY, eposta TEXT UNIQUE, ad TEXT, puan INT)', params: '' }, { name: 'kur' }],
+    ['database', { credential: cred.id, op: 'insert', table: 'kisi' }, { name: 'ekle' }],
+    ['code', { code: 'return [{ eposta: "a@x.com", puan: 9 }, { eposta: "c@x.com", ad: "Ece", puan: 7 }];' }],
+    ['database', { credential: cred.id, op: 'upsert', table: 'kisi', key: 'eposta' }, { name: 'upsert' }],
+    ['database', { credential: cred.id, op: 'query', sql: 'SELECT ad, puan FROM kisi WHERE puan > $1 ORDER BY puan DESC', params: '{{ 4 }}' }, { name: 'sorgu' }],
+  ], [[0, 1], [0, 2], [2, 3], [3, 4], [4, 5]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.equal(outOf(e, 'ekle').length, 2);
+  assert.deepEqual(outOf(e, 'sorgu'), [{ ad: 'Ayşe', puan: 9 }, { ad: 'Ece', puan: 7 }]);
+});
+
+test('Google E-Tablolar: ekle, güncelle, oku (sahte API)', async () => {
+  const { privateKey } = require('crypto').generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const key = { client_email: 'bot@proje.iam.gserviceaccount.com', private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }), token_uri: `http://127.0.0.1:${fakeClaude.port}/token` };
+  const cred = await api('POST', '/api/credentials', { type: 'googleServiceAccount', name: 'g', data: { json: JSON.stringify(key) } });
+  const w = await api('POST', '/api/workflows', wf('sheets', [
+    ['manual', { data: '[{"eposta":"a@x.com","ad":"Ayşe"},{"eposta":"b@x.com","ad":"Can"}]' }],
+    ['sheets', { credential: cred.id, sheet: 'https://docs.google.com/spreadsheets/d/ABC123/edit#gid=0', op: 'append' }, { name: 'ekle' }],
+    ['code', { code: 'return [{ eposta: "b@x.com", ad: "Can Öz", puan: 3 }];' }],
+    ['sheets', { credential: cred.id, sheet: 'ABC123', op: 'update', key: 'eposta' }, { name: 'guncelle' }],
+    ['sheets', { credential: cred.id, sheet: 'ABC123', op: 'read' }, { name: 'oku' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.equal(outOf(e, 'guncelle')[0]._islem, 'guncellendi');
+  assert.deepEqual(outOf(e, 'oku').map(r => [r.ad, r.puan, r._satir]), [['Ayşe', '', 2], ['Can Öz', 3, 3]]);
+  assert.ok(fakeGoogle.auth.every(a => a === 'Bearer sahte-token'));
+});
+
+test('Telegram tetikleyicisi botun webhook\'unu kaldırıp mesajları alır (sahte API)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'telegramApi', name: 'bot', data: { token: '123:abc' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'telegramApi', id: cred.id, data: {} })).message, /@sahte_bot/);
+  const w = await api('POST', '/api/workflows', wf('tg', [['telegramTrigger', { credential: cred.id, every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${w.id}`, { active: true });
+  await sleep(1500);
+  await api('PUT', `/api/workflows/${w.id}`, { active: false });
+  assert.equal(fakeTelegram.webhook, false, 'webhook kaldırılmalı');
+  const { items } = await api('GET', `/api/executions?workflowId=${w.id}`);
+  assert.equal(items.length, 1);
+  assert.equal(outOf(await waitExec(items[0].id), 'son')[0].mesaj, 'selam');
+});
+
+test('Sunucu bozuk isteklere dayanır: hatalı adres, yabancı Host, bozuk akış', async () => {
+  let r = await fetch(`${B}/%E0%A4%A`); assert.equal(r.status, 400);
+  r = await new Promise(res => require('http').get({ host: '127.0.0.1', port: PORT, path: '/api/credentials', headers: { Host: 'saldirgan.example' } }, res));
+  assert.equal(r.statusCode, 403);
+  await assert.rejects(api('POST', '/api/workflows', { name: 'x', nodes: [null] }), /400/);
+  await assert.rejects(api('POST', '/api/workflows', { name: 'x', nodes: [{ id: '"><img src=x onerror=alert(1)>', type: 'noop' }] }), /400/);
+  await assert.rejects(api('POST', '/api/workflows', { name: 'x', nodes: [{ id: 'a1', type: 'yok-boyle' }] }), /Bilinmeyen node/);
+  await assert.rejects(api('PUT', '/api/credentials/olmayan', { name: 'x', data: {} }), /404/);
+  const t = await api('POST', '/api/tables', { name: 'Korunan' });
+  await api('POST', `/api/tables/${t.id}/rows`, { rows: [{ a: 1 }, { a: 2 }] });
+  const w = await api('POST', '/api/workflows', wf('boş koşul', [['manual', { data: '[{}]' }], ['table', { table: t.id, op: 'delete', where: [{ key: 'a', value: '{{ $json.yok }}' }] }]], [[0, 1]]));
+  await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal((await api('GET', `/api/tables/${t.id}`)).rowCount, 2, 'boş koşul hiçbir satırı silmemeli');
+  assert.equal((await api('GET', '/api/workflows')).length > 0, true);
+});
+
 test('JSON olmayan API isteği reddedilir', async () => {
   const r = await fetch(`${B}/api/workflows`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{}' });
   assert.equal(r.status, 415);
@@ -335,7 +428,39 @@ test('JSON olmayan API isteği reddedilir', async () => {
 
 /* fake Anthropic API (the SDK honours ANTHROPIC_BASE_URL) that also serves a test RSS feed */
 const fakeClaude = { calls: [], port: 0 };
+const fakeGoogle = { auth: [], tabs: {} };
+const fakeTelegram = { webhook: true, served: false };
+function fakeGoogleApi(req, res, raw) {
+  const json = o => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  if (req.url === '/token') return json({ access_token: 'sahte-token', expires_in: 3600 });
+  fakeGoogle.auth.push(req.headers.authorization);
+  const u = new URL(req.url, 'http://x'); const m = u.pathname.match(/^\/v4\/spreadsheets\/ABC123\/values(?:\/([^:]*))?(?::(\w+))?$/);
+  const body = raw ? JSON.parse(raw) : {};
+  const rows = (fakeGoogle.tabs.Sayfa1 ||= []);
+  const rowOf = range => Number(decodeURIComponent(range).match(/!A(\d+)/)[1]) - 1;
+  if (!m) { res.writeHead(404); return res.end('{}'); }
+  if (!m[1] && m[2] === 'batchUpdate') { for (const d of body.data) rows[rowOf(d.range)] = d.values[0]; return json({}); }
+  if (m[2] === 'append') { const start = rows.length + 1; rows.push(...body.values); return json({ updates: { updatedRange: `'Sayfa1'!A${start}:C${rows.length}` } }); }
+  if (m[2] === 'clear') { rows.length = Math.min(rows.length, 1); return json({}); }
+  if (req.method === 'PUT') { rows[rowOf(m[1])] = body.values[0]; return json({}); }
+  return json({ values: rows.map(r => r.map(v => (typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v))) });
+}
+function fakeTelegramApi(req, res) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  const m = req.url.match(/^\/tg\/bot123:abc\/(\w+)/); if (!m) return json({ ok: false, description: 'Unauthorized' }, 401);
+  if (m[1] === 'getMe') return json({ ok: true, result: { id: 1, username: 'sahte_bot' } });
+  if (m[1] === 'deleteWebhook') { fakeTelegram.webhook = false; return json({ ok: true, result: true }); }
+  if (m[1] === 'getUpdates') {
+    if (fakeTelegram.webhook) return json({ ok: false, error_code: 409, description: "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first" }, 409);
+    if (fakeTelegram.served || req.url.includes('offset=')) return json({ ok: true, result: [] });
+    fakeTelegram.served = true;
+    return json({ ok: true, result: [{ update_id: 10, message: { message_id: 1, date: 1700000000, text: 'selam', chat: { id: 55 }, from: { username: 'ayse', first_name: 'Ayşe' } } }] });
+  }
+  return json({ ok: true, result: {} });
+}
 const fakeServer = require('http').createServer((req, res) => {
+  if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
+  if (req.url === '/token' || req.url.startsWith('/v4/')) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleApi(req, res, raw)); }
   if (req.url === '/rss.xml') { res.writeHead(200, { 'Content-Type': 'application/rss+xml' }); return res.end('<?xml version="1.0"?><rss><channel><title>T</title><item><title>İlk yazı</title><link>https://x.com/1</link><guid>1</guid></item></channel></rss>'); }
   let raw = ''; req.on('data', d => { raw += d; }); req.on('end', () => {
     const body = JSON.parse(raw || '{}'); fakeClaude.calls.push({ headers: req.headers, body });
@@ -352,7 +477,7 @@ const fakeServer = require('http').createServer((req, res) => {
 
 (async () => {
   await new Promise(r => fakeServer.listen(0, '127.0.0.1', r)); fakeClaude.port = fakeServer.address().port;
-  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}` }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg` }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0;
