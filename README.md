@@ -1,6 +1,6 @@
 # 8n8
 
-8n8, kendi bilgisayarınızda çalışan görsel bir iş akışı otomasyon programıdır. n8n'e benzer: node'ları tuvale sürükler, birbirine bağlar ve akışı çalıştırırsınız. Akışlar zamanlayıcıyla, webhook ile ya da hazır web formlarıyla kendiliğinden de başlayabilir. Bütün veriler bilgisayarınızda kalır.
+8n8, kendi bilgisayarınızda çalışan görsel bir iş akışı otomasyon programıdır. n8n'e benzer: node'ları tuvale sürükler, birbirine bağlar ve akışı çalıştırırsınız. Akışlar zamanlayıcıyla, webhook ile, hazır web formlarıyla, sohbet sayfasıyla, RSS, Telegram ya da klasör değişiklikleriyle kendiliğinden de başlayabilir. Claude'a ne istediğinizi yazarak akışı ona kurdurabilir, n8n akışlarınızı içe aktarabilirsiniz. Bütün veriler bilgisayarınızda kalır.
 
 ## Kurulum
 
@@ -30,17 +30,26 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 - Çıktıyı sabitleme: bir node'un çıktısını dondurup sonraki adımları onu yeniden çalıştırmadan deneme
 - Canlı çalışma görünümü ve her node'un süresini gösteren zaman çizelgesi
 - Akış sürümleri (otomatik kayıt, eski sürüme dönme), JSON olarak dışa ve içe aktarma, hazır şablonlar
+- **Claude ile akış oluştur:** "Her sabah RSS'teki yeni yazıları özetleyip Telegram'a gönder" gibi yazın, akışı Claude kursun. Editörde mevcut akışı da değiştirebilir; değişiklik geri alınabilir.
+- **n8n'den içe aktarma:** n8n'den dışa aktarılan JSON'u İçe aktar penceresine yapıştırın. Bilinen node'lar ve ifadeler dönüştürülür, karşılığı olmayanlar notla işaretlenir.
 - Açık ve koyu tema
 
-**Tetikleyiciler:** Manuel, Zamanlayıcı (aralık ya da cron ifadesi), Webhook (`/webhook/<yol>`), Form (`/form/<yol>` adresinde hazır web formu), Hata tetikleyici, Alt akış girişi
+**Tetikleyiciler:** Manuel, Zamanlayıcı (aralık ya da cron ifadesi), Webhook (`/webhook/<yol>`, isteğe bağlı başlık / Bearer / Basic kimlik doğrulaması), Form (`/form/<yol>` adresinde hazır web formu), Sohbet (`/sohbet/<yol>` adresinde hazır sohbet sayfası), RSS yeni yazı, Telegram mesajı gelince, Klasör izleyici, Hata tetikleyici, Alt akış girişi
 
-**Node'lar (32 tür)**
-- **Eylemler:** HTTP isteği, Webhook'a yanıt ver, Başka akışı çalıştır
-- **Yapay zekâ:** Claude
+**Node'lar (48 tür)**
+- **Eylemler:** HTTP isteği, Webhook'a yanıt ver, Başka akışı çalıştır, RSS oku
+- **Yapay zekâ:** Claude, Claude ajanı (araç kullanan, hafızalı ajan)
 - **Uygulamalar:** Telegram, Slack / Discord, E-posta (SMTP)
-- **Veri:** Alanları ayarla, Filtrele, Sırala, Sınırla, Tekrarları kaldır, Listeyi ayır, Topla, Özetle, Tarih ve saat, Şifreleme / hash, Dosya oku, Dosyaya yaz (JSON, CSV, metin)
-- **Mantık ve akış:** Eğer, Yönlendir (switch), Birleştir, Kod (JavaScript), Bekle, Hiçbir şey yapma, Hata ver
+- **Veri:** Veri tablosu, Alanları ayarla, Alanları yeniden adlandır, Filtrele, Sırala, Sınırla, Tekrarları kaldır, Yeni öğeleri bul, Listeyi ayır, Topla, Özetle, Veri setlerini karşılaştır, Tarih ve saat, Şifreleme / hash, Dosya oku, Dosyaya yaz (JSON, CSV, metin)
+- **Dönüştürme:** HTML'den veri çıkar (CSS seçici), XML ⇄ JSON, Markdown ⇄ HTML, Metin işlemleri
+- **Mantık ve akış:** Döngü (parça parça işle), Eğer, Yönlendir (switch), Birleştir, Kod (JavaScript), Bekle, Hiçbir şey yapma, Hata ver
 - **Tuval:** Not
+
+**Döngü:** Döngü node'u öğeleri parça parça işler. "Döngü" çıkışından işlenecek adımlara gidin, son adımı yeniden Döngü node'una bağlayın; bütün parçalar bitince "Bitti" çıkışı devam eder. Geriye dönen bağlantılar yalnızca Döngü node'una girebilir.
+
+**Veri tabloları:** Tablolar sayfasında programın içinde tablo oluşturun, hücreleri yerinde düzenleyin, CSV içe ve dışa aktarın. Veri tablosu node'u satır ekler, varsa günceller, arar, günceller ve siler.
+
+**Claude ajanı:** Ajan; web isteği, hesap makinesi, saat, veri tabloları ve araç olarak seçtiğiniz başka akışları kendisi kullanarak cevap verir. Sohbet tetikleyicisiyle birlikte konuşma geçmişini hatırlar (akış ayarlarındaki "Hafızayı temizle" ile sıfırlanır).
 
 **Çalıştırma ayarları**
 - Node başına: hata olursa yeniden dene (deneme sayısı, bekleme süresi), hataya rağmen devam et, not
@@ -53,6 +62,7 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 - `{{ $vars.API_ADRESI }}` Değişkenler sayfasındaki bir değer
 - `{{ $dt.format($now, "DD.MM.YYYY") }}` bugünün tarihi
 - `{{ $json.tutar * 1.2 }}` hesaplama
+- `{{ $json.urunler.map(u => u.fiyat).reduce((a, b) => a + b, 0) }}` ok fonksiyonlarıyla liste işlemleri
 
 **Güvenlik**
 - API anahtarları ve şifreler AES-256-GCM ile şifrelenerek saklanır ve tarayıcıya geri gönderilmez.
@@ -82,6 +92,8 @@ Bütün veriler `~/.8n8` klasöründedir (Windows'ta `C:\Users\<ad>\.8n8`):
 - `versions/`: akışların önceki sürümleri
 - `executions/`: çalıştırma geçmişi
 - `dosyalar/`: Dosya oku / Dosyaya yaz node'larının klasörü
+- `tablolar/`: veri tabloları
+- `durum/`: akışların hafızası (Yeni öğeleri bul, ajan sohbet geçmişi, RSS'te görülen yazılar)
 - `credentials.json`: şifreli kimlik bilgileri
 - `anahtar`: şifreleme anahtarı
 - `variables.json`: değişkenler
@@ -103,7 +115,8 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 ## Sınırlar
 
 - **Kod node'u güvenlik sınırı değildir.** Kod, programın kendi içinde ayrı bir bağlamda çalışır. Yalnızca güvendiğiniz kodu çalıştırın ve başkalarından aldığınız akışları içe aktarmadan önce Kod node'larını okuyun.
-- Döngü (bir node'un çıktısını geriye bağlamak) desteklenmez. Tekrarlanan işler için Kod node'unu ya da "Her öğe için ayrı" modunda "Başka akışı çalıştır" node'unu kullanın.
+- Telegram tetikleyicisi botun mesajlarını sorgulayarak alır; botta tanımlı bir webhook varsa çalışmaz.
+- RSS, Telegram ve klasör tetikleyicileri yalnızca program açıkken kontrol eder.
 - Google, Notion, veritabanı gibi servislere hazır node yok. API'si olan her servise HTTP isteği node'u ve uygun kimlik bilgisiyle bağlanabilirsiniz.
 - Tek kullanıcı içindir; ekip hesabı ve yetki yönetimi yoktur.
 
@@ -113,4 +126,4 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 npm test
 ```
 
-Testler geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, sabitlenmiş veri, şifreli kimlik bilgisi ve e-posta gönderimi (sahte bir SMTP sunucusuna) denenir. İnternet gerekmez.
+Testler (20 adet) geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, döngü, veri tabloları, sohbet ve Claude ajanı, Claude ile akış oluşturma, n8n içe aktarma, RSS ve klasör izleyici denenir. Claude, SMTP ve RSS için sahte yerel sunucular kullanılır; internet ve API anahtarı gerekmez.

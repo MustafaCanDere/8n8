@@ -1,6 +1,6 @@
 {
   "name": "8n8",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Bilgisayarınızda çalışan görsel iş akışı otomasyon programı",
   "main": "server.js",
   "bin": { "8n8": "server.js" },

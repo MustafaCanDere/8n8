@@ -8,9 +8,11 @@ const path = require('path');
 const { spawn } = require('child_process');
 const store = require('./lib/store');
 const engine = require('./lib/engine');
-const { NODES, describe, defaults } = require('./lib/nodes');
+const { NODES, describe, defaults, CREDENTIAL_TYPES } = require('./lib/nodes');
 const { nextRun } = require('./lib/cron');
 const templates = require('./lib/templates');
+const aiBuilder = require('./lib/ai-builder');
+const n8n = require('./lib/n8n-import');
 const pkg = require('./package.json');
 
 const PORT = Number(process.env.PORT || process.env.N8N8_PORT || 5678);
@@ -51,6 +53,7 @@ function disarm(wfId) { for (const [k, t] of timers) if (k.startsWith(wfId + ':'
 function arm(wf) {
   disarm(wf.id);
   if (!wf.active) return;
+  for (const n of wf.nodes) if (NODES[n.type]?.poll && !n.disabled) armPoll(wf, n);
   for (const n of wf.nodes) {
     if (n.type !== 'schedule' || n.disabled) continue;
     const key = `${wf.id}:${n.id}`;
@@ -73,6 +76,36 @@ function arm(wf) {
     schedule();
   }
 }
+/* polling triggers (RSS, Telegram, folder watch): call node.poll() on an interval, start a run for new items */
+const pollState = new Map(); // `${wfId}:${nodeId}` -> { lastPoll, lastError, found }
+function armPoll(wf, n) {
+  const key = `${wf.id}:${n.id}`;
+  const def = NODES[n.type];
+  const p = { ...defaults(n.type), ...n.params };
+  const every = Math.max(5000, (Number(p.every) || 1) * ({ s: 1000, m: 60000, h: 3600000 }[p.unit] || 60000));
+  let busy = false;
+  const tick = async () => {
+    const cur = store.getWorkflow(wf.id);
+    if (!cur?.active || busy) return;
+    busy = true;
+    const st = pollState.get(key) || {};
+    try {
+      const memory = () => { const d = store.getStatic(wf.id); d[n.id] ??= {}; return d[n.id]; };
+      const items = await def.poll({ p, memory, saveMemory: () => store.saveStatic(wf.id), credential: async cid => { if (!cid) throw new Error('Kimlik bilgisi seçilmemiş'); const c = store.getCredentialData(cid); if (!c) throw new Error('Kimlik bilgisi silinmiş'); return c; } });
+      Object.assign(st, { lastPoll: new Date().toISOString(), lastError: null, found: (st.found || 0) + (items?.length || 0) });
+      const node = cur.nodes.find(x => x.id === n.id);
+      if (items?.length && node) {
+        const batches = def.eachItem ? items.map(i => [i]) : [items];
+        for (const b of batches) engine.start(cur, { triggerId: n.id, triggerData: { items: b }, mode: 'yoklama' });
+      }
+    } catch (e) { Object.assign(st, { lastPoll: new Date().toISOString(), lastError: e.message }); }
+    finally { pollState.set(key, st); busy = false; }
+  };
+  const schedule = () => { const timer = setTimeout(async () => { await tick(); if (timers.get(key)?.timer === timer) schedule(); }, every); timers.set(key, { timer, next: Date.now() + every }); };
+  const last = Date.parse(pollState.get(key)?.lastPoll || 0) || 0;
+  if (Date.now() - last >= every) setTimeout(tick, 500); // not on every autosave of an active workflow
+  schedule();
+}
 function nextRuns(wfId) { const o = {}; for (const [k, t] of timers) if (k.startsWith(wfId + ':')) o[k.split(':')[1]] = new Date(t.next).toISOString(); return o; }
 for (const wf of store.listWorkflows()) arm(wf);
 
@@ -93,6 +126,16 @@ async function handleWebhook(req, res, p, test) {
   if (!hit) {
     const other = findTriggerNode('webhook', p, req.method, true);
     return send(res, 404, { hata: other ? `"${other.wf.name}" akışı etkin değil. Etkinleştirin ya da /webhook-test/${p} adresini kullanın.` : `/${test ? 'webhook-test' : 'webhook'}/${p} için ${req.method} kabul eden bir webhook yok` });
+  }
+  if (hit.params.auth && hit.params.auth !== 'none') {
+    const cred = hit.params.credential ? store.getCredentialData(hit.params.credential) : null;
+    if (!cred) return send(res, 500, { hata: 'Webhook kimlik doğrulaması açık ama kimlik bilgisi seçilmemiş' });
+    const h = req.headers;
+    const ok = cred.type === 'httpBasic'
+      ? (() => { const a = String(h.authorization || ''); if (!a.startsWith('Basic ')) return false; const [u, ...rest] = Buffer.from(a.slice(6), 'base64').toString().split(':'); return u === cred.data.user && rest.join(':') === cred.data.password; })()
+      : cred.type === 'httpHeader' ? String(h[String(cred.data.name || '').toLowerCase()] || '') === String(cred.data.value || '')
+      : cred.type === 'httpBearer' ? String(h.authorization || '') === `Bearer ${cred.data.token}` : false;
+    if (!ok) return send(res, 401, { hata: 'Yetkisiz' }, cred.type === 'httpBasic' ? { 'WWW-Authenticate': 'Basic realm="webhook"' } : {});
   }
   const body = req.method === 'GET' || req.method === 'HEAD' ? {} : await readBody(req);
   const url = new URL(req.url, PUBLIC_URL);
@@ -149,6 +192,50 @@ async function handleForm(req, res, p, test) {
   send(res, 200, formPage(hit.params, { message: hit.params.thanks || 'Teşekkürler!' }), { 'Content-Type': 'text/html; charset=utf-8' });
 }
 
+/* ---------------- hosted chat ---------------- */
+function chatPage(params, { test, p }) {
+  return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(params.title)}</title>
+<style>:root{--bg:#eef1f4;--card:#fff;--fg:#15202b;--muted:#5a6876;--line:#d6dde4;--accent:#0b7563;--me:#0b7563;--meFg:#fff;--bot:#f3f5f7}@media(prefers-color-scheme:dark){:root{--bg:#0d1217;--card:#151c23;--fg:#e2e8ee;--muted:#8b9aa8;--line:#2a3540;--accent:#2fc2a6;--me:#1f7a68;--meFg:#fff;--bot:#1c252e}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}body{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;display:flex;justify-content:center}
+.wrap{display:flex;flex-direction:column;width:100%;max-width:760px;height:100%;background:var(--card);border-inline:1px solid var(--line)}
+header{padding:14px 16px;border-bottom:1px solid var(--line);font-weight:650;display:flex;gap:8px;align-items:center;justify-content:space-between}header small{font-weight:400;color:var(--muted);font-size:12px}
+#log{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+.m{max-width:85%;padding:9px 13px;border-radius:14px;white-space:pre-wrap;word-wrap:break-word}.bot{background:var(--bot);align-self:flex-start;border-bottom-left-radius:4px}.me{background:var(--me);color:var(--meFg);align-self:flex-end;border-bottom-right-radius:4px}.err{color:#c62828;font-size:13px;align-self:center}
+.typing{color:var(--muted);font-size:13px;align-self:flex-start}
+form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}textarea{flex:1;resize:none;font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;max-height:160px}textarea:focus{outline:2px solid var(--accent);border-color:transparent}
+button{font:inherit;font-weight:600;background:var(--accent);color:#fff;border:0;border-radius:10px;padding:0 18px;cursor:pointer}button:disabled{opacity:.5}
+.new{background:transparent;color:var(--muted);border:1px solid var(--line);padding:4px 10px;font-size:12px;font-weight:500}</style></head>
+<body><div class="wrap"><header><span>${esc(params.title)}${test ? ' <small>test</small>' : ''}</span><button class="new" id="new" type="button">Yeni sohbet</button></header><div id="log" aria-live="polite"></div>
+<form id="f"><textarea id="t" rows="1" placeholder="Mesajınızı yazın…" aria-label="Mesaj" required></textarea><button id="b">Gönder</button></form></div>
+<script>
+const log=document.getElementById('log'),t=document.getElementById('t'),b=document.getElementById('b');
+const K='8n8-sohbet-${esc(p)}';let sid;try{sid=localStorage.getItem(K)}catch{}if(!sid){sid=Math.random().toString(36).slice(2)+Date.now().toString(36);try{localStorage.setItem(K,sid)}catch{}}
+const add=(cls,txt)=>{const d=document.createElement('div');d.className='m '+cls;d.textContent=txt;log.appendChild(d);log.scrollTop=log.scrollHeight;return d};
+const welcome=${JSON.stringify(String(params.welcome || ''))};if(welcome)add('bot',welcome);
+document.getElementById('new').onclick=()=>{sid=Math.random().toString(36).slice(2)+Date.now().toString(36);try{localStorage.setItem(K,sid)}catch{};log.innerHTML='';if(welcome)add('bot',welcome)};
+t.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();document.getElementById('f').requestSubmit()}});
+document.getElementById('f').onsubmit=async e=>{e.preventDefault();const msg=t.value.trim();if(!msg)return;add('me',msg);t.value='';b.disabled=true;const ty=document.createElement('div');ty.className='typing';ty.textContent='yazıyor…';log.appendChild(ty);
+try{const r=await fetch(location.pathname,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mesaj:msg,oturum:sid})});const j=await r.json();ty.remove();if(!r.ok)add('err',j.hata||'Bir hata oluştu');else add('bot',j.yanit)}catch(err){ty.remove();add('err','Bağlantı hatası')}finally{b.disabled=false;t.focus()}};
+</script></body></html>`;
+}
+async function handleChat(req, res, p, test) {
+  const hit = findTriggerNode('chatTrigger', p, req.method, test);
+  if (!hit) return send(res, 404, req.method === 'GET' ? 'Bu sohbet bulunamadı ya da akışı kapalı.' : { hata: 'Sohbet bulunamadı ya da akışı kapalı' });
+  if (req.method === 'GET') return send(res, 200, chatPage(hit.params, { test, p }), { 'Content-Type': 'text/html; charset=utf-8' });
+  if (req.method !== 'POST') return send(res, 405, 'Yalnızca GET ve POST');
+  const body = await readBody(req);
+  const mesaj = String(body?.mesaj ?? '').slice(0, 20000);
+  if (!mesaj.trim()) return send(res, 400, { hata: 'Mesaj boş' });
+  const oturum = String(body?.oturum || 'varsayilan').replace(/[^\w-]/g, '').slice(0, 64) || 'varsayilan';
+  const { done } = engine.start(hit.wf, { triggerId: hit.node.id, triggerData: { chat: { mesaj, oturum } }, mode: test ? 'sohbet testi' : 'sohbet' });
+  const fin = await done;
+  if (fin.status !== 'success') return send(res, 500, { hata: `Akış hata verdi: ${fin.error}` });
+  const first = fin.lastOutput?.[0]?.json;
+  const field = hit.params.replyField || 'yanit';
+  const reply = first == null ? '(yanıt yok)' : typeof first[field] === 'string' ? first[field] : first[field] != null ? JSON.stringify(first[field], null, 2) : JSON.stringify(first, null, 2);
+  send(res, 200, { yanit: reply, calistirma: fin.id });
+}
+
 /* ---------------- live events (SSE) ---------------- */
 const clients = new Set();
 engine.events.on('event', ev => { const line = `data: ${JSON.stringify(ev)}\n\n`; for (const c of clients) c.write(line); });
@@ -163,15 +250,16 @@ function workflowSummary(wf) {
 function validateActivation(wf) {
   if (!wf.active) return;
   const trig = wf.nodes.filter(n => NODES[n.type]?.trigger && !n.disabled && !['manual', 'subTrigger', 'errorTrigger'].includes(n.type));
-  if (!trig.length && !wf.nodes.some(n => ['subTrigger', 'errorTrigger'].includes(n.type))) throw new HttpError(400, 'Etkinleştirmek için Zamanlayıcı, Webhook ya da Form tetikleyicisi gerekir. Manuel tetikleyici yalnızca editörden çalışır.');
+  if (!trig.length && !wf.nodes.some(n => ['subTrigger', 'errorTrigger'].includes(n.type))) throw new HttpError(400, 'Etkinleştirmek için Zamanlayıcı, Webhook, Form, Sohbet ya da yoklama (RSS, Telegram, klasör) tetikleyicisi gerekir. Manuel tetikleyici yalnızca editörden çalışır.');
+  for (const n of wf.nodes) if (n.type === 'telegramTrigger' && !n.disabled && !n.params?.credential) throw new HttpError(400, `"${n.name}": Telegram botu seçin`);
   for (const n of wf.nodes) {
     if (n.type === 'schedule' && n.params?.mode === 'cron') { try { nextRun(n.params.cron); } catch (e) { throw new HttpError(400, `"${n.name}": ${e.message}`); } }
-    if (['webhook', 'form'].includes(n.type) && !n.disabled) {
+    if (['webhook', 'form', 'chatTrigger'].includes(n.type) && !n.disabled) {
       const p = cleanPath(n.params?.path);
       if (!p || !/^[A-Za-z0-9._~\-/]+$/.test(p)) throw new HttpError(400, `"${n.name}": yol yalnızca harf, rakam, - ve / içerebilir`);
       for (const other of store.listWorkflows()) {
         if (other.id === wf.id || !other.active) continue;
-        if (other.nodes.some(o => o.type === n.type && !o.disabled && cleanPath(o.params?.path) === p && (n.type === 'form' || o.params?.method === n.params?.method || [o.params?.method, n.params?.method].includes('ANY'))))
+        if (other.nodes.some(o => o.type === n.type && !o.disabled && cleanPath(o.params?.path) === p && (n.type !== 'webhook' || o.params?.method === n.params?.method || [o.params?.method, n.params?.method].includes('ANY'))))
           throw new HttpError(409, `"${p}" yolu "${other.name}" akışında zaten kullanılıyor`);
       }
     }
@@ -242,6 +330,50 @@ route('PUT', '/api/credentials/:id', ({ params, body }) => store.saveCredential(
 route('DELETE', '/api/credentials/:id', ({ params }) => { store.deleteCredential(params.id); return { ok: true }; });
 route('GET', '/api/variables', () => store.getVariables());
 route('PUT', '/api/variables', ({ body }) => store.setVariables(body));
+route('GET', '/api/workflows/:id/status', ({ params }) => {
+  const out = {}; for (const [k, v] of pollState) if (k.startsWith(params.id + ':')) out[k.split(':')[1]] = v;
+  return { nextRuns: nextRuns(params.id), polls: out };
+});
+route('DELETE', '/api/workflows/:id/memory', ({ params }) => { store.clearStatic(params.id); return { ok: true }; });
+
+/* data tables */
+route('GET', '/api/tables', () => store.listTables());
+route('POST', '/api/tables', ({ body }) => store.createTable(body.name, body.columns || []));
+route('GET', '/api/tables/:id', ({ params, query }) => {
+  const t = store.getTable(params.id);
+  const q = String(query.q || '').toLocaleLowerCase('tr');
+  const r = store.queryRows(t.id, q ? row => Object.values(row).some(v => String(v ?? '').toLocaleLowerCase('tr').includes(q)) : () => true, { limit: Math.min(Number(query.limit) || 100, 1000), offset: Number(query.offset) || 0 });
+  return { id: t.id, name: t.name, columns: t.columns, rowCount: t.rows.length, total: r.total, rows: r.rows, updatedAt: t.updatedAt };
+});
+route('PUT', '/api/tables/:id', ({ params, body }) => store.updateTable(params.id, body));
+route('DELETE', '/api/tables/:id', ({ params }) => { store.deleteTable(params.id); return { ok: true }; });
+route('POST', '/api/tables/:id/rows', ({ params, body }) => {
+  const rows = Array.isArray(body.rows) ? body.rows : [body.row || {}];
+  return { added: store.insertRows(params.id, rows.filter(r => r && typeof r === 'object')).length };
+});
+route('PUT', '/api/tables/:id/rows/:rowId', ({ params, body }) => {
+  const changed = store.updateRows(params.id, r => String(r._id) === params.rowId, body.data || {});
+  if (!changed.length) throw new HttpError(404, 'Satır bulunamadı'); return changed[0];
+});
+route('DELETE', '/api/tables/:id/rows/:rowId', ({ params }) => ({ deleted: store.deleteRows(params.id, r => String(r._id) === params.rowId).length }));
+route('POST', '/api/tables/:id/clear', ({ params }) => ({ deleted: store.deleteRows(params.id, () => true).length }));
+
+/* AI builder and n8n import */
+route('POST', '/api/ai/build', async ({ body }) => {
+  const credId = body.credential || store.listCredentials().find(c => c.type === 'anthropicApi')?.id;
+  if (!credId) throw new HttpError(400, 'Önce Kimlik bilgileri sayfasından bir Anthropic (Claude) API anahtarı ekleyin');
+  const cred = store.getCredentialData(credId);
+  if (!cred || cred.type !== 'anthropicApi') throw new HttpError(400, 'Seçilen kimlik bilgisi bir Anthropic API anahtarı değil');
+  if (!String(body.prompt || '').trim()) throw new HttpError(400, 'Ne yapmak istediğinizi yazın');
+  const current = body.workflowId ? store.getWorkflow(body.workflowId) : null;
+  return aiBuilder.build({ prompt: String(body.prompt).slice(0, 8000), apiKey: cred.data.apiKey, model: body.model || 'claude-opus-5-5', current });
+});
+route('POST', '/api/import/convert', ({ body }) => {
+  if (n8n.isN8n(body)) return { source: 'n8n', ...n8n.convertN8n(body) };
+  if (Array.isArray(body.nodes) && Array.isArray(body.edges)) return { source: '8n8', workflow: body, notes: [] };
+  throw new HttpError(400, 'Bu dosya bir 8n8 ya da n8n akışı gibi görünmüyor');
+});
+
 route('GET', '/api/templates', () => templates.LIST);
 route('POST', '/api/templates/:key', ({ params }) => {
   const t = templates.TEMPLATES[params.key]; if (!t) throw new HttpError(404, 'Şablon bulunamadı');
@@ -274,6 +406,7 @@ const server = http.createServer(async (req, res) => {
     let m;
     if ((m = p.match(/^\/(webhook|webhook-test)\/(.+)$/))) return await handleWebhook(req, res, cleanPath(m[2]), m[1] === 'webhook-test');
     if ((m = p.match(/^\/(form|form-test)\/(.+)$/))) return await handleForm(req, res, cleanPath(m[2]), m[1] === 'form-test');
+    if ((m = p.match(/^\/(sohbet|sohbet-test)\/(.+)$/))) return await handleChat(req, res, cleanPath(m[2]), m[1] === 'sohbet-test');
     if (!authorized(req)) return send(res, 401, 'Giriş gerekli', { 'WWW-Authenticate': 'Basic realm="8n8"' });
     if ((req.method === 'GET' || req.method === 'HEAD') && STATIC[p]) {
       const [file, type] = STATIC[p];
