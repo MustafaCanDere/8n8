@@ -1,0 +1,1553 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>8n8</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+/* Layout: navigation rail on the left; each view fills the rest. The editor is a full-bleed canvas
+   with the inspector docked right and the run drawer docked bottom. System fonts only, so it works offline. */
+:root {
+  --bg: #e8ecf0; --grid: #c3ccd6; --surface: #ffffff; --surface-2: #f3f5f8; --line: #d6dde4; --line-strong: #b3bfcb;
+  --fg: #15202b; --muted: #5a6876; --accent: #0b7563; --accent-fg: #ffffff; --accent-soft: #d3ede7;
+  --ok: #15803d; --err: #c62828; --warn: #b45309; --edge: #8a99a8;
+  --c-trigger: #d47a06; --c-action: #2558d9; --c-data: #0b7563; --c-logic: #7339e0; --c-flow: #56687a; --c-code: #bd2468; --c-ai: #c2410c; --c-app: #0e7490;
+  --note-yellow: #fff4c2; --note-blue: #dcebff; --note-green: #dcf5e6; --note-pink: #fde0ec;
+  --shadow: 0 1px 2px rgba(16,24,40,.07), 0 6px 18px rgba(16,24,40,.07);
+  --shadow-lg: 0 10px 40px rgba(16,24,40,.18);
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  --drawer-h: 42px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0d1217; --grid: #222d38; --surface: #141b22; --surface-2: #1a232c; --line: #26313c; --line-strong: #3a4754;
+  --fg: #e2e8ee; --muted: #8b9aa8; --accent: #2fc2a6; --accent-fg: #052019; --accent-soft: #0f3a32;
+  --ok: #3ccf6e; --err: #ff6b6b; --warn: #f0a43a; --edge: #5a6b7b;
+  --c-trigger: #f5a524; --c-action: #6290ff; --c-data: #2fc2a6; --c-logic: #a47dff; --c-flow: #8fa1b3; --c-code: #ff5f9e; --c-ai: #fb8c4b; --c-app: #3bc1db;
+  --note-yellow: #4a4217; --note-blue: #1c3250; --note-green: #183d2a; --note-pink: #4a2033;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 18px rgba(0,0,0,.3); --shadow-lg: 0 10px 40px rgba(0,0,0,.55);
+  color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #0d1217; --grid: #222d38; --surface: #141b22; --surface-2: #1a232c; --line: #26313c; --line-strong: #3a4754;
+  --fg: #e2e8ee; --muted: #8b9aa8; --accent: #2fc2a6; --accent-fg: #052019; --accent-soft: #0f3a32;
+  --ok: #3ccf6e; --err: #ff6b6b; --warn: #f0a43a; --edge: #5a6b7b;
+  --c-trigger: #f5a524; --c-action: #6290ff; --c-data: #2fc2a6; --c-logic: #a47dff; --c-flow: #8fa1b3; --c-code: #ff5f9e; --c-ai: #fb8c4b; --c-app: #3bc1db;
+  --note-yellow: #4a4217; --note-blue: #1c3250; --note-green: #183d2a; --note-pink: #4a2033;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 18px rgba(0,0,0,.3); --shadow-lg: 0 10px 40px rgba(0,0,0,.55);
+  color-scheme: dark;
+}
+[hidden] { display: none !important; }
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 14px; overflow: hidden; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+#app { height: 100%; display: grid; grid-template-columns: 196px 1fr; }
+/* ---------- nav ---------- */
+#nav { background: var(--surface); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px; gap: 2px; min-width: 0; z-index: 30; }
+.logo { font-weight: 800; font-size: 24px; letter-spacing: -0.03em; padding: 2px 10px 16px; }
+.logo b { color: var(--accent); }
+.navlink { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--muted); text-decoration: none; font-weight: 500; white-space: nowrap; }
+.navlink:hover { background: var(--surface-2); color: var(--fg); }
+.navlink.on { background: var(--accent-soft); color: var(--fg); }
+.navlink .badge { margin-left: auto; font: 600 11px var(--mono); background: var(--accent); color: var(--accent-fg); border-radius: 9px; padding: 0 6px; }
+.nav-foot { margin-top: auto; font-size: 11.5px; color: var(--muted); padding: 8px 10px; line-height: 1.5; }
+.conn { display: inline-flex; align-items: center; gap: 6px; }
+.conn::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.conn.off::before { background: var(--err); }
+#view { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+
+/* ---------- pages ---------- */
+.page { height: 100%; overflow: auto; padding-block: 24px 40px; padding-left: max(24px, env(safe-area-inset-left, 0px)); padding-right: max(24px, env(safe-area-inset-right, 0px)); }
+.page-in { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+.page-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.page-head h1 { margin: 0; font-size: 24px; letter-spacing: -0.02em; margin-right: auto; }
+.lead { color: var(--muted); margin: -8px 0 0; max-width: 70ch; line-height: 1.5; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.list { display: flex; flex-direction: column; }
+.lrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.lrow:last-child { border-bottom: 0; }
+.lrow .ttl { font-weight: 600; font-size: 15px; color: var(--fg); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.lrow .ttl:hover { color: var(--accent); }
+.lrow .meta { color: var(--muted); font-size: 12.5px; display: flex; gap: 6px 12px; flex-wrap: wrap; align-items: center; }
+.lrow .acts { display: flex; gap: 6px; align-items: center; grid-row: 1 / 3; grid-column: 2; flex-wrap: wrap; justify-content: flex-end; }
+.empty { padding: 40px 16px; text-align: center; color: var(--muted); display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.tag { font: 500 11px var(--mono); padding: 1px 7px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--line); color: var(--muted); }
+table.grid { width: 100%; border-collapse: collapse; }
+.grid th, .grid td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.grid th { font-size: 12px; color: var(--muted); font-weight: 600; background: var(--surface-2); }
+.grid tr.click { cursor: pointer; }
+.grid tr.click:hover td { background: var(--surface-2); }
+.grid td.num { font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.tablewrap-x { overflow-x: auto; }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.filters .inp { width: auto; }
+.kvgrid { display: grid; grid-template-columns: 180px 1fr; gap: 10px 16px; align-items: baseline; }
+.kvgrid dt { color: var(--muted); font-size: 13px; }
+.kvgrid dd { margin: 0; font-family: var(--mono); font-size: 13px; word-break: break-all; }
+
+/* ---------- controls ---------- */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); white-space: nowrap; flex: none; font-size: 13px; font-weight: 500; text-decoration: none; color: var(--fg); }
+.btn:hover { background: var(--surface-2); border-color: var(--line-strong); }
+.btn:disabled { opacity: .4; cursor: default; }
+.btn.icon { padding: 6px 7px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.07); background: var(--accent); }
+.btn.danger { color: var(--err); }
+.btn.sm { padding: 4px 9px; font-size: 12px; }
+.switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; flex: none; user-select: none; position: relative; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch .track { width: 32px; height: 18px; border-radius: 9px; background: var(--line-strong); position: relative; transition: background .15s; flex: none; }
+.switch .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.switch input:checked + .track { background: var(--accent); }
+.switch input:checked + .track::after { transform: translateX(14px); }
+.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.inp { width: 100%; min-width: 0; border: 1px solid var(--line); background: var(--surface-2); border-radius: 7px; padding: 7px 9px; font-size: 13px; }
+.inp:focus { border-color: var(--accent); outline: none; background: var(--surface); }
+.inp.mono, textarea.inp { font-family: var(--mono); font-size: 12.5px; }
+textarea.inp { resize: vertical; min-height: 84px; line-height: 1.5; tab-size: 2; }
+textarea.code { min-height: 220px; }
+.inp.bad { border-color: var(--err); }
+.pill { font: 600 10.5px var(--font); text-transform: uppercase; letter-spacing: .05em; padding: 2px 7px; border-radius: 10px; white-space: nowrap; display: inline-block; }
+.pill.success { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+.pill.error { background: color-mix(in srgb, var(--err) 16%, transparent); color: var(--err); }
+.pill.running { background: var(--accent-soft); color: var(--accent); }
+.pill.skipped, .pill.disabled, .pill.stopped, .pill.idle { background: var(--surface-2); color: var(--muted); }
+.pill.active { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+
+/* ---------- editor ---------- */
+.editor { position: absolute; inset: 0; display: grid; grid-template-rows: auto 1fr; }
+.ebar { display: flex; align-items: center; gap: 10px; padding-block: 8px; padding-left: 12px; padding-right: max(14px, env(safe-area-inset-right, 0px)); background: var(--surface); border-bottom: 1px solid var(--line); min-width: 0; z-index: 20; }
+.wf-name { border: 1px solid transparent; background: transparent; border-radius: 6px; padding: 5px 8px; font-weight: 600; min-width: 0; width: 240px; flex: 0 1 240px; }
+.wf-name:hover { border-color: var(--line); }
+.wf-name:focus { border-color: var(--accent); background: var(--surface-2); outline: none; }
+.savestate { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.savestate.err { color: var(--err); }
+.tools { display: flex; align-items: center; gap: 6px; margin-left: auto; overflow-x: auto; min-width: 0; scrollbar-width: none; }
+.tools::-webkit-scrollbar { display: none; }
+.sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; flex: none; }
+.emain { position: relative; overflow: hidden; min-height: 0; }
+#canvas { position: absolute; inset: 0; bottom: var(--drawer-h); overflow: hidden; touch-action: none; cursor: grab; background-color: var(--bg); background-image: radial-gradient(circle, var(--grid) 1.2px, transparent 1.3px); outline: none; }
+#canvas.panning { cursor: grabbing; }
+#world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+#edges { position: absolute; left: -50000px; top: -50000px; width: 100000px; height: 100000px; overflow: visible; pointer-events: none; }
+#edges path.e { fill: none; stroke: var(--edge); stroke-width: 2; }
+#edges path.e.data { stroke: var(--accent); }
+#edges path.e.zero { stroke-dasharray: 4 5; opacity: .6; }
+#edges path.e.sel { stroke: var(--c-action); stroke-width: 3; }
+#edges path.e.flow { stroke: var(--accent); stroke-dasharray: 8 6; animation: flow .6s linear infinite; }
+#edges path.hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
+#edges path.tmp { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 5; }
+@keyframes flow { to { stroke-dashoffset: -28; } }
+.elabel { position: absolute; transform: translate(-50%, -50%); font: 500 11px var(--mono); padding: 2px 7px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
+.elabel.data { color: var(--accent); border-color: var(--accent); }
+.elabel.del { pointer-events: auto; cursor: pointer; color: var(--err); border-color: var(--err); }
+.node { position: absolute; left: 0; top: 0; background: var(--surface); border: 1.5px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); user-select: none; cursor: pointer; }
+.node:hover { border-color: var(--muted); }
+.node.sel { border-color: var(--c-action); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-action) 25%, transparent), var(--shadow); }
+.node.trigger { border-radius: 30px 10px 10px 30px; }
+.node.disabled { opacity: .5; }
+.node.disabled .nname { text-decoration: line-through; }
+.node.st-success { border-color: var(--ok); }
+.node.st-error { border-color: var(--err); box-shadow: 0 0 0 3px color-mix(in srgb, var(--err) 22%, transparent), var(--shadow); }
+.node.st-running { border-color: var(--accent); animation: pulse 1s ease-in-out infinite; }
+.node.st-skipped { opacity: .62; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 25%, transparent), var(--shadow); } }
+.nbody { position: absolute; inset: 0; display: flex; align-items: center; gap: 10px; padding: 0 12px; overflow: hidden; }
+.node.trigger .nbody { padding-left: 16px; }
+.nico { width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; color: #fff; flex: none; background: var(--cc); }
+.nico svg.i { width: 19px; height: 19px; }
+.ntext { min-width: 0; flex: 1; }
+.nname { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nsub { font: 11px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.cat-trigger { --cc: var(--c-trigger); } .cat-action { --cc: var(--c-action); } .cat-data { --cc: var(--c-data); } .cat-logic { --cc: var(--c-logic); }
+.cat-flow { --cc: var(--c-flow); } .cat-code { --cc: var(--c-code); } .cat-ai { --cc: var(--c-ai); } .cat-app { --cc: var(--c-app); } .cat-note { --cc: var(--warn); }
+.nstat { position: absolute; top: -9px; right: -9px; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; color: #fff; border: 2px solid var(--bg); }
+.nstat svg.i { width: 11px; height: 11px; stroke-width: 3; }
+.nstat.success { background: var(--ok); } .nstat.error { background: var(--err); } .nstat.skipped { background: var(--line-strong); }
+.ncount { position: absolute; bottom: -9px; right: 12px; font: 500 10.5px var(--mono); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 1px 6px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.npin { position: absolute; top: -9px; left: 12px; font: 600 10px var(--font); background: var(--c-logic); color: #fff; border-radius: 8px; padding: 1px 7px; letter-spacing: .03em; }
+.port { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); border: 2px solid var(--muted); transform: translate(-50%, -50%); cursor: crosshair; z-index: 2; }
+.port::after { content: ""; position: absolute; inset: -8px; border-radius: 50%; }
+.port.in { left: 0; } .port.out { left: 100%; }
+.port:hover, .port.hot { background: var(--accent); border-color: var(--accent); }
+.plabel { position: absolute; left: 12px; bottom: 9px; font: 500 10.5px var(--mono); color: var(--muted); white-space: nowrap; pointer-events: none; }
+.prun { position: absolute; left: -40px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line-strong); background: var(--surface); color: var(--c-trigger); display: grid; place-items: center; box-shadow: var(--shadow); }
+.prun:hover { background: var(--c-trigger); color: #fff; border-color: var(--c-trigger); }
+.prun svg.i { width: 13px; height: 13px; }
+.node.note { border: 0; border-radius: 4px; box-shadow: var(--shadow); background: var(--note-yellow); cursor: move; }
+.node.note.c-blue { background: var(--note-blue); } .node.note.c-green { background: var(--note-green); } .node.note.c-pink { background: var(--note-pink); }
+.node.note.sel { box-shadow: 0 0 0 2px var(--c-action), var(--shadow); }
+.notetext { position: absolute; inset: 0; padding: 12px 14px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; overflow: hidden; }
+#box { position: absolute; border: 1px solid var(--c-action); background: color-mix(in srgb, var(--c-action) 10%, transparent); pointer-events: none; }
+.floating { position: absolute; z-index: 5; }
+.zoombar { left: 12px; bottom: calc(var(--drawer-h) + 12px); display: flex; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); overflow: hidden; }
+.zoombar button { border: 0; background: none; padding: 7px 9px; display: grid; place-items: center; }
+.zoombar button:hover { background: var(--surface-2); }
+.zoombar .zl { font: 500 11.5px var(--mono); min-width: 46px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+#minimap { right: 12px; bottom: calc(var(--drawer-h) + 12px); width: 180px; height: 112px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); cursor: pointer; }
+.cempty { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); text-align: center; color: var(--muted); max-width: 340px; padding: 0 16px; }
+.cempty h2 { color: var(--fg); font-size: 20px; margin: 0 0 6px; }
+.cempty p { margin: 0 0 14px; }
+
+/* ---------- inspector ---------- */
+#panel { position: absolute; top: 0; right: 0; bottom: var(--drawer-h); width: 420px; max-width: 100%; background: var(--surface); border-left: 1px solid var(--line); z-index: 12; display: flex; flex-direction: column; box-shadow: var(--shadow-lg); }
+.p-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px 10px; }
+.p-titles { flex: 1; min-width: 0; }
+.p-name { width: 100%; border: 1px solid transparent; background: none; border-radius: 6px; padding: 3px 6px; margin-left: -6px; font-weight: 600; font-size: 15px; }
+.p-name:hover { border-color: var(--line); }
+.p-name:focus { border-color: var(--accent); outline: none; background: var(--surface-2); }
+.p-type { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
+.icon-btn { border: 0; background: none; width: 30px; height: 30px; border-radius: 6px; display: grid; place-items: center; color: var(--muted); flex: none; }
+.icon-btn:hover { background: var(--surface-2); color: var(--fg); }
+.p-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 10px; }
+.tabs { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+.tabs button { border: 0; background: none; padding: 9px 10px; font-size: 13px; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; display: inline-flex; gap: 6px; align-items: center; }
+.tabs button.on { color: var(--fg); border-bottom-color: var(--accent); }
+.cnt { font: 500 10.5px var(--mono); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 0 6px; font-variant-numeric: tabular-nums; }
+.p-body { flex: 1; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.desc { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 0; }
+.err-box { border: 1px solid var(--err); background: color-mix(in srgb, var(--err) 8%, var(--surface)); color: var(--err); border-radius: 8px; padding: 9px 11px; font-size: 13px; line-height: 1.45; word-break: break-word; }
+.info-box { border: 1px solid var(--line); background: var(--surface-2); border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.5; display: flex; flex-direction: column; gap: 6px; }
+.urlrow { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.urlrow code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--mono); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 7px; }
+.field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.field > label, .flabel { font-size: 12px; font-weight: 600; color: var(--muted); }
+.help { font-size: 12px; color: var(--muted); line-height: 1.45; }
+.preview { font: 11.5px var(--mono); color: var(--muted); word-break: break-word; white-space: pre-wrap; max-height: 80px; overflow: auto; }
+.preview .v { color: var(--accent); } .preview .x, .x { color: var(--err); }
+.rows { display: flex; flex-direction: column; gap: 8px; }
+.row { display: grid; gap: 6px; align-items: start; grid-template-columns: 1fr 1fr auto; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.row.cond { grid-template-columns: 1fr auto; }
+.row.ff { grid-template-columns: 1fr 1fr auto; }
+.row .full { grid-column: 1 / -1; }
+.row .icon-btn { width: 28px; height: 28px; }
+.addrow { align-self: flex-start; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip { font: 500 11.5px var(--mono); border: 1px solid var(--line); background: var(--surface-2); border-radius: 12px; padding: 2px 9px; cursor: pointer; }
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+.chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--fg); }
+.fieldkeys { border: 1px dashed var(--line-strong); border-radius: 8px; padding: 9px 10px; display: flex; flex-direction: column; gap: 7px; }
+details.opts { border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }
+details.opts summary { cursor: pointer; padding: 10px 0; font-weight: 600; font-size: 13px; }
+details.opts[open] { padding-bottom: 12px; }
+details.opts .optsin { display: flex; flex-direction: column; gap: 12px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg button { border: 0; background: none; padding: 4px 10px; font-size: 12px; }
+.seg button.on { background: var(--surface-2); font-weight: 600; }
+.dv-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.tablewrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; max-height: 60vh; }
+table.dt { border-collapse: collapse; font-size: 12px; width: max-content; min-width: 100%; }
+.dt th, .dt td { padding: 6px 9px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.dt th { position: sticky; top: 0; background: var(--surface-2); font: 600 11.5px var(--mono); }
+.dt td { font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+.dt td.n { color: var(--c-action); } .dt td.b { color: var(--c-logic); } .dt td.o { color: var(--muted); }
+.dt .ix { color: var(--muted); width: 1%; }
+pre.json { margin: 0; font: 12px/1.55 var(--mono); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow: auto; max-height: 60vh; white-space: pre; }
+.json .k { color: var(--c-logic); } .json .s { color: var(--accent); } .json .n { color: var(--c-action); } .json .b { color: var(--c-code); }
+pre.logs { margin: 0; font: 12px/1.5 var(--mono); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow: auto; max-height: 30vh; white-space: pre-wrap; }
+.nodata { color: var(--muted); font-size: 13px; padding: 18px 0; text-align: center; }
+
+/* ---------- drawer ---------- */
+#drawer { position: absolute; left: 0; right: 0; bottom: 0; height: var(--drawer-h); background: var(--surface); border-top: 1px solid var(--line); z-index: 14; display: flex; flex-direction: column; }
+.d-head { display: flex; align-items: center; gap: 10px; height: 41px; padding: 0 12px; flex: none; }
+.d-toggle { border: 0; background: none; display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; padding: 6px 4px; min-width: 0; }
+.d-toggle svg.i { transition: transform .15s; }
+#drawer.open .d-toggle svg.i { transform: rotate(180deg); }
+.d-sum { font-weight: 400; color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-head .right { margin-left: auto; display: flex; gap: 6px; }
+.d-body { flex: 1; display: grid; grid-template-columns: 290px 1fr; min-height: 0; border-top: 1px solid var(--line); }
+.runs { overflow: auto; border-right: 1px solid var(--line); }
+.run { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; padding: 9px 12px; border: 0; border-bottom: 1px solid var(--line); cursor: pointer; align-items: center; width: 100%; text-align: left; background: none; }
+.run:hover { background: var(--surface-2); }
+.run.on { background: var(--accent-soft); }
+.run .no { font: 600 11px var(--mono); color: var(--muted); }
+.run .tr { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.run .meta { grid-column: 2 / 4; font: 11.5px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.run-detail { overflow: auto; padding: 12px 16px; min-width: 0; }
+.rd-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.rd-head h3 { margin: 0; font-size: 14px; }
+.rd-head .meta { color: var(--muted); font: 12px var(--mono); }
+.tl { display: flex; flex-direction: column; gap: 2px; }
+.tl-row { display: grid; grid-template-columns: minmax(120px, 210px) 1fr 130px; gap: 12px; align-items: center; padding: 5px 8px; border-radius: 6px; cursor: pointer; border: 0; background: none; text-align: left; width: 100%; }
+.tl-row:hover, .tl-row.on { background: var(--surface-2); }
+.tl-name { display: flex; gap: 8px; align-items: center; min-width: 0; font-size: 13px; }
+.tl-name span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--cc); }
+.tl-track { position: relative; height: 10px; background: var(--surface-2); border-radius: 5px; }
+.tl-bar { position: absolute; top: 0; bottom: 0; border-radius: 5px; background: var(--cc); min-width: 3px; }
+.tl-bar.error { background: var(--err); }
+.tl-meta { font: 11.5px var(--mono); color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tl-err { grid-column: 1 / -1; color: var(--err); font-size: 12px; padding-left: 16px; text-align: left; }
+
+/* exec detail page */
+.xd { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 16px; align-items: start; }
+.xd .card { padding: 12px; min-width: 0; }
+.xd .tl-row { grid-template-columns: minmax(0, 1fr) 110px; }
+
+/* ---------- modal & palette ---------- */
+#modal { position: fixed; inset: 0; background: rgba(8,14,20,.45); z-index: 50; display: grid; place-items: start center; padding: 8vh 16px 16px; overflow: auto; }
+.mcard { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-lg); width: 580px; max-width: 100%; display: flex; flex-direction: column; max-height: 84vh; }
+.mhead { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 10px; }
+.mhead h2 { margin: 0; font-size: 16px; }
+.mbody { padding: 0 16px 16px; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+.mfoot { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 16px; border-top: 1px solid var(--line); flex-wrap: wrap; align-items: center; }
+.mfoot .x { margin-right: auto; font-size: 13px; }
+.pal-search { margin: 0 16px 10px; width: calc(100% - 32px); padding: 10px 12px; font-size: 15px; }
+.pal-list { overflow: auto; padding: 0 8px 8px; }
+.pal-cat { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); padding: 10px 8px 4px; }
+.pal-item { display: flex; align-items: center; gap: 12px; padding: 8px; border-radius: 8px; cursor: pointer; width: 100%; border: 0; background: none; text-align: left; }
+.pal-item .nico { width: 32px; height: 32px; }
+.pal-item.on, .pal-item:hover { background: var(--surface-2); }
+.pal-item b { display: block; font-size: 13.5px; font-weight: 600; }
+.pal-item small { color: var(--muted); font-size: 12px; }
+.pal-foot { border-top: 1px solid var(--line); padding: 9px 16px; font-size: 11.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+kbd { font: 500 11px var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--surface-2); }
+.tpls { display: grid; gap: 10px; }
+.tpl { text-align: left; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--surface); display: flex; flex-direction: column; gap: 6px; }
+.tpl:hover { border-color: var(--accent); }
+.tpl b { font-size: 14px; }
+.tpl span { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.tpl .flowline { display: flex; gap: 4px; flex-wrap: wrap; }
+.tpl .flowline i { font-style: normal; font: 500 10.5px var(--mono); padding: 1px 7px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--line); }
+#toast { position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; gap: 6px; align-items: center; pointer-events: none; }
+.t { background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; box-shadow: var(--shadow-lg); max-width: 90vw; animation: tin .18s ease-out; }
+.t.err { background: var(--err); color: #fff; }
+@keyframes tin { from { opacity: 0; transform: translateY(6px); } }
+
+@media (max-width: 860px) {
+  #app { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+  #nav { grid-row: 2; flex-direction: row; border-right: 0; border-top: 1px solid var(--line); padding: 6px max(8px, env(safe-area-inset-left, 0px)) calc(6px + env(safe-area-inset-bottom, 0px)); overflow-x: auto; gap: 4px; }
+  .logo, .nav-foot { display: none; }
+  .navlink { flex-direction: column; gap: 2px; font-size: 11px; padding: 6px 10px; }
+  .navlink .badge { margin: 0; }
+  .wf-name { width: 120px; flex-basis: 120px; }
+  .btn .lbl, .switch .lbl, .savestate { display: none; }
+  #panel { width: 100%; top: auto; height: 74%; border-left: 0; border-top: 1px solid var(--line); border-radius: 14px 14px 0 0; }
+  .d-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .runs { max-height: 120px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .tl-row { grid-template-columns: minmax(90px, 130px) 1fr 90px; gap: 8px; }
+  #minimap { display: none; }
+  .page { padding-block: 16px 24px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .lrow { grid-template-columns: 1fr; }
+  .lrow .acts { grid-row: auto; grid-column: 1; justify-content: flex-start; }
+  .xd { grid-template-columns: 1fr; }
+  .kvgrid { grid-template-columns: 1fr; gap: 2px; }
+  .kvgrid dd { margin-bottom: 10px; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <nav id="nav" aria-label="Ana menü">
+    <div class="logo">8<b>n</b>8</div>
+    <a class="navlink" href="#/akislar" data-nav="akislar"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h6v5H4zM14 13h6v5h-6zM10 8.5h2a2 2 0 0 1 2 2v5"/></svg>Akışlar</a>
+    <a class="navlink" href="#/calistirmalar" data-nav="calistirmalar"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h13"/></svg>Çalıştırmalar <span class="badge" id="run-badge" hidden></span></a>
+    <a class="navlink" href="#/kimlik" data-nav="kimlik"><svg class="i" viewBox="0 0 24 24"><path d="M15 7a4 4 0 1 1-3.9 4.9L4 19v-3h2v-2h2l1.6-1.6"/><circle cx="15.5" cy="8.5" r="1"/></svg>Kimlik bilgileri</a>
+    <a class="navlink" href="#/degiskenler" data-nav="degiskenler"><svg class="i" viewBox="0 0 24 24"><path d="M7 4c-2 0-2 2-2 4s-2 4-2 4 2 2 2 4 0 4 2 4M17 4c2 0 2 2 2 4s2 4 2 4-2 2-2 4 0 4-2 4M9 15l6-6M9 9l6 6"/></svg>Değişkenler</a>
+    <a class="navlink" href="#/hakkinda" data-nav="hakkinda"><svg class="i" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 11v6M12 7.5v.5"/></svg>Ayarlar</a>
+    <div class="nav-foot"><span class="conn" id="conn">Bağlı</span><br><span id="ver"></span></div>
+  </nav>
+  <main id="view"></main>
+</div>
+<div id="modal" hidden></div>
+<div id="toast" aria-live="polite"></div>
+<script src="/expr.js"></script>
+<script>
+'use strict';
+/* ================= helpers ================= */
+const $ = (s, r = document) => r.querySelector(s);
+const uid = () => Math.random().toString(36).slice(2, 10);
+const clone = o => o === undefined ? undefined : JSON.parse(JSON.stringify(o));
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const fmtMs = ms => ms == null ? '' : ms < 1000 ? `${Math.round(ms)} ms` : ms < 60000 ? `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)} sn` : `${Math.floor(ms / 60000)} dk ${Math.round(ms % 60000 / 1000)} sn`;
+const fmtTime = t => new Date(t).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const fmtDate = t => new Date(t).toLocaleString('tr-TR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+function ago(t) {
+  const s = (Date.now() - new Date(t)) / 1000;
+  if (s < 60) return 'az önce'; if (s < 3600) return `${Math.floor(s / 60)} dk önce`; if (s < 86400) return `${Math.floor(s / 3600)} sa önce`;
+  return fmtDate(t);
+}
+const statusLabel = s => ({ success: 'başarılı', error: 'hata', running: 'çalışıyor', stopped: 'durduruldu', skipped: 'atlandı', disabled: 'devre dışı' }[s] || s);
+async function api(method, url, body) {
+  if (body === undefined && (method === 'POST' || method === 'PUT')) body = {};
+  const res = await fetch(url, { method, headers: body !== undefined ? { 'Content-Type': 'application/json' } : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
+  const text = await res.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  if (!res.ok) throw new Error(data?.hata || data || `HTTP ${res.status}`);
+  return data;
+}
+function toast(msg, err) {
+  const t = document.createElement('div'); t.className = 't' + (err ? ' err' : ''); t.textContent = msg;
+  $('#toast').appendChild(t); setTimeout(() => t.remove(), err ? 5500 : 2600);
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast('Panoya kopyalandı'); } catch { prompt('Kopyalayın:', text); }
+}
+function download(name, text) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const ICONS = {
+  play: 'M7 5l12 7-12 7z', clock: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 7v5l3 2', bolt: 'M13 3L5 14h6l-1 7 8-11h-6z',
+  form: 'M5 4h14v16H5zM8 8h8M8 12h8M8 16h4', alert: 'M12 4l9 16H3zM12 10v4M12 17v.5', enter: 'M10 7l5 5-5 5M15 12H3M14 4h6v16h-6',
+  globe: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18', reply: 'M9 8L4 12l5 4M4 12h10a6 6 0 0 1 6 6',
+  pen: 'M4 20h4L19 9l-4-4L4 16zM14 6l4 4', funnel: 'M4 5h16l-6 8v6l-4-2v-4z', sort: 'M7 4v16M4 17l3 3 3-3M13 6h8M13 12h6M13 18h4',
+  scissors: 'M6 6a2 2 0 1 0 0 .1M6 18a2 2 0 1 0 0 .1M8 7l12 10M8 17L20 7', copy: 'M8 8h12v12H8zM4 16V4h12', split: 'M4 12h6M10 12l5-6h5M10 12l5 6h5M10 12h10',
+  stack: 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5', sigma: 'M18 5H6l6 7-6 7h12', calendar: 'M4 6h16v14H4zM4 10h16M9 3v4M15 3v4',
+  key: 'M15 7a4 4 0 1 1-3.9 4.9L4 19v-3h2v-2h2l1.6-1.6', file: 'M6 3h8l4 4v14H6zM14 3v4h4', save: 'M5 4h11l3 3v13H5zM8 4v5h7M8 20v-6h8v6',
+  branch: 'M4 12h5l4-6h6M9 12l4 6h6M17 4l2 2-2 2M17 16l2 2-2 2', route: 'M3 12h6M9 12l10-7M9 12h10M9 12l10 7', merge: 'M5 5h4l5 7h6M5 19h4l5-7M17 9l3 3-3 3',
+  code: 'M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16', hourglass: 'M6 3h12M6 21h12M7 3v3l5 6 5-6V3M7 21v-3l5-6 5 6v3', dot: 'M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6z',
+  stop: 'M6 6h12v12H6z', spark: 'M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z', send: 'M4 12l16-8-6 16-3-7z', chat: 'M4 5h16v11H9l-5 4z', mail: 'M3 6h18v12H3zM3 7l9 6 9-6',
+  note: 'M5 4h14v11l-5 5H5zM14 20v-5h5', check: 'M5 12l5 5 9-10', x: 'M6 6l12 12M18 6L6 18', skip: 'M5 12h14', plus: 'M12 5v14M5 12h14',
+  undo: 'M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3', redo: 'M15 14l5-5-5-5M20 9H9a5 5 0 0 0 0 10h3', back: 'M15 6l-6 6 6 6',
+  layout: 'M4 5h5v5H4zM15 14h5v5h-5zM15 4h5v5h-5zM9 7.5h3v9h3M12 6.5h3', gear: 'M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6zM12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1',
+  history: 'M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2', download: 'M12 4v11M7 10l5 5 5-5M5 20h14', upload: 'M12 15V4M7 9l5-5 5 5M5 20h14', grid: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',
+  trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13', ext: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6', pin: 'M9 4h6l-1 6 3 3H7l3-3zM12 13v7', chev: 'M6 15l6-6 6 6',
+};
+const icon = k => `<svg class="i" viewBox="0 0 24 24"><path d="${ICONS[k] || ICONS.dot}"/></svg>`;
+
+/* ================= global data ================= */
+const G = { types: null, info: null, creds: [], workflows: [], vars: {}, running: new Set() };
+const T = t => G.types.types[t];
+const OPS = () => G.types.ops;
+const UNARY = () => new Set(G.types.unary);
+function outsOf(n) {
+  const d = T(n.type); if (!d) return [];
+  if (Array.isArray(d.outputs)) return d.outputs;
+  const o = d.outputs, p = n.params || {};
+  return [...(p[o.from] || []).map((r, i) => r[o.label] || r.value || `kural ${i + 1}`), ...(p[o.fallback] ? [o.fallbackLabel] : [])];
+}
+function defaults(type) { const p = {}; for (const f of T(type).params) p[f.key] = clone(f.def); return p; }
+const stripExpr = s => String(s ?? '').replace(/\{\{\s*|\s*\}\}/g, '');
+function optionLabel(type, key, val) { const f = T(type).params.find(p => p.key === key); return f?.options?.find(o => o[0] === val)?.[1] ?? val; }
+function subtitle(n) {
+  const d = T(n.type); const p = n.params || {};
+  try {
+    switch (d.sub) {
+      case 'conds': { const c = (p.conditions || [])[0]; if (!c) return 'koşul yok'; const more = p.conditions.length > 1 ? ` +${p.conditions.length - 1}` : ''; return `${stripExpr(c.left)} ${G.types.ops.find(o => o[0] === c.op)?.[1] || c.op}${UNARY().has(c.op) ? '' : ' ' + c.right}${more}`; }
+      case 'schedule': {
+        const base = p.mode === 'cron' ? `cron ${p.cron}` : `her ${p.every} ${optionLabel('schedule', 'unit', p.unit)}`;
+        const nx = ED.wf?.nextRuns?.[n.id];
+        return ED.wf?.active && nx ? `${base} · sonraki ${fmtTime(nx)}` : base;
+      }
+      case 'fields': return (p.fields || []).map(f => f.key).filter(Boolean).join(', ') || 'alan yok';
+      case 'code': return `${(p.code || '').split('\n').length} satır JS`;
+      case 'workflow': return G.workflows.find(w => w.id === p.workflowId)?.name || 'akış seçilmedi';
+      default: return String(d.sub || '').replace(/\{(\w+)\}/g, (_, k) => stripExpr(optionLabel(n.type, k, p[k]) ?? ''));
+    }
+  } catch { return ''; }
+}
+
+/* ================= router ================= */
+const view = $('#view');
+let cleanup = null;
+async function route() {
+  const h = location.hash.replace(/^#\/?/, '') || 'akislar';
+  const [page, arg] = h.split('/');
+  if (cleanup) { const c = cleanup; cleanup = null; await c(); }
+  document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === (page === 'akis' ? 'akislar' : page === 'calistirma' ? 'calistirmalar' : page)));
+  closeModal();
+  try {
+    if (page === 'akis' && arg) await openEditor(arg);
+    else if (page === 'calistirmalar') await pageExecutions();
+    else if (page === 'calistirma' && arg) await pageExecution(arg);
+    else if (page === 'kimlik') await pageCredentials();
+    else if (page === 'degiskenler') await pageVariables();
+    else if (page === 'hakkinda') await pageAbout();
+    else await pageWorkflows();
+  } catch (e) { view.innerHTML = `<div class="page"><div class="page-in"><div class="err-box">${esc(e.message)}</div></div></div>`; }
+}
+window.addEventListener('hashchange', route);
+
+/* ================= live events ================= */
+const live = { listeners: new Set() };
+function connectEvents() {
+  const es = new EventSource('/api/events');
+  es.onopen = () => { $('#conn').classList.remove('off'); $('#conn').textContent = 'Bağlı'; };
+  es.onerror = () => { $('#conn').classList.add('off'); $('#conn').textContent = 'Bağlantı yok'; };
+  es.onmessage = m => {
+    const ev = JSON.parse(m.data);
+    if (ev.type === 'hello') { G.running = new Set(ev.running); updateBadge(); return; }
+    if (ev.type === 'exec:start') G.running.add(ev.execId);
+    if (ev.type === 'exec:end') G.running.delete(ev.execId);
+    updateBadge();
+    for (const l of live.listeners) l(ev);
+  };
+}
+function updateBadge() { const b = $('#run-badge'); b.hidden = !G.running.size; b.textContent = G.running.size; }
+
+/* ================= workflows page ================= */
+async function pageWorkflows() {
+  G.workflows = await api('GET', '/api/workflows');
+  const q = { s: '' };
+  view.innerHTML = `<div class="page"><div class="page-in">
+    <div class="page-head"><h1>Akışlar</h1>
+      <input class="inp" id="wf-search" placeholder="Ara…" style="width:200px" aria-label="Akışlarda ara">
+      <button class="btn" id="wf-import">${icon('upload')}<span class="lbl">İçe aktar</span></button>
+      <button class="btn" id="wf-tpl">${icon('grid')}<span class="lbl">Şablonlar</span></button>
+      <button class="btn primary" id="wf-new">${icon('plus')}Yeni akış</button></div>
+    <p class="lead">Etkin akışlar program açık olduğu sürece zamanlayıcı, webhook ve formlardan kendiliğinden çalışır. Manuel akışlar editörden çalıştırılır.</p>
+    <div class="card list" id="wf-list"></div></div></div>`;
+  const draw = () => {
+    const list = G.workflows.filter(w => !q.s || w.name.toLocaleLowerCase('tr').includes(q.s));
+    $('#wf-list').innerHTML = list.length ? list.map(w => {
+      const trig = [...new Set(w.triggers)].map(t => `<span class="tag">${esc(T(t)?.label || t)}</span>`).join('');
+      const last = w.lastExecution;
+      return `<div class="lrow" data-id="${w.id}">
+        <a class="ttl" href="#/akis/${w.id}">${esc(w.name)}</a>
+        <div class="meta">${trig}<span>${w.nodeCount} node</span><span>güncellendi ${ago(w.updatedAt)}</span>
+          ${last ? `<span><span class="pill ${last.status}">${statusLabel(last.status)}</span> ${ago(last.startedAt)}</span>` : '<span>henüz çalışmadı</span>'}</div>
+        <div class="acts">
+          <label class="switch" title="Etkin akışlar kendiliğinden tetiklenir"><input type="checkbox" data-act="active" ${w.active ? 'checked' : ''}><span class="track"></span><span class="lbl">Etkin</span></label>
+          <button class="btn sm" data-act="dup">Çoğalt</button>
+          <button class="btn sm" data-act="export">Dışa aktar</button>
+          <button class="btn sm danger" data-act="del" aria-label="Sil">${icon('trash')}</button>
+        </div></div>`;
+    }).join('') : `<div class="empty">${G.workflows.length ? 'Aramaya uyan akış yok.' : 'Henüz akış yok.<button class="btn primary" id="wf-new2">İlk akışı oluştur</button>'}</div>`;
+    $('#wf-new2')?.addEventListener('click', newWorkflow);
+  };
+  draw();
+  $('#wf-search').addEventListener('input', e => { q.s = e.target.value.toLocaleLowerCase('tr'); draw(); });
+  $('#wf-new').addEventListener('click', newWorkflow);
+  $('#wf-tpl').addEventListener('click', openTemplates);
+  $('#wf-import').addEventListener('click', () => openImport(async wf => { const saved = await api('POST', '/api/workflows', wf); location.hash = `#/akis/${saved.id}`; }));
+  $('#wf-list').addEventListener('change', async e => {
+    if (e.target.dataset.act !== 'active') return;
+    const id = e.target.closest('[data-id]').dataset.id;
+    try { const wf = await api('GET', `/api/workflows/${id}`); await api('PUT', `/api/workflows/${id}`, { ...wf, active: e.target.checked }); toast(e.target.checked ? 'Akış etkinleştirildi' : 'Akış durduruldu'); G.workflows = await api('GET', '/api/workflows'); draw(); }
+    catch (err) { e.target.checked = !e.target.checked; toast(err.message, true); }
+  });
+  $('#wf-list').addEventListener('click', async e => {
+    const b = e.target.closest('button[data-act]'); if (!b) return;
+    const id = b.closest('[data-id]').dataset.id; const w = G.workflows.find(x => x.id === id);
+    if (b.dataset.act === 'dup') { await api('POST', `/api/workflows/${id}/duplicate`); toast('Kopyası oluşturuldu'); }
+    if (b.dataset.act === 'export') { const wf = await api('GET', `/api/workflows/${id}`); download(`${w.name}.8n8.json`, exportJSON(wf)); }
+    if (b.dataset.act === 'del') { if (!confirm(`"${w.name}" silinsin mi? Bu geri alınamaz.`)) return; await api('DELETE', `/api/workflows/${id}`); toast('Akış silindi'); }
+    G.workflows = await api('GET', '/api/workflows'); draw();
+  });
+}
+async function newWorkflow() {
+  const wf = await api('POST', '/api/workflows', { name: 'Yeni akış', nodes: [{ id: uid(), type: 'manual', name: 'Başlat', x: 0, y: 0, params: defaults('manual'), disabled: false, settings: {} }], edges: [] });
+  location.hash = `#/akis/${wf.id}`;
+}
+function exportJSON(wf) {
+  return JSON.stringify({ format: '8n8/akis', surum: 1, name: wf.name, settings: { timeout: wf.settings?.timeout }, tags: wf.tags, nodes: wf.nodes.map(({ id, type, name, x, y, params, disabled, settings, pinData }) => ({ id, type, name, x, y, params, disabled, settings, pinData })), edges: wf.edges }, null, 2);
+}
+async function openTemplates() {
+  const list = await api('GET', '/api/templates');
+  openModal(`<div class="mhead"><h2>Şablonlar</h2><button class="icon-btn" data-close aria-label="Kapat">${icon('x')}</button></div>
+    <div class="mbody"><p class="desc">Şablon yeni bir akış olarak eklenir; mevcut akışlarınız değişmez.</p><div class="tpls">
+    ${list.map(t => `<button class="tpl" data-tpl="${t.key}"><b>${esc(t.title)}</b><span>${esc(t.text)}</span><span class="flowline">${t.flow.map(f => `<i>${esc(f)}</i>`).join('')}</span></button>`).join('')}</div></div>`);
+  $('#modal').querySelectorAll('[data-tpl]').forEach(b => b.addEventListener('click', async () => {
+    const wf = await api('POST', `/api/templates/${b.dataset.tpl}`); closeModal(); location.hash = `#/akis/${wf.id}`; toast(`"${wf.name}" eklendi`);
+  }));
+}
+function openImport(onWorkflow) {
+  openModal(`<div class="mhead"><h2>İçe aktar</h2><button class="icon-btn" data-close aria-label="Kapat">${icon('x')}</button></div>
+    <div class="mbody"><p class="desc">8n8'den dışa aktarılmış bir .json dosyası seçin ya da içeriğini yapıştırın.</p>
+    <input type="file" id="imp-file" accept=".json,application/json" class="inp">
+    <textarea class="inp" id="imp-json" placeholder='{ "name": "…", "nodes": [ … ], "edges": [ … ] }' style="min-height:200px" spellcheck="false"></textarea></div>
+    <div class="mfoot"><span class="x" id="imp-err"></span><button class="btn" data-close>Vazgeç</button><button class="btn primary" id="imp-go">İçe aktar</button></div>`);
+  $('#imp-file').addEventListener('change', async e => { const f = e.target.files[0]; if (f) $('#imp-json').value = await f.text(); });
+  $('#imp-go').addEventListener('click', async () => {
+    try {
+      const o = JSON.parse($('#imp-json').value);
+      if (!Array.isArray(o.nodes) || !Array.isArray(o.edges)) throw new Error('Geçersiz akış: "nodes" ve "edges" gerekli');
+      const bad = o.nodes.find(n => !T(n.type)); if (bad) throw new Error(`Bilinmeyen node türü: ${bad.type}`);
+      o.nodes = o.nodes.map(n => ({ settings: {}, disabled: false, ...n, params: { ...defaults(n.type), ...(n.params || {}) } }));
+      closeModal(); await onWorkflow(o); toast(`"${o.name || 'Akış'}" içe aktarıldı`);
+    } catch (err) { $('#imp-err').textContent = err.message; }
+  });
+}
+
+/* ================= modal ================= */
+function openModal(html, wide) {
+  const m = $('#modal'); m.hidden = false;
+  m.innerHTML = `<div class="mcard" role="dialog" style="${wide ? 'width:760px' : ''}">${html}</div>`;
+  m.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeModal));
+}
+function closeModal() { const m = $('#modal'); m.hidden = true; m.innerHTML = ''; }
+$('#modal').addEventListener('pointerdown', e => { if (e.target.id === 'modal') closeModal(); });
+
+/* ================= data viewers ================= */
+function jsonHTML(v) {
+  let s = JSON.stringify(v, null, 2) ?? 'undefined';
+  if (s.length > 300000) s = s.slice(0, 300000) + '\n…';
+  return esc(s).replace(/(&quot;(?:[^&]|&(?!quot;))*?&quot;)(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g, (m, str, colon, kw, num) => {
+    if (str) return colon ? `<span class="k">${str}</span>${colon}` : `<span class="s">${str}</span>`;
+    if (kw) return `<span class="b">${kw}</span>`;
+    return `<span class="n">${num}</span>`;
+  });
+}
+const DV = { view: 'table', port: 0 };
+function dataView(sets, labels, emptyText) {
+  if (!sets) return `<div class="nodata">${emptyText}</div>`;
+  const port = Math.min(DV.port, Math.max(0, sets.length - 1));
+  const items = sets[port] || [];
+  const chips = sets.length > 1 ? `<div class="chips">${sets.map((s, i) => `<button class="chip${i === port ? ' on' : ''}" data-dvport="${i}">${esc(labels[i] ?? i + 1)} · ${s.length}</button>`).join('')}</div>` : '';
+  const head = `<div class="dv-head"><span class="help">${items.length} öğe</span><div class="seg"><button data-dvview="table" class="${DV.view === 'table' ? 'on' : ''}">Tablo</button><button data-dvview="json" class="${DV.view === 'json' ? 'on' : ''}">JSON</button></div></div>`;
+  if (!items.length) return chips + head + '<div class="nodata">Bu yoldan öğe geçmedi.</div>';
+  const shown = items.slice(0, 300);
+  let body;
+  if (DV.view === 'json') body = `<pre class="json">${jsonHTML(shown.map(i => i.json))}</pre>`;
+  else {
+    const cols = [...new Set(shown.flatMap(i => Object.keys(i.json)))].slice(0, 40);
+    const cell = v => v == null ? `<td class="o">${v === null ? 'null' : ''}</td>` : typeof v === 'number' ? `<td class="n">${v}</td>` : typeof v === 'boolean' ? `<td class="b">${v}</td>` : typeof v === 'object' ? `<td class="o" title="${esc(JSON.stringify(v))}">${esc(JSON.stringify(v).slice(0, 80))}</td>` : `<td title="${esc(v)}">${esc(v)}</td>`;
+    body = `<div class="tablewrap"><table class="dt"><thead><tr><th class="ix">#</th>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${shown.map((it, i) => `<tr><td class="ix">${i}</td>${cols.map(c => cell(it.json[c])).join('')}</tr>`).join('')}</tbody></table></div>`;
+  }
+  return chips + head + body + (items.length > 300 ? '<div class="help">İlk 300 öğe gösteriliyor.</div>' : '');
+}
+function bindDataView(root, rerender) {
+  root.addEventListener('click', e => {
+    const b = e.target.closest('[data-dvview],[data-dvport]'); if (!b) return;
+    if (b.dataset.dvview) DV.view = b.dataset.dvview; else DV.port = +b.dataset.dvport;
+    rerender();
+  });
+}
+function timelineHTML(ex, nodesSrc, selId, compact) {
+  const total = Math.max(ex.duration || 1, 1);
+  return `<div class="tl">${(ex.order || []).map(id => {
+    const r = ex.nodes[id]; const n = nodesSrc.find(x => x.id === id); const d = T(r.type || n?.type);
+    const inC = r.input ? r.input.reduce((a, s) => a + s.length, 0) : 0, outC = r.output ? r.output.reduce((a, s) => a + s.length, 0) : 0;
+    const meta = r.status === 'skipped' ? 'atlandı' : r.status === 'running' ? 'çalışıyor…' : `${d?.trigger ? '' : inC + ' → '}${outC} · ${fmtMs(r.d)}`;
+    return `<button class="tl-row cat-${d?.cat || 'flow'}${selId === id ? ' on' : ''}" data-tl="${id}">
+      <span class="tl-name"><span class="dot"></span><span>${esc(r.name || n?.name || '?')}</span></span>
+      ${compact ? '' : `<span class="tl-track"><span class="tl-bar ${r.status}" style="left:${((r.t || 0) / total) * 100}%;width:${((r.d || 0) / total) * 100}%"></span></span>`}
+      <span class="tl-meta">${meta}</span>
+      ${r.status === 'error' ? `<span class="tl-err">${esc(r.error)}</span>` : ''}</button>`;
+  }).join('')}</div>`;
+}
+
+/* ================= editor ================= */
+const NW = 236;
+const ED = { wf: null, sel: new Set(), selEdge: null, panelOpen: false, tab: 'params', drawer: false, vp: { x: 80, y: 80, z: 1 }, execs: [], viewId: null, cache: new Map(), live: null, hist: { past: [], future: [] }, saveT: null, saving: false, dirty: false, lastField: null, clipboard: null };
+const nodeById = id => ED.wf.nodes.find(n => n.id === id);
+const H = n => { const d = T(n.type); if (d.note) return Math.max(90, 40 + Math.ceil(String(n.params?.text || '').length / 30) * 19 + (String(n.params?.text || '').split('\n').length - 1) * 19); return Math.max(72, 26 + 26 * Math.max(d.inputs, outsOf(n).length)); };
+const portY = (n, i, c) => H(n) * (i + 1) / (c + 1);
+const inPos = (n, i) => ({ x: n.x, y: n.y + portY(n, i, T(n.type).inputs) });
+const outPos = (n, i) => ({ x: n.x + NW, y: n.y + portY(n, i, outsOf(n).length) });
+const snap = () => JSON.stringify({ name: ED.wf.name, nodes: ED.wf.nodes, edges: ED.wf.edges });
+function pushPast(s) { ED.hist.past.push(s); if (ED.hist.past.length > 150) ED.hist.past.shift(); ED.hist.future.length = 0; updateUndo(); }
+const checkpoint = () => pushPast(snap());
+function restore(s) { const o = JSON.parse(s); Object.assign(ED.wf, o); for (const id of [...ED.sel]) if (!nodeById(id)) ED.sel.delete(id); ED.selEdge = null; renderEditor(); markDirty(); }
+function undo() { if (!ED.hist.past.length) return; ED.hist.future.push(snap()); restore(ED.hist.past.pop()); updateUndo(); }
+function redo() { if (!ED.hist.future.length) return; ED.hist.past.push(snap()); restore(ED.hist.future.pop()); updateUndo(); }
+function updateUndo() { const u = $('#btn-undo'); if (!u) return; u.disabled = !ED.hist.past.length; $('#btn-redo').disabled = !ED.hist.future.length; }
+function uniqueName(base) { const names = new Set(ED.wf.nodes.map(n => n.name)); if (!names.has(base)) return base; let i = 2; while (names.has(`${base} ${i}`)) i++; return `${base} ${i}`; }
+function makeNode(type, x, y) { return { id: uid(), type, name: uniqueName(T(type).label), x: Math.round(x), y: Math.round(y), params: defaults(type), disabled: false, settings: {} }; }
+function pruneEdges() { ED.wf.edges = ED.wf.edges.filter(e => { const a = nodeById(e.from), b = nodeById(e.to); return a && b && e.fromPort < outsOf(a).length && e.toPort < T(b.type).inputs; }); }
+
+function markDirty() { ED.dirty = true; setSaveState('Kaydediliyor…'); clearTimeout(ED.saveT); ED.saveT = setTimeout(saveNow, 600); }
+async function saveNow() {
+  clearTimeout(ED.saveT);
+  if (!ED.wf || !ED.dirty) return;
+  if (ED.saving) { ED.saveT = setTimeout(saveNow, 300); return; }
+  ED.saving = true; ED.dirty = false;
+  try {
+    const { nextRuns, ...body } = ED.wf;
+    const saved = await api('PUT', `/api/workflows/${ED.wf.id}`, { ...body, vp: undefined });
+    if (ED.wf?.id === saved.id) { ED.wf.nextRuns = saved.nextRuns; ED.wf.updatedAt = saved.updatedAt; }
+    setSaveState(ED.dirty ? 'Kaydediliyor…' : 'Kaydedildi');
+  } catch (e) {
+    ED.dirty = true; setSaveState('Kaydedilemedi', true);
+    if (/Etkinleştirmek|kullanılıyor|Cron|yol/.test(e.message)) { ED.wf.active = false; const t = $('#ed-active'); if (t) t.checked = false; toast(`${e.message} Akış durduruldu.`, true); ED.dirty = true; ED.saveT = setTimeout(saveNow, 400); }
+    else toast(`Kaydedilemedi: ${e.message}`, true);
+  } finally { ED.saving = false; }
+}
+function setSaveState(t, err) { const s = $('#savestate'); if (s) { s.textContent = t; s.classList.toggle('err', !!err); } }
+try { const v = JSON.parse(localStorage.getItem('8n8.vp') || '{}'); ED.vps = v; } catch { ED.vps = {}; }
+function saveVp() { try { ED.vps[ED.wf.id] = ED.vp; localStorage.setItem('8n8.vp', JSON.stringify(ED.vps)); } catch {} }
+
+async function openEditor(id) {
+  const [wf, ex] = await Promise.all([api('GET', `/api/workflows/${id}`), api('GET', `/api/executions?workflowId=${id}&limit=40`)]);
+  G.creds = await api('GET', '/api/credentials');
+  G.workflows = await api('GET', '/api/workflows');
+  G.vars = await api('GET', '/api/variables');
+  Object.assign(ED, { wf, sel: new Set(), selEdge: null, panelOpen: false, tab: 'params', execs: ex.items, viewId: null, cache: new Map(), live: null, hist: { past: [], future: [] }, dirty: false });
+  ED.drawer = ED.drawer && ex.items.length > 0;
+  view.innerHTML = `<div class="editor">
+    <div class="ebar">
+      <a class="btn icon" href="#/akislar" title="Akışlara dön" aria-label="Akışlara dön">${icon('back')}</a>
+      <input id="wf-name" class="wf-name" aria-label="Akış adı" spellcheck="false" value="${esc(wf.name)}">
+      <span class="savestate" id="savestate">Kaydedildi</span>
+      <div class="tools">
+        <button class="btn icon" id="btn-undo" title="Geri al (Ctrl+Z)" aria-label="Geri al">${icon('undo')}</button>
+        <button class="btn icon" id="btn-redo" title="Yinele (Ctrl+Shift+Z)" aria-label="Yinele">${icon('redo')}</button>
+        <span class="sep"></span>
+        <button class="btn" id="btn-add" title="Node ekle (Ctrl+K)">${icon('plus')}<span class="lbl">Node ekle</span></button>
+        <button class="btn" id="btn-layout" title="Otomatik düzenle">${icon('layout')}<span class="lbl">Düzenle</span></button>
+        <button class="btn" id="btn-versions" title="Önceki sürümler">${icon('history')}<span class="lbl">Sürümler</span></button>
+        <button class="btn" id="btn-settings" title="Akış ayarları">${icon('gear')}<span class="lbl">Ayarlar</span></button>
+        <button class="btn" id="btn-export" title="Dışa aktar">${icon('download')}<span class="lbl">Dışa aktar</span></button>
+        <span class="sep"></span>
+        <label class="switch" title="Etkin akış zamanlayıcı, webhook ve formlardan kendiliğinden çalışır"><input type="checkbox" id="ed-active" ${wf.active ? 'checked' : ''}><span class="track"></span><span class="lbl">Etkin</span></label>
+      </div>
+      <button class="btn primary" id="btn-run" title="Çalıştır (Ctrl+Enter)">${icon('play')}Çalıştır</button>
+    </div>
+    <div class="emain">
+      <div id="canvas" tabindex="0" aria-label="Akış tuvali">
+        <div id="world"><svg id="edges" aria-hidden="true"><g id="edge-g" transform="translate(50000 50000)"></g></svg><div id="elabels"></div><div id="nodes"></div></div>
+        <div id="box" hidden></div>
+      </div>
+      <div class="cempty" id="cempty" hidden><h2>Akış boş</h2><p>Bir tetikleyici ekleyerek başlayın.</p><button class="btn primary" id="cempty-add">Tetikleyici ekle</button></div>
+      <div class="floating zoombar">
+        <button id="z-out" title="Uzaklaş" aria-label="Uzaklaş">${icon('skip')}</button><span class="zl" id="z-label">100%</span>
+        <button id="z-in" title="Yakınlaş" aria-label="Yakınlaş">${icon('plus')}</button>
+        <button id="z-fit" title="Sığdır (F)" aria-label="Ekrana sığdır"><svg class="i" viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button>
+      </div>
+      <canvas id="minimap" class="floating" aria-label="Mini harita"></canvas>
+      <aside id="panel" hidden></aside>
+      <section id="drawer">
+        <div class="d-head">
+          <button class="d-toggle" id="d-toggle">${icon('chev')}Çalıştırmalar <span class="d-sum" id="d-sum"></span></button>
+          <div class="right"><button class="btn sm danger" id="btn-stop" hidden>Durdur</button></div>
+        </div>
+        <div class="d-body" id="d-body" hidden><div class="runs" id="runs"></div><div class="run-detail" id="run-detail"></div></div>
+      </section>
+    </div></div>`;
+  bindEditor();
+  const savedVp = ED.vps[wf.id];
+  renderEditor();
+  if (savedVp) { Object.assign(ED.vp, savedVp); applyViewport(); } else fitView();
+  if (ex.items[0]) loadExec(ex.items[0].id);
+  const onEv = ev => handleLive(ev);
+  live.listeners.add(onEv);
+  const onKey = e => editorKeys(e);
+  window.addEventListener('keydown', onKey);
+  const onResize = () => { renderDrawer(); drawMinimap(); };
+  window.addEventListener('resize', onResize);
+  const beforeUnload = e => { if (ED.dirty) { saveNow(); e.preventDefault(); } };
+  window.addEventListener('beforeunload', beforeUnload);
+  cleanup = async () => { live.listeners.delete(onEv); window.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize); window.removeEventListener('beforeunload', beforeUnload); await saveNow(); saveVp(); ED.wf = null; };
+}
+
+/* --- executions in the editor --- */
+async function loadExec(id) {
+  if (!ED.cache.has(id)) { try { ED.cache.set(id, await api('GET', `/api/executions/${id}`)); } catch { return; } }
+  if (!ED.viewId || ED.viewId === id || !ED.live) ED.viewId = id;
+  renderNodes(); renderEdges(); renderDrawer(); if (ED.panelOpen && !panelHasFocus()) renderPanel();
+}
+const viewedExec = () => (ED.live && ED.live.id === ED.viewId ? ED.live : ED.cache.get(ED.viewId)) || null;
+function handleLive(ev) {
+  if (!ED.wf || ev.workflowId !== ED.wf.id) return;
+  if (ev.type === 'exec:start') {
+    ED.live = { id: ev.execId, status: 'running', nodes: {}, edges: {}, order: [], mode: ev.mode, trigger: ev.trigger, startedAt: ev.startedAt, t0: performance.now() };
+    ED.execs.unshift({ id: ev.execId, status: 'running', mode: ev.mode, trigger: ev.trigger, startedAt: ev.startedAt });
+    ED.viewId = ev.execId;
+  } else if (!ED.live || ED.live.id !== ev.execId) {
+    if (ev.type === 'exec:end') { const s = ED.execs.find(x => x.id === ev.execId); if (s) Object.assign(s, { status: ev.status, duration: ev.duration, error: ev.error }); renderDrawer(); }
+    return;
+  } else if (ev.type === 'node:start') { ED.live.nodes[ev.nodeId] = { status: 'running', t: performance.now() - ED.live.t0 }; ED.live.order.push(ev.nodeId); }
+  else if (ev.type === 'node:end') {
+    const n = nodeById(ev.nodeId);
+    ED.live.nodes[ev.nodeId] = { ...(ED.live.nodes[ev.nodeId] || {}), status: ev.status, d: ev.d, error: ev.error, name: n?.name, type: n?.type, outCounts: ev.out, inCounts: ev.in };
+    if (!ED.live.order.includes(ev.nodeId)) ED.live.order.push(ev.nodeId);
+    Object.assign(ED.live.edges, ev.edges || {});
+  } else if (ev.type === 'exec:end') {
+    const s = ED.execs.find(x => x.id === ev.execId); if (s) Object.assign(s, { status: ev.status, duration: ev.duration, error: ev.error });
+    const id = ev.execId; ED.live = null;
+    if (ev.status === 'error') toast(`Çalıştırma hata verdi: ${ev.error}`, true);
+    else if (ev.status === 'success') toast(`Çalıştırma tamamlandı · ${fmtMs(ev.duration)}`);
+    loadExec(id);
+    return;
+  }
+  renderNodes(); renderEdges(); renderDrawer();
+}
+const recFor = id => { const ex = viewedExec(); return ex?.nodes?.[id] || null; };
+const outCount = r => r?.output ? r.output.reduce((a, o) => a + o.length, 0) : r?.outCounts ? r.outCounts.reduce((a, b) => a + b, 0) : null;
+
+/* --- canvas render --- */
+function applyViewport() {
+  const world = $('#world'); if (!world) return;
+  world.style.transform = `translate(${ED.vp.x}px, ${ED.vp.y}px) scale(${ED.vp.z})`;
+  const c = $('#canvas'); c.style.backgroundSize = `${22 * ED.vp.z}px ${22 * ED.vp.z}px`; c.style.backgroundPosition = `${ED.vp.x}px ${ED.vp.y}px`;
+  $('#z-label').textContent = `${Math.round(ED.vp.z * 100)}%`;
+  drawMinimap();
+}
+function nodeHTML(n) {
+  const d = T(n.type), h = H(n);
+  if (d.note) return `<div class="node note c-${esc(n.params.color || 'yellow')}${ED.sel.has(n.id) ? ' sel' : ''}" data-id="${n.id}" style="width:${NW}px;height:${h}px;transform:translate(${n.x}px,${n.y}px)"><div class="notetext">${esc(n.params.text)}</div></div>`;
+  const outs = outsOf(n); const rec = recFor(n.id); const st = rec?.status; const oc = outCount(rec);
+  const statIcon = st === 'success' || st === 'disabled' ? `<span class="nstat success">${icon('check')}</span>` : st === 'error' ? `<span class="nstat error" title="${esc(rec.error)}">${icon('x')}</span>` : st === 'skipped' ? `<span class="nstat skipped" title="Bu çalıştırmada veri gelmedi">${icon('skip')}</span>` : '';
+  return `<div class="node cat-${d.cat}${d.trigger ? ' trigger' : ''}${ED.sel.has(n.id) ? ' sel' : ''}${n.disabled ? ' disabled' : ''}${st ? ' st-' + st : ''}" data-id="${n.id}" style="width:${NW}px;height:${h}px;transform:translate(${n.x}px,${n.y}px)" title="${st === 'error' ? esc(rec.error) : esc(n.settings?.notes || '')}">
+    <div class="nbody"><span class="nico">${icon(d.icon)}</span><div class="ntext"><div class="nname">${esc(n.name)}</div><div class="nsub">${esc(subtitle(n))}</div></div></div>
+    ${Array.from({ length: d.inputs }, (_, i) => `<div class="port in" data-port="${i}" style="top:${portY(n, i, d.inputs)}px" title="Girdi ${d.inputs > 1 ? i + 1 : ''}"></div>`).join('')}
+    ${outs.map((o, i) => `<div class="port out" data-port="${i}" style="top:${portY(n, i, outs.length)}px" title="${esc(o)}">${outs.length > 1 ? `<span class="plabel">${esc(o)}</span>` : ''}</div>`).join('')}
+    ${d.trigger ? `<button class="prun" data-run="${n.id}" title="Bu tetikleyiciyle çalıştır" aria-label="${esc(n.name)} ile çalıştır">${icon('play')}</button>` : ''}
+    ${n.pinData ? '<span class="npin">SABİT</span>' : ''}
+    ${statIcon}${oc != null && st !== 'skipped' ? `<span class="ncount">${oc} öğe</span>` : ''}
+  </div>`;
+}
+function renderNodes() { const el = $('#nodes'); if (!el) return; el.innerHTML = ED.wf.nodes.map(nodeHTML).join(''); $('#cempty').hidden = ED.wf.nodes.length > 0; }
+function bez(a, b) {
+  const dx = Math.max(50, Math.abs(b.x - a.x) * 0.5);
+  const c1 = { x: a.x + dx, y: a.y }, c2 = { x: b.x - dx, y: b.y };
+  return { d: `M${a.x},${a.y} C${c1.x},${c1.y} ${c2.x},${c2.y} ${b.x},${b.y}`, mid: { x: (a.x + 3 * c1.x + 3 * c2.x + b.x) / 8, y: (a.y + 3 * c1.y + 3 * c2.y + b.y) / 8 } };
+}
+function renderEdges() {
+  const g = $('#edge-g'); if (!g) return;
+  const ex = viewedExec();
+  let paths = '', labels = '';
+  for (const e of ED.wf.edges) {
+    const a = nodeById(e.from), b = nodeById(e.to); if (!a || !b) continue;
+    const { d, mid } = bez(outPos(a, e.fromPort), inPos(b, e.toPort));
+    const cnt = ex?.edges?.[e.id];
+    const flowing = ED.live && ex === ED.live && ex.nodes[e.from]?.status === 'success' && ex.nodes[e.to]?.status === 'running';
+    const cls = ['e', cnt > 0 ? 'data' : '', cnt === 0 ? 'zero' : '', ED.selEdge === e.id ? 'sel' : '', flowing ? 'flow' : ''].join(' ');
+    paths += `<path class="${cls}" d="${d}"/><path class="hit" data-edge="${e.id}" d="${d}"/>`;
+    if (ED.selEdge === e.id) labels += `<div class="elabel del" data-del-edge="${e.id}" style="left:${mid.x}px;top:${mid.y}px">Bağlantıyı sil</div>`;
+    else if (cnt != null) labels += `<div class="elabel${cnt > 0 ? ' data' : ''}" style="left:${mid.x}px;top:${mid.y}px">${cnt} öğe</div>`;
+  }
+  if (drag?.kind === 'connect') { const a = nodeById(drag.from); if (a) paths += `<path class="tmp" d="${bez(outPos(a, drag.port), drag.pt).d}"/>`; }
+  g.innerHTML = paths; $('#elabels').innerHTML = labels;
+}
+function moveNodeEls(ids) { for (const id of ids) { const n = nodeById(id); const el = $(`#nodes [data-id="${id}"]`); if (el && n) el.style.transform = `translate(${n.x}px,${n.y}px)`; } }
+function renderEditor() { renderNodes(); renderEdges(); renderPanel(); renderDrawer(); applyViewport(); updateUndo(); const nm = $('#wf-name'); if (nm && document.activeElement !== nm) nm.value = ED.wf.name; }
+const panelHasFocus = () => $('#panel')?.contains(document.activeElement) && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+
+/* minimap */
+function bounds() {
+  if (!ED.wf.nodes.length) return { x0: 0, y0: 0, x1: 400, y1: 300 };
+  return ED.wf.nodes.reduce((b, n) => ({ x0: Math.min(b.x0, n.x), y0: Math.min(b.y0, n.y), x1: Math.max(b.x1, n.x + NW), y1: Math.max(b.y1, n.y + H(n)) }), { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+}
+let mmScale = null;
+function drawMinimap() {
+  const mm = $('#minimap'); if (!mm || !ED.wf || getComputedStyle(mm).display === 'none') return;
+  const dpr = devicePixelRatio || 1, w = mm.clientWidth, h = mm.clientHeight;
+  if (mm.width !== w * dpr) { mm.width = w * dpr; mm.height = h * dpr; }
+  const ctx = mm.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+  const r = $('#canvas').getBoundingClientRect(); const vp = ED.vp;
+  const v = { x0: -vp.x / vp.z, y0: -vp.y / vp.z, x1: (r.width - vp.x) / vp.z, y1: (r.height - vp.y) / vp.z };
+  const b = bounds(); const pad = 60;
+  const x0 = Math.min(b.x0, v.x0) - pad, y0 = Math.min(b.y0, v.y0) - pad, x1 = Math.max(b.x1, v.x1) + pad, y1 = Math.max(b.y1, v.y1) + pad;
+  const s = Math.min(w / (x1 - x0), h / (y1 - y0)); const ox = (w - (x1 - x0) * s) / 2, oy = (h - (y1 - y0) * s) / 2;
+  mmScale = { s, ox, oy, x0, y0 };
+  const css = getComputedStyle(document.documentElement);
+  for (const n of ED.wf.nodes) { ctx.fillStyle = css.getPropertyValue(`--c-${T(n.type).cat === 'note' ? 'flow' : T(n.type).cat}`).trim() || '#888'; ctx.globalAlpha = ED.sel.has(n.id) ? 1 : 0.7; ctx.fillRect(ox + (n.x - x0) * s, oy + (n.y - y0) * s, Math.max(3, NW * s), Math.max(2, H(n) * s)); }
+  ctx.globalAlpha = 1; ctx.strokeStyle = css.getPropertyValue('--fg').trim(); ctx.lineWidth = 1;
+  ctx.strokeRect(ox + (v.x0 - x0) * s, oy + (v.y0 - y0) * s, (v.x1 - v.x0) * s, (v.y1 - v.y0) * s);
+}
+function minimapGo(e) {
+  if (!mmScale) return;
+  const rr = $('#minimap').getBoundingClientRect(), r = $('#canvas').getBoundingClientRect();
+  const wx = (e.clientX - rr.left - mmScale.ox) / mmScale.s + mmScale.x0, wy = (e.clientY - rr.top - mmScale.oy) / mmScale.s + mmScale.y0;
+  ED.vp.x = r.width / 2 - wx * ED.vp.z; ED.vp.y = r.height / 2 - wy * ED.vp.z; applyViewport();
+}
+function zoomAt(cx, cy, z) { z = clamp(z, 0.15, 2); const vp = ED.vp; vp.x = cx - (cx - vp.x) * (z / vp.z); vp.y = cy - (cy - vp.y) * (z / vp.z); vp.z = z; applyViewport(); }
+function fitView() {
+  const r = $('#canvas').getBoundingClientRect(); if (!r.width) return;
+  const b = bounds(); const pad = r.width < 500 ? 24 : 70;
+  const availW = r.width - (ED.panelOpen && innerWidth > 860 ? 420 : 0);
+  const z = clamp(Math.min((availW - pad * 2) / (b.x1 - b.x0), (r.height - pad * 2) / (b.y1 - b.y0)), 0.15, 1.1);
+  Object.assign(ED.vp, { z, x: (availW - (b.x1 - b.x0) * z) / 2 - b.x0 * z, y: (r.height - (b.y1 - b.y0) * z) / 2 - b.y0 * z });
+  applyViewport();
+}
+function toWorld(cx, cy) { const r = $('#canvas').getBoundingClientRect(); return { x: (cx - r.left - ED.vp.x) / ED.vp.z, y: (cy - r.top - ED.vp.y) / ED.vp.z }; }
+function viewCenter() { const r = $('#canvas').getBoundingClientRect(); return toWorld(r.left + r.width / 2, r.top + r.height / 2); }
+function autoLayout() {
+  const nodes = ED.wf.nodes.filter(n => !T(n.type).note); if (!nodes.length) return;
+  checkpoint();
+  const layer = new Map(nodes.map(n => [n.id, 0]));
+  for (let k = 0; k < nodes.length; k++) { let ch = false; for (const e of ED.wf.edges) if (layer.has(e.to) && layer.get(e.to) < layer.get(e.from) + 1) { layer.set(e.to, layer.get(e.from) + 1); ch = true; } if (!ch) break; }
+  const cols = new Map(); for (const n of nodes) { const l = layer.get(n.id); if (!cols.has(l)) cols.set(l, []); cols.get(l).push(n); }
+  const placed = new Map();
+  for (const l of [...cols.keys()].sort((a, b) => a - b)) {
+    const col = cols.get(l);
+    const key = n => { const ps = ED.wf.edges.filter(e => e.to === n.id && placed.has(e.from)); return ps.length ? ps.reduce((a, e) => a + placed.get(e.from) + e.fromPort * 0.1, 0) / ps.length : n.y; };
+    col.sort((a, b) => key(a) - key(b));
+    const total = col.reduce((a, n) => a + H(n), 0) + (col.length - 1) * 60; let y = -total / 2;
+    for (const n of col) { n.x = l * 340; n.y = Math.round(y); placed.set(n.id, y + H(n) / 2); y += H(n) + 60; }
+  }
+  renderNodes(); renderEdges(); fitView(); markDirty();
+}
+
+/* --- canvas interaction --- */
+let drag = null;
+const pointers = new Map();
+function bindEditor() {
+  const canvas = $('#canvas');
+  canvas.addEventListener('pointerdown', e => {
+    if (e.target.closest('button')) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 2) { const [p1, p2] = [...pointers.values()]; drag = { kind: 'pinch', dist: Math.hypot(p1.x - p2.x, p1.y - p2.y), z: ED.vp.z }; return; }
+    canvas.focus({ preventScroll: true }); canvas.setPointerCapture(e.pointerId);
+    const start = { x: e.clientX, y: e.clientY };
+    const outPort = e.target.closest('.port.out'), inPort = e.target.closest('.port.in'), nodeEl = e.target.closest('.node');
+    const delEdge = e.target.closest('[data-del-edge]'), edgeHit = e.target.closest('[data-edge]');
+    if (delEdge) { checkpoint(); ED.wf.edges = ED.wf.edges.filter(x => x.id !== delEdge.dataset.delEdge); ED.selEdge = null; renderEdges(); markDirty(); drag = null; return; }
+    if (outPort) { drag = { kind: 'connect', from: nodeEl.dataset.id, port: +outPort.dataset.port, pt: toWorld(e.clientX, e.clientY), start, snap: snap() }; return; }
+    if (inPort) {
+      const id = nodeEl.dataset.id, port = +inPort.dataset.port;
+      const ex = [...ED.wf.edges].reverse().find(x => x.to === id && x.toPort === port);
+      if (ex) { const s0 = snap(); ED.wf.edges = ED.wf.edges.filter(x => x !== ex); drag = { kind: 'connect', from: ex.from, port: ex.fromPort, pt: toWorld(e.clientX, e.clientY), start, snap: s0, detached: true }; renderEdges(); }
+      return;
+    }
+    if (nodeEl) {
+      const id = nodeEl.dataset.id; const add = e.shiftKey || e.metaKey || e.ctrlKey;
+      if (add) ED.sel.has(id) ? ED.sel.delete(id) : ED.sel.add(id); else if (!ED.sel.has(id)) { ED.sel.clear(); ED.sel.add(id); }
+      ED.selEdge = null;
+      drag = { kind: 'nodes', id, start, orig: new Map([...ED.sel].map(i => { const n = nodeById(i); return [i, { x: n.x, y: n.y }]; })), moved: false, snap: snap(), additive: add };
+      $('#nodes').querySelectorAll('.node').forEach(el => el.classList.toggle('sel', ED.sel.has(el.dataset.id)));
+      return;
+    }
+    if (edgeHit) { ED.selEdge = edgeHit.dataset.edge; ED.sel.clear(); renderNodes(); renderEdges(); drag = null; return; }
+    if (e.shiftKey) { const w = toWorld(e.clientX, e.clientY); drag = { kind: 'box', w0: w, w1: w, start }; return; }
+    drag = { kind: 'pan', start, vx: ED.vp.x, vy: ED.vp.y, moved: false }; canvas.classList.add('panning');
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (!drag) return;
+    if (drag.kind === 'pinch' && pointers.size === 2) { const [p1, p2] = [...pointers.values()]; const r = canvas.getBoundingClientRect(); zoomAt((p1.x + p2.x) / 2 - r.left, (p1.y + p2.y) / 2 - r.top, drag.z * Math.hypot(p1.x - p2.x, p1.y - p2.y) / drag.dist); return; }
+    const dx = e.clientX - drag.start.x, dy = e.clientY - drag.start.y;
+    if (drag.kind === 'pan') { if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true; ED.vp.x = drag.vx + dx; ED.vp.y = drag.vy + dy; applyViewport(); }
+    else if (drag.kind === 'nodes') {
+      if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+      drag.moved = true;
+      for (const [id, o] of drag.orig) { const n = nodeById(id); n.x = Math.round(o.x + dx / ED.vp.z); n.y = Math.round(o.y + dy / ED.vp.z); }
+      moveNodeEls(drag.orig.keys()); renderEdges();
+    } else if (drag.kind === 'connect') {
+      drag.pt = toWorld(e.clientX, e.clientY);
+      $('#nodes').querySelectorAll('.port.in.hot').forEach(p => p.classList.remove('hot'));
+      const t = dropTarget(e.clientX, e.clientY, drag.from); if (t?.el) t.el.classList.add('hot');
+      renderEdges();
+    } else if (drag.kind === 'box') {
+      drag.w1 = toWorld(e.clientX, e.clientY);
+      const box = $('#box'); box.hidden = false; const r = canvas.getBoundingClientRect();
+      Object.assign(box.style, { left: `${Math.min(drag.start.x, e.clientX) - r.left}px`, top: `${Math.min(drag.start.y, e.clientY) - r.top}px`, width: `${Math.abs(dx)}px`, height: `${Math.abs(dy)}px` });
+    }
+  });
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault(); const r = canvas.getBoundingClientRect();
+    if (e.shiftKey && !e.ctrlKey) { ED.vp.x -= e.deltaY || e.deltaX; applyViewport(); return; }
+    zoomAt(e.clientX - r.left, e.clientY - r.top, ED.vp.z * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)));
+  }, { passive: false });
+  canvas.addEventListener('dblclick', e => { if (!e.target.closest('.node')) openPalette({ at: toWorld(e.clientX, e.clientY) }); });
+  $('#nodes').addEventListener('click', e => { const b = e.target.closest('[data-run]'); if (b) runTrigger(nodeById(b.dataset.run)); });
+  const mm = $('#minimap');
+  mm.addEventListener('pointerdown', e => { minimapGo(e); mm.setPointerCapture(e.pointerId); const mv = ev => minimapGo(ev); mm.addEventListener('pointermove', mv); mm.addEventListener('pointerup', () => mm.removeEventListener('pointermove', mv), { once: true }); });
+  $('#btn-undo').addEventListener('click', undo);
+  $('#btn-redo').addEventListener('click', redo);
+  $('#btn-add').addEventListener('click', () => openPalette());
+  $('#cempty-add').addEventListener('click', () => openPalette({ at: viewCenter() }));
+  $('#btn-layout').addEventListener('click', autoLayout);
+  $('#btn-export').addEventListener('click', () => download(`${ED.wf.name}.8n8.json`, exportJSON(ED.wf)));
+  $('#btn-versions').addEventListener('click', openVersions);
+  $('#btn-settings').addEventListener('click', openWfSettings);
+  $('#btn-run').addEventListener('click', () => { const t = pickTrigger(); if (!t) toast('Akışta etkin bir tetikleyici yok', true); else runTrigger(t); });
+  $('#z-in').addEventListener('click', () => { const r = canvas.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, ED.vp.z * 1.2); });
+  $('#z-out').addEventListener('click', () => { const r = canvas.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, ED.vp.z / 1.2); });
+  $('#z-fit').addEventListener('click', fitView);
+  $('#ed-active').addEventListener('change', async e => {
+    await saveNow();
+    try {
+      const { nextRuns, ...body } = ED.wf;
+      const saved = await api('PUT', `/api/workflows/${ED.wf.id}`, { ...body, active: e.target.checked });
+      ED.wf.active = saved.active; ED.wf.nextRuns = saved.nextRuns; renderNodes();
+      toast(saved.active ? 'Akış etkin: tetikleyiciler dinleniyor' : 'Akış durduruldu');
+      if (ED.panelOpen) renderPanel();
+    } catch (err) { e.target.checked = !e.target.checked; toast(err.message, true); }
+  });
+  const nm = $('#wf-name'); let nameSnap;
+  nm.addEventListener('focus', () => { nameSnap = snap(); });
+  nm.addEventListener('input', () => { ED.wf.name = nm.value; });
+  nm.addEventListener('change', () => { ED.wf.name = nm.value.trim() || 'Adsız akış'; nm.value = ED.wf.name; if (nameSnap !== snap()) pushPast(nameSnap); markDirty(); });
+  $('#d-toggle').addEventListener('click', () => { ED.drawer = !ED.drawer; renderDrawer(); drawMinimap(); });
+  $('#btn-stop').addEventListener('click', () => { if (ED.live) api('POST', `/api/executions/${ED.live.id}/stop`, {}); });
+  $('#runs').addEventListener('click', e => { const b = e.target.closest('[data-run-id]'); if (b) { ED.viewId = b.dataset.runId; loadExec(b.dataset.runId); } });
+  $('#run-detail').addEventListener('click', e => {
+    const b = e.target.closest('[data-tl]'); if (b && nodeById(b.dataset.tl)) { ED.sel.clear(); ED.sel.add(b.dataset.tl); ED.panelOpen = true; ED.tab = 'output'; DV.port = 0; renderNodes(); renderPanel(); return; }
+    const r = e.target.closest('[data-retry]'); if (r) api('POST', `/api/executions/${r.dataset.retry}/retry`, {}).catch(err => toast(err.message, true));
+  });
+  bindPanel();
+}
+function dropTarget(cx, cy, from) {
+  const el = document.elementFromPoint(cx, cy); if (!el) return null;
+  const port = el.closest('.port.in'), nodeEl = el.closest('.node'); if (!nodeEl) return null;
+  const n = nodeById(nodeEl.dataset.id); const d = T(n.type);
+  if (!d.inputs || n.id === from) return null;
+  if (port) return { id: n.id, port: +port.dataset.port, el: port };
+  const free = Array.from({ length: d.inputs }, (_, i) => i).find(i => !ED.wf.edges.some(x => x.to === n.id && x.toPort === i));
+  const p = free ?? 0;
+  return { id: n.id, port: p, el: nodeEl.querySelector(`.port.in[data-port="${p}"]`) };
+}
+function endDrag(e) {
+  pointers.delete(e.pointerId);
+  if (!drag) return;
+  if (drag.kind === 'pinch') { if (pointers.size < 2) drag = null; return; }
+  const d = drag; drag = null; $('#canvas').classList.remove('panning');
+  if (d.kind === 'pan') { if (!d.moved) { ED.sel.clear(); ED.selEdge = null; ED.panelOpen = false; renderNodes(); renderEdges(); renderPanel(); } saveVp(); }
+  else if (d.kind === 'nodes') {
+    if (d.moved) { pushPast(d.snap); markDirty(); }
+    else { if (!d.additive) { ED.sel.clear(); ED.sel.add(d.id); } ED.panelOpen = ED.sel.size === 1; DV.port = 0; renderNodes(); renderEdges(); renderPanel(); }
+    drawMinimap();
+  } else if (d.kind === 'connect') {
+    $('#nodes').querySelectorAll('.port.in.hot').forEach(p => p.classList.remove('hot'));
+    const moved = Math.abs(e.clientX - d.start.x) + Math.abs(e.clientY - d.start.y) > 4;
+    const t = moved ? dropTarget(e.clientX, e.clientY, d.from) : null;
+    if (t) { if (!ED.wf.edges.some(x => x.from === d.from && x.fromPort === d.port && x.to === t.id && x.toPort === t.port)) ED.wf.edges.push({ id: uid(), from: d.from, fromPort: d.port, to: t.id, toPort: t.port }); pushPast(d.snap); markDirty(); }
+    else if (d.detached) { pushPast(d.snap); markDirty(); }
+    else if (moved) openPalette({ from: d.from, port: d.port, at: d.pt });
+    renderEdges();
+  } else if (d.kind === 'box') {
+    $('#box').hidden = true;
+    const x0 = Math.min(d.w0.x, d.w1.x), x1 = Math.max(d.w0.x, d.w1.x), y0 = Math.min(d.w0.y, d.w1.y), y1 = Math.max(d.w0.y, d.w1.y);
+    for (const n of ED.wf.nodes) if (n.x < x1 && n.x + NW > x0 && n.y < y1 && n.y + H(n) > y0) ED.sel.add(n.id);
+    ED.panelOpen = false; renderNodes(); renderPanel(); drawMinimap();
+  }
+}
+function pickTrigger() {
+  const sel = [...ED.sel].map(nodeById).find(n => n && T(n.type).trigger);
+  if (sel) return sel;
+  const trig = ED.wf.nodes.filter(n => T(n.type).trigger && !n.disabled);
+  return trig.find(n => n.type === 'manual') || trig[0];
+}
+async function runTrigger(n, destinationId) {
+  if (!n) return;
+  await saveNow();
+  try {
+    if (n.type === 'webhook' && !destinationId) return sendTestWebhook(n);
+    if (n.type === 'form' && !destinationId) { window.open(`/form-test/${encodeURIComponent(n.params.path)}`, '_blank'); toast('Test formu yeni sekmede açıldı; gönderince akış çalışır'); return; }
+    ED.drawer = true;
+    await api('POST', `/api/workflows/${ED.wf.id}/run`, { triggerId: n.id, destinationId });
+  } catch (e) { toast(e.message, true); }
+}
+async function sendTestWebhook(n) {
+  let body; try { body = JSON.parse(n.params.sample || '{}'); } catch (e) { toast(`Örnek gövde geçersiz JSON: ${e.message}`, true); return; }
+  ED.drawer = true;
+  const method = n.params.method === 'ANY' ? 'POST' : n.params.method;
+  const res = await fetch(`/webhook-test/${n.params.path}`, { method, headers: { 'Content-Type': 'application/json' }, body: ['GET', 'HEAD'].includes(method) ? undefined : JSON.stringify(body) });
+  const text = await res.text();
+  toast(`Webhook yanıtı ${res.status}: ${text.slice(0, 120)}`, !res.ok);
+}
+
+/* node ops */
+function addNode(type, opts = {}) {
+  checkpoint();
+  let at = opts.at; const src = opts.from ? nodeById(opts.from) : null;
+  if (!at && src) at = { x: src.x + 320, y: src.y + (opts.port || 0) * 40 };
+  if (!at) { const c = viewCenter(); at = { x: c.x - NW / 2, y: c.y - 40 }; }
+  else if (opts.at) at = { x: at.x + (opts.from ? 10 : -NW / 2), y: at.y - 36 };
+  const n = makeNode(type, at.x, at.y);
+  ED.wf.nodes.push(n);
+  if (src && T(type).inputs) ED.wf.edges.push({ id: uid(), from: src.id, fromPort: opts.port || 0, to: n.id, toPort: 0 });
+  ED.sel.clear(); ED.sel.add(n.id); ED.selEdge = null; ED.panelOpen = true; ED.tab = 'params';
+  renderEditor(); markDirty();
+}
+function deleteSelection() {
+  if (ED.selEdge) { checkpoint(); ED.wf.edges = ED.wf.edges.filter(e => e.id !== ED.selEdge); ED.selEdge = null; renderEdges(); markDirty(); return; }
+  if (!ED.sel.size) return;
+  checkpoint(); ED.wf.nodes = ED.wf.nodes.filter(n => !ED.sel.has(n.id)); pruneEdges(); ED.sel.clear(); ED.panelOpen = false; renderEditor(); markDirty();
+}
+function copySelection() {
+  if (!ED.sel.size) return;
+  const nodes = ED.wf.nodes.filter(n => ED.sel.has(n.id));
+  ED.clipboard = { nodes: clone(nodes), edges: clone(ED.wf.edges.filter(e => ED.sel.has(e.from) && ED.sel.has(e.to))) };
+  try { navigator.clipboard.writeText(JSON.stringify({ format: '8n8/parca', ...ED.clipboard })); } catch {}
+  toast(`${nodes.length} node kopyalandı`);
+}
+function paste(clip = ED.clipboard, offset = 40) {
+  if (!clip) return;
+  checkpoint(); const map = {}; ED.sel.clear();
+  for (const n of clip.nodes) { if (!T(n.type)) continue; const c = { ...clone(n), id: uid(), name: uniqueName(n.name), x: n.x + offset, y: n.y + offset }; map[n.id] = c.id; ED.wf.nodes.push(c); ED.sel.add(c.id); }
+  for (const e of clip.edges) if (map[e.from] && map[e.to]) ED.wf.edges.push({ ...e, id: uid(), from: map[e.from], to: map[e.to] });
+  if (clip === ED.clipboard) ED.clipboard = { nodes: clip.nodes.map(n => ({ ...n, x: n.x + offset, y: n.y + offset })), edges: clip.edges };
+  ED.panelOpen = false; renderEditor(); markDirty();
+}
+function duplicate() { const keep = ED.clipboard; const nodes = ED.wf.nodes.filter(n => ED.sel.has(n.id)); paste({ nodes: clone(nodes), edges: clone(ED.wf.edges.filter(e => ED.sel.has(e.from) && ED.sel.has(e.to))) }); ED.clipboard = keep; }
+function editorKeys(e) {
+  if (!ED.wf) return;
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName);
+  const mod = e.ctrlKey || e.metaKey; const modal = !$('#modal').hidden;
+  if (e.key === 'Escape') { if (modal) closeModal(); else if (ED.panelOpen) { ED.panelOpen = false; renderPanel(); } else { ED.sel.clear(); ED.selEdge = null; renderNodes(); renderEdges(); } return; }
+  if (mod && e.key === 'Enter') { e.preventDefault(); $('#btn-run').click(); return; }
+  if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); ED.dirty = true; saveNow(); return; }
+  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); if (!modal) openPalette(); return; }
+  if (typing || modal) return;
+  const k = e.key.toLowerCase();
+  if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+  else if (mod && k === 'y') { e.preventDefault(); redo(); }
+  else if (mod && k === 'c') copySelection();
+  else if (mod && k === 'd') { e.preventDefault(); duplicate(); }
+  else if (mod && k === 'a') { e.preventDefault(); ED.wf.nodes.forEach(n => ED.sel.add(n.id)); renderNodes(); }
+  else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(); }
+  else if (k === 'f' && !mod) fitView();
+  else if (k === 'd' && !mod && ED.sel.size) { checkpoint(); for (const id of ED.sel) { const n = nodeById(id); n.disabled = !n.disabled; } renderNodes(); markDirty(); }
+}
+document.addEventListener('paste', e => {
+  if (!ED.wf || /INPUT|TEXTAREA/.test(document.activeElement?.tagName)) return;
+  const text = e.clipboardData?.getData('text'); if (!text) return;
+  try { const o = JSON.parse(text); if (Array.isArray(o.nodes) && Array.isArray(o.edges)) { e.preventDefault(); paste({ nodes: o.nodes, edges: o.edges }); } } catch {}
+});
+
+/* --- palette --- */
+function openPalette(opts = {}) {
+  const sel = ED.sel.size === 1 ? nodeById([...ED.sel][0]) : null;
+  if (!opts.from && !opts.at && sel && outsOf(sel).length) opts = { from: sel.id, port: 0 };
+  openModal(`<div class="mhead"><h2>${opts.from ? `"${esc(nodeById(opts.from).name)}" sonrasına ekle` : 'Node ekle'}</h2><button class="icon-btn" data-close aria-label="Kapat">${icon('x')}</button></div>
+    <input class="inp pal-search" id="pal-q" placeholder="Ara: http, claude, koşul, e-posta…" autocomplete="off" spellcheck="false">
+    <div class="pal-list" id="pal-list"></div>
+    <div class="pal-foot"><span><kbd>Ctrl</kbd>+<kbd>K</kbd> node ekle</span><span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> çalıştır</span><span><kbd>Ctrl</kbd>+<kbd>Z</kbd> geri al</span><span><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd>/<kbd>D</kbd> kopyala, yapıştır, çoğalt</span><span><kbd>D</kbd> devre dışı</span><span><kbd>Del</kbd> sil</span><span><kbd>F</kbd> sığdır</span><span><kbd>Shift</kbd>+sürükle çoklu seçim</span></div>`);
+  let active = 0, list = [];
+  const q = $('#pal-q'), L = $('#pal-list');
+  const draw = () => {
+    const s = q.value.trim().toLocaleLowerCase('tr');
+    list = G.types.order.filter(t => { const d = T(t); if (opts.from && (d.trigger || d.note)) return false; return !s || `${d.label} ${t} ${d.desc} ${G.types.categories[d.cat]}`.toLocaleLowerCase('tr').includes(s); });
+    active = clamp(active, 0, Math.max(0, list.length - 1));
+    let cat = '', html = '';
+    list.forEach((t, i) => { const d = T(t); if (d.cat !== cat) { cat = d.cat; html += `<div class="pal-cat">${G.types.categories[cat]}</div>`; } html += `<button class="pal-item cat-${d.cat}${i === active ? ' on' : ''}" data-type="${t}"><span class="nico">${icon(d.icon)}</span><span><b>${esc(d.label)}</b><small>${esc(d.desc.split('. ')[0].replace(/\.$/, ''))}.</small></span></button>`; });
+    L.innerHTML = html || '<div class="nodata">Eşleşen node yok</div>';
+    L.querySelector('.on')?.scrollIntoView({ block: 'nearest' });
+  };
+  draw(); q.focus();
+  q.addEventListener('input', () => { active = 0; draw(); });
+  q.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); active++; draw(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); active--; draw(); }
+    else if (e.key === 'Enter' && list[active]) { e.preventDefault(); closeModal(); addNode(list[active], opts); }
+  });
+  L.addEventListener('click', e => { const b = e.target.closest('[data-type]'); if (b) { closeModal(); addNode(b.dataset.type, opts); } });
+}
+async function openVersions() {
+  await saveNow();
+  const list = await api('GET', `/api/workflows/${ED.wf.id}/versions`);
+  openModal(`<div class="mhead"><h2>Önceki sürümler</h2><button class="icon-btn" data-close aria-label="Kapat">${icon('x')}</button></div>
+    <div class="mbody"><p class="desc">Akış değiştikçe en fazla iki dakikada bir sürüm saklanır (son 30 sürüm). Geri yüklemek mevcut hâli de yeni bir sürüm olarak saklar.</p>
+    ${list.length ? `<div class="card list">${list.map(v => `<div class="lrow"><span class="ttl">${fmtDate(v.savedAt)}</span><div class="meta">${esc(v.name)} · ${v.nodeCount} node</div><div class="acts"><button class="btn sm" data-restore="${v.id}">Geri yükle</button></div></div>`).join('')}</div>` : '<div class="nodata">Henüz kayıtlı sürüm yok. Akışı değiştirdikçe burada birikir.</div>'}</div>`);
+  $('#modal').querySelectorAll('[data-restore]').forEach(b => b.addEventListener('click', async () => {
+    const saved = await api('POST', `/api/workflows/${ED.wf.id}/versions/${b.dataset.restore}/restore`, {});
+    checkpoint(); Object.assign(ED.wf, { name: saved.name, nodes: saved.nodes, edges: saved.edges }); closeModal(); renderEditor(); fitView(); toast('Sürüm geri yüklendi');
+  }));
+}
+function openWfSettings() {
+  const s = ED.wf.settings || {};
+  const others = G.workflows.filter(w => w.id !== ED.wf.id);
+  openModal(`<div class="mhead"><h2>Akış ayarları</h2><button class="icon-btn" data-close aria-label="Kapat">${icon('x')}</button></div>
+    <div class="mbody">
+      <div class="field"><label for="s-err">Hata akışı</label><select class="inp" id="s-err"><option value="">Yok</option>${others.map(w => `<option value="${w.id}"${w.id === s.errorWorkflow ? ' selected' : ''}>${esc(w.name)}${w.triggers.includes('errorTrigger') ? '' : ' (Hata tetikleyicisi yok)'}</option>`).join('')}</select>
+        <span class="help">Bu akış hata verirse seçilen akış "Hata tetikleyici" ile çalışır.</span></div>
+      <div class="field"><label for="s-to">Zaman aşımı (saniye, 0 = sınırsız)</label><input class="inp" type="number" id="s-to" min="0" value="${esc(s.timeout ?? 300)}"></div>
+      <div class="field"><label for="s-tags">Etiketler (virgülle)</label><input class="inp" id="s-tags" value="${esc((ED.wf.tags || []).join(', '))}"></div>
+    </div><div class="mfoot"><button class="btn" data-close>Vazgeç</button><button class="btn primary" id="s-save">Kaydet</button></div>`);
+  $('#s-save').addEventListener('click', () => {
+    ED.wf.settings = { ...s, errorWorkflow: $('#s-err').value, timeout: Number($('#s-to').value) || 0 };
+    ED.wf.tags = $('#s-tags').value.split(',').map(t => t.trim()).filter(Boolean);
+    closeModal(); markDirty(); toast('Ayarlar kaydedildi');
+  });
+}
+
+/* --- inspector panel --- */
+const selected = () => ED.sel.size === 1 ? nodeById([...ED.sel][0]) : null;
+function shown(f, p) { if (!f.showIf) return true; return Object.entries(f.showIf).every(([k, v]) => Array.isArray(v) ? v.includes(p[k]) : p[k] === v); }
+function flattenKeys(o, prefix = '', depth = 0, out = []) {
+  if (!isObj(o)) return out;
+  for (const [k, v] of Object.entries(o)) { const p = prefix ? `${prefix}.${k}` : k; if (isObj(v) && depth < 1) flattenKeys(v, p, depth + 1, out); else out.push(p); }
+  return out.slice(0, 50);
+}
+const exprFor = path => `{{ $json${path.split('.').map(k => /^[A-Za-z_$][\w$]*$/.test(k) ? '.' + k : `[${JSON.stringify(k)}]`).join('')} }}`;
+function fieldHTML(n, f) {
+  const v = n.params[f.key]; const id = `f-${n.id}-${f.key}`;
+  const lab = `<label for="${id}">${esc(f.label)}</label>`; const help = f.help ? `<span class="help">${esc(f.help)}</span>` : '';
+  const pv = key => `<div class="preview" data-pv="${key}"></div>`;
+  const rm = (k, i, what) => `<button class="icon-btn" data-rm="${k}" data-i="${i}" title="Kaldır" aria-label="${what} kaldır">${icon('x')}</button>`;
+  switch (f.type) {
+    case 'text': return `<div class="field">${lab}<input class="inp" id="${id}" data-k="${f.key}" value="${esc(v)}" spellcheck="false">${help}</div>`;
+    case 'expr': return `<div class="field">${lab}<input class="inp mono" id="${id}" data-k="${f.key}" data-expr value="${esc(v)}" spellcheck="false">${pv(f.key)}${help}</div>`;
+    case 'number': return `<div class="field">${lab}<input class="inp" type="number" id="${id}" data-k="${f.key}" data-num value="${esc(v)}" min="${f.min ?? ''}">${help}</div>`;
+    case 'select': return `<div class="field">${lab}<select class="inp" id="${id}" data-k="${f.key}" data-struct>${f.options.map(([k, l]) => `<option value="${esc(k)}"${k === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>${help}</div>`;
+    case 'toggle': return `<label class="switch"><input type="checkbox" id="${id}" data-k="${f.key}" data-bool data-struct${v ? ' checked' : ''}><span class="track"></span><span>${esc(f.label)}</span></label>`;
+    case 'json': return `<div class="field">${lab}<textarea class="inp" id="${id}" data-k="${f.key}" data-json spellcheck="false">${esc(v)}</textarea><div class="preview" data-jsonerr="${f.key}"></div>${help}</div>`;
+    case 'textarea': return `<div class="field">${lab}<textarea class="inp" id="${id}" data-k="${f.key}" data-expr spellcheck="false" style="min-height:70px">${esc(v)}</textarea>${pv(f.key)}${help}</div>`;
+    case 'code': return `<div class="field">${lab}<textarea class="inp code" id="${id}" data-k="${f.key}" data-code spellcheck="false">${esc(v)}</textarea>${help}</div>`;
+    case 'credential': {
+      const list = G.creds.filter(c => f.credTypes.includes(c.type));
+      return `<div class="field">${lab}<div class="urlrow"><select class="inp" id="${id}" data-k="${f.key}" data-struct><option value="">Seçin…</option>${list.map(c => `<option value="${c.id}"${c.id === v ? ' selected' : ''}>${esc(c.name)} (${esc(G.types.credentialTypes[c.type]?.label)})</option>`).join('')}</select>
+        <button class="btn sm" data-newcred="${f.credTypes.join(',')}" data-k2="${f.key}">Yeni</button></div>${!list.length ? '<span class="help">Henüz kayıtlı yok. "Yeni" ile ekleyin; bilgiler bilgisayarınızda şifreli saklanır.</span>' : ''}</div>`;
+    }
+    case 'workflow': return `<div class="field">${lab}<select class="inp" id="${id}" data-k="${f.key}" data-struct><option value="">Seçin…</option>${G.workflows.filter(w => w.id !== ED.wf.id).map(w => `<option value="${w.id}"${w.id === v ? ' selected' : ''}>${esc(w.name)}${w.triggers.includes('subTrigger') ? '' : ' (Alt akış girişi yok)'}</option>`).join('')}</select>${v ? `<a href="#/akis/${esc(v)}" class="help">Akışı aç →</a>` : ''}</div>`;
+    case 'kv': return `<div class="field"><span class="flabel">${esc(f.label)}</span><div class="rows">${(v || []).map((r, i) => `
+      <div class="row"><input class="inp mono" aria-label="Ad" placeholder="ad" data-k="${f.key}" data-i="${i}" data-sub="key" value="${esc(r.key)}" spellcheck="false">
+      <input class="inp mono" aria-label="Değer" placeholder="değer ya da {{ ifade }}" data-k="${f.key}" data-i="${i}" data-sub="value" data-expr value="${esc(r.value)}" spellcheck="false">
+      ${rm(f.key, i, 'Satırı')}<div class="full">${pv(`${f.key}.${i}.value`)}</div></div>`).join('')}</div>
+      <button class="btn sm addrow" data-addrow="${f.key}">+ Ekle</button></div>`;
+    case 'conds': return `<div class="field"><span class="flabel">${esc(f.label)}</span><div class="rows">${(v || []).map((r, i) => `
+      <div class="row cond"><input class="inp mono" aria-label="Sol değer" data-k="${f.key}" data-i="${i}" data-sub="left" data-expr value="${esc(r.left)}" spellcheck="false">${rm(f.key, i, 'Koşulu')}
+      <div class="full">${pv(`${f.key}.${i}.left`)}</div>
+      <select class="inp full" aria-label="Karşılaştırma" data-k="${f.key}" data-i="${i}" data-sub="op" data-struct>${OPS().map(([k, l]) => `<option value="${k}"${k === r.op ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      ${UNARY().has(r.op) ? '' : `<input class="inp mono full" aria-label="Sağ değer" data-k="${f.key}" data-i="${i}" data-sub="right" data-expr value="${esc(r.right)}" spellcheck="false"><div class="full">${pv(`${f.key}.${i}.right`)}</div>`}
+      </div>`).join('')}</div><button class="btn sm addrow" data-addrow="${f.key}">+ Koşul ekle</button></div>`;
+    case 'rules': return `<div class="field"><span class="flabel">${esc(f.label)}</span><div class="rows">${(v || []).map((r, i) => `
+      <div class="row"><input class="inp mono" aria-label="Değer" placeholder="değer" data-k="${f.key}" data-i="${i}" data-sub="value" value="${esc(r.value)}" spellcheck="false">
+      <input class="inp" aria-label="Çıkış adı" placeholder="çıkış adı" data-k="${f.key}" data-i="${i}" data-sub="label" data-struct value="${esc(r.label)}">${rm(f.key, i, 'Kuralı')}</div>`).join('')}</div>
+      <button class="btn sm addrow" data-addrow="${f.key}">+ Kural ekle</button></div>`;
+    case 'formfields': return `<div class="field"><span class="flabel">${esc(f.label)}</span><div class="rows">${(v || []).map((r, i) => `
+      <div class="row ff"><input class="inp" aria-label="Etiket" placeholder="Etiket" data-k="${f.key}" data-i="${i}" data-sub="label" value="${esc(r.label)}">
+      <input class="inp mono" aria-label="Alan adı" placeholder="alan_adi" data-k="${f.key}" data-i="${i}" data-sub="name" value="${esc(r.name)}">${rm(f.key, i, 'Alanı')}
+      <select class="inp" aria-label="Tür" data-k="${f.key}" data-i="${i}" data-sub="type">${[['text', 'Metin'], ['email', 'E-posta'], ['number', 'Sayı'], ['tel', 'Telefon'], ['date', 'Tarih'], ['textarea', 'Uzun metin']].map(([k, l]) => `<option value="${k}"${k === r.type ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      <label class="switch"><input type="checkbox" data-k="${f.key}" data-i="${i}" data-sub="required" data-bool${r.required ? ' checked' : ''}><span class="track"></span><span>Zorunlu</span></label></div>`).join('')}</div>
+      <button class="btn sm addrow" data-addrow="${f.key}">+ Alan ekle</button></div>`;
+  }
+  return '';
+}
+function triggerInfo(n) {
+  const base = location.origin;
+  if (n.type === 'webhook') {
+    const p = encodeURI(n.params.path || ''); const m = n.params.method === 'ANY' ? 'POST' : n.params.method;
+    return `<div class="info-box"><b>Webhook adresleri</b>
+      <span class="help">Test (akış kapalıyken de çalışır):</span><div class="urlrow"><code>${esc(base)}/webhook-test/${esc(p)}</code><button class="btn sm" data-copy="${esc(base)}/webhook-test/${esc(p)}">Kopyala</button></div>
+      <span class="help">Üretim (akış etkinken): ${ED.wf.active ? '<span class="pill active">dinleniyor</span>' : '<span class="pill idle">kapalı</span>'}</span><div class="urlrow"><code>${esc(base)}/webhook/${esc(p)}</code><button class="btn sm" data-copy="${esc(base)}/webhook/${esc(p)}">Kopyala</button></div>
+      <span class="help">Örnek: <code>curl -X ${m} ${esc(base)}/webhook-test/${esc(p)} -H "Content-Type: application/json" -d '{"mesaj":"merhaba"}'</code></span></div>`;
+  }
+  if (n.type === 'form') {
+    const p = encodeURI(n.params.path || '');
+    return `<div class="info-box"><b>Form adresleri</b>
+      <div class="urlrow"><code>${esc(base)}/form-test/${esc(p)}</code><a class="btn sm" href="/form-test/${esc(p)}" target="_blank">Test formunu aç</a></div>
+      <div class="urlrow"><code>${esc(base)}/form/${esc(p)}</code>${ED.wf.active ? `<a class="btn sm" href="/form/${esc(p)}" target="_blank">Aç</a>` : '<span class="pill idle">akış kapalı</span>'}</div></div>`;
+  }
+  if (n.type === 'schedule') {
+    const nx = ED.wf.nextRuns?.[n.id];
+    return `<div class="info-box">${ED.wf.active ? (nx ? `Sonraki çalışma: <b>${new Date(nx).toLocaleString('tr-TR')}</b>` : 'Zamanlayıcı kuruluyor…') : 'Akış etkin değil. Zamanlayıcının çalışması için üstteki <b>Etkin</b> anahtarını açın.'}</div>`;
+  }
+  return '';
+}
+function renderPanel() {
+  const panel = $('#panel'); if (!panel) return;
+  const n = selected();
+  if (!n || !ED.panelOpen) { panel.hidden = true; return; }
+  panel.hidden = false;
+  const d = T(n.type); const rec = recFor(n.id); const full = rec && rec.input !== undefined;
+  const inCount = full && rec.input ? rec.input.reduce((a, s) => a + s.length, 0) : null;
+  const oc = outCount(rec);
+  if (d.note) ED.tab = 'params';
+  if (ED.tab === 'input' && !d.inputs) ED.tab = 'params';
+  let body = '';
+  if (ED.tab === 'params') {
+    const sample = full ? rec.input?.flat()[0] : null;
+    const keys = sample ? flattenKeys(sample.json) : [];
+    const s = n.settings || {};
+    body = `<p class="desc">${esc(d.desc)}</p>
+      ${rec?.status === 'error' ? `<div class="err-box"><b>Son çalıştırmada hata:</b> ${esc(rec.error)}</div>` : ''}
+      ${triggerInfo(n)}
+      ${keys.length ? `<div class="fieldkeys"><span class="help">Girdi alanları: tıklayınca seçili kutuya ifade olarak eklenir</span><div class="chips">${keys.map(k => `<button class="chip" data-insert="${esc(k)}">${esc(k)}</button>`).join('')}</div></div>` : ''}
+      ${d.params.filter(f => shown(f, n.params)).map(f => fieldHTML(n, f)).join('')}
+      ${d.note ? '' : `<details class="opts"><summary>Node seçenekleri</summary><div class="optsin">
+        <label class="switch"><input type="checkbox" data-s="retryOnFail" data-bool ${s.retryOnFail ? 'checked' : ''}><span class="track"></span><span>Hata verirse yeniden dene</span></label>
+        ${s.retryOnFail ? `<div class="field"><label>En fazla deneme</label><input class="inp" type="number" min="1" max="10" data-s="maxTries" data-num value="${esc(s.maxTries ?? 3)}"></div>
+        <div class="field"><label>Denemeler arası bekleme (ms)</label><input class="inp" type="number" min="0" data-s="retryWait" data-num value="${esc(s.retryWait ?? 1000)}"></div>` : ''}
+        <label class="switch"><input type="checkbox" data-s="continueOnFail" data-bool ${s.continueOnFail ? 'checked' : ''}><span class="track"></span><span>Hata olursa akışa devam et (hata öğeye yazılır)</span></label>
+        <div class="field"><label>Not</label><textarea class="inp" data-s="notes" style="min-height:60px">${esc(s.notes || '')}</textarea></div>
+      </div></details>`}`;
+  } else if (ED.tab === 'input') {
+    body = rec?.status === 'skipped' ? `<div class="nodata">Bu çalıştırmada bu node'a veri gelmedi, o yüzden atlandı.</div>` : full ? dataView(rec.input, d.inputs > 1 ? ['Girdi 1', 'Girdi 2'] : ['Girdi'], '') : `<div class="nodata">${rec ? 'Çalışıyor…' : 'Henüz girdi yok. Akışı çalıştırınca burada görünür.'}</div>`;
+  } else {
+    const pinBtn = n.pinData ? `<button class="btn sm" data-act="unpin">${icon('pin')}Sabitlemeyi kaldır</button>` : full && rec.output?.[0]?.length ? `<button class="btn sm" data-act="pin" title="Bu çıktı, editörden yapılan çalıştırmalarda node yeniden çalıştırılmadan kullanılır">${icon('pin')}Çıktıyı sabitle</button>` : '';
+    body = `${n.pinData ? `<div class="info-box">Bu node'un çıktısı sabitlendi (${n.pinData.length} öğe). Editörden çalıştırırken node çalışmaz, bu veri kullanılır. Etkin akışta sabit veri kullanılmaz.</div>` : ''}
+      ${pinBtn ? `<div>${pinBtn}</div>` : ''}
+      ${rec?.status === 'error' ? `<div class="err-box">${esc(rec.error)}</div>` : ''}
+      ${rec?.logs?.length ? `<div class="field"><span class="flabel">Günlük</span><pre class="logs">${esc(rec.logs.join('\n'))}</pre></div>` : ''}
+      ${full ? dataView(rec.output, outsOf(n), 'Bu node çıktı üretmedi.') : `<div class="nodata">${rec ? 'Çalışıyor…' : 'Henüz çıktı yok. Akışı çalıştırınca burada görünür.'}</div>`}`;
+  }
+  const ex = viewedExec();
+  panel.innerHTML = `
+    <div class="p-head cat-${d.cat}"><span class="nico">${icon(d.icon)}</span>
+      <div class="p-titles"><input class="p-name" id="p-name" value="${esc(n.name)}" aria-label="Node adı" spellcheck="false"><div class="p-type">${esc(d.label)}</div></div>
+      <button class="icon-btn" data-act="close" title="Kapat (Esc)" aria-label="Paneli kapat">${icon('x')}</button></div>
+    ${d.note ? '' : `<div class="p-actions">
+      ${d.trigger ? `<button class="btn sm primary" data-act="run">${icon('play')}${n.type === 'webhook' ? 'Test isteği gönder' : n.type === 'form' ? 'Test formunu aç' : 'Buradan çalıştır'}</button>` : `<button class="btn sm primary" data-act="runto" title="Akışı yalnızca bu node'a kadar çalıştırır">${icon('play')}Buraya kadar çalıştır</button>`}
+      <button class="btn sm" data-act="disable">${n.disabled ? 'Etkinleştir' : 'Devre dışı bırak'}</button>
+      <button class="btn sm" data-act="dup">Çoğalt</button>
+      <button class="btn sm danger" data-act="del">Sil</button></div>`}
+    ${d.note ? '' : `<div class="tabs" role="tablist">
+      <button role="tab" data-tab="params" class="${ED.tab === 'params' ? 'on' : ''}">Ayarlar</button>
+      ${d.inputs ? `<button role="tab" data-tab="input" class="${ED.tab === 'input' ? 'on' : ''}">Girdi${inCount != null ? ` <span class="cnt">${inCount}</span>` : ''}</button>` : ''}
+      <button role="tab" data-tab="output" class="${ED.tab === 'output' ? 'on' : ''}">Çıktı${oc != null ? ` <span class="cnt">${oc}</span>` : ''}</button>
+      ${ex && ED.tab !== 'params' ? `<span class="help" style="margin-left:auto;align-self:center">${fmtTime(ex.startedAt)}</span>` : ''}</div>`}
+    <div class="p-body" id="p-body">${body}</div>`;
+  updatePreviews();
+}
+function updatePreviews() {
+  const n = selected(); if (!n) return;
+  const ex = viewedExec(); const rec = recFor(n.id);
+  const items = rec?.input?.flat() || [];
+  const nm = {}; if (ex?.nodes) for (const [id, r] of Object.entries(ex.nodes)) if (r.output) { const all = r.output.flat(); nm[r.name] = { json: all[0]?.json ?? {}, items: all.map(i => i.json) }; }
+  $('#panel').querySelectorAll('[data-pv]').forEach(el => {
+    const path = el.dataset.pv.split('.'); let val = n.params[path[0]];
+    if (path.length > 1) val = val?.[+path[1]]?.[path[2]];
+    if (typeof val !== 'string' || !val.includes('{{')) { el.innerHTML = ''; return; }
+    if (!items.length && !T(n.type).trigger) { el.innerHTML = 'Önizleme için akışı bir kez çalıştırın'; return; }
+    try {
+      const out = Expr.render(val, Expr.makeScope({ item: items[0], index: 0, items, nodeMap: nm, vars: G.vars, workflow: { id: ED.wf.id, name: ED.wf.name } }));
+      el.innerHTML = `→ <span class="v">${esc(typeof out === 'string' ? out : JSON.stringify(out))}</span>${items.length > 1 ? ` <span>(1/${items.length})</span>` : ''}`;
+    } catch (e) { el.innerHTML = `<span class="x">${esc(e.message)}</span>`; }
+  });
+  $('#panel').querySelectorAll('[data-jsonerr]').forEach(el => { try { JSON.parse(n.params[el.dataset.jsonerr] || 'null'); el.innerHTML = ''; } catch (e) { el.innerHTML = `<span class="x">Geçersiz JSON: ${esc(e.message)}</span>`; } });
+}
+function refreshNodeView(n) { const el = $(`#nodes [data-id="${n.id}"]`); if (!el) return; if (T(n.type).note) { el.outerHTML = nodeHTML(n); return; } el.querySelector('.nsub').textContent = subtitle(n); el.querySelector('.nname').textContent = n.name; }
+function bindPanel() {
+  const panel = $('#panel'); let fieldSnap = null;
+  panel.addEventListener('focusin', e => { if (e.target.matches('[data-k], [data-s], #p-name')) fieldSnap = snap(); if (e.target.matches('[data-k]')) ED.lastField = { k: e.target.dataset.k, i: e.target.dataset.i, sub: e.target.dataset.sub }; });
+  const valueOf = t => t.dataset.bool !== undefined ? t.checked : t.dataset.num !== undefined ? (t.value === '' ? 0 : +t.value) : t.value;
+  const apply = t => {
+    const n = selected(); if (!n) return;
+    if (t.dataset.s) { n.settings = { ...(n.settings || {}), [t.dataset.s]: valueOf(t) }; return; }
+    if (t.dataset.i !== undefined) n.params[t.dataset.k][+t.dataset.i][t.dataset.sub] = valueOf(t); else n.params[t.dataset.k] = valueOf(t);
+  };
+  panel.addEventListener('input', e => {
+    const t = e.target, n = selected(); if (!n) return;
+    if (t.id === 'p-name') { n.name = t.value; refreshNodeView(n); return; }
+    if (!t.dataset.k && !t.dataset.s) return;
+    apply(t); refreshNodeView(n); updatePreviews();
+    if (t.dataset.json !== undefined) { try { JSON.parse(t.value); t.classList.remove('bad'); } catch { t.classList.add('bad'); } }
+    markDirty();
+  });
+  panel.addEventListener('change', e => {
+    const t = e.target, n = selected(); if (!n) return;
+    if (t.id === 'p-name') { const name = t.value.trim() || T(n.type).label; n.name = ED.wf.nodes.some(o => o !== n && o.name === name) ? uniqueName(name) : name; t.value = n.name; refreshNodeView(n); }
+    else if (t.dataset.k || t.dataset.s) apply(t);
+    if (fieldSnap && fieldSnap !== snap()) pushPast(fieldSnap);
+    fieldSnap = snap(); markDirty();
+    if (t.dataset.struct !== undefined || t.dataset.s === 'retryOnFail') { pruneEdges(); renderNodes(); renderEdges(); if (t.matches('select, input[type=checkbox]')) renderPanel(); }
+  });
+  panel.addEventListener('keydown', e => {
+    if (e.key === 'Tab' && e.target.matches('textarea[data-code], textarea[data-json]')) { e.preventDefault(); const t = e.target; t.setRangeText('  ', t.selectionStart, t.selectionEnd, 'end'); t.dispatchEvent(new Event('input', { bubbles: true })); }
+  });
+  panel.addEventListener('pointerdown', e => { if (e.target.closest('[data-insert]')) e.preventDefault(); });
+  bindDataView(panel, renderPanel);
+  panel.addEventListener('click', async e => {
+    const n = selected(); if (!n) return;
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.tab) { ED.tab = b.dataset.tab; DV.port = 0; renderPanel(); return; }
+    if (b.dataset.copy) { copyText(b.dataset.copy); return; }
+    if (b.dataset.insert) { insertExpr(exprFor(b.dataset.insert)); return; }
+    if (b.dataset.newcred) { openCredential(null, b.dataset.newcred.split(','), cred => { n.params[b.dataset.k2] = cred.id; markDirty(); renderPanel(); }); return; }
+    if (b.dataset.addrow) {
+      checkpoint(); const k = b.dataset.addrow; const f = T(n.type).params.find(p => p.key === k);
+      const blank = { kv: { key: '', value: '' }, conds: { left: '', op: 'eq', right: '' }, rules: { value: '', label: '' }, formfields: { label: '', name: '', type: 'text', required: false } }[f.type];
+      (n.params[k] ||= []).push(blank); pruneEdges(); renderNodes(); renderEdges(); renderPanel(); markDirty();
+      panel.querySelector(`[data-k="${k}"][data-i="${n.params[k].length - 1}"]`)?.focus(); return;
+    }
+    if (b.dataset.rm) {
+      checkpoint(); const k = b.dataset.rm, i = +b.dataset.i;
+      if (n.type === 'switch' && k === 'rules') ED.wf.edges = ED.wf.edges.filter(x => !(x.from === n.id && x.fromPort === i)).map(x => x.from === n.id && x.fromPort > i ? { ...x, fromPort: x.fromPort - 1 } : x);
+      n.params[k].splice(i, 1); pruneEdges(); renderNodes(); renderEdges(); renderPanel(); markDirty(); return;
+    }
+    switch (b.dataset.act) {
+      case 'close': ED.panelOpen = false; renderPanel(); break;
+      case 'run': runTrigger(n); break;
+      case 'runto': { const t = pickTriggerFor(n); if (!t) toast('Bu node\'a bağlı bir tetikleyici yok', true); else runTrigger(t, n.id); break; }
+      case 'disable': checkpoint(); n.disabled = !n.disabled; renderNodes(); renderPanel(); markDirty(); break;
+      case 'dup': duplicate(); break;
+      case 'del': deleteSelection(); break;
+      case 'pin': { const rec = recFor(n.id); checkpoint(); n.pinData = (rec.output[0] || []).map(i => i.json); renderNodes(); renderPanel(); markDirty(); toast('Çıktı sabitlendi'); break; }
+      case 'unpin': checkpoint(); delete n.pinData; renderNodes(); renderPanel(); markDirty(); break;
+    }
+  });
+}
+function pickTriggerFor(n) {
+  const anc = new Set([n.id]); const st = [n.id];
+  while (st.length) { const id = st.pop(); for (const e of ED.wf.edges) if (e.to === id && !anc.has(e.from)) { anc.add(e.from); st.push(e.from); } }
+  const trig = ED.wf.nodes.filter(x => anc.has(x.id) && T(x.type).trigger && !x.disabled);
+  return trig.find(x => x.type === 'manual') || trig[0];
+}
+function insertExpr(text) {
+  const lf = ED.lastField; const panel = $('#panel');
+  let el = lf ? panel.querySelector(`[data-k="${lf.k}"]${lf.i !== undefined ? `[data-i="${lf.i}"][data-sub="${lf.sub}"]` : ':not([data-i])'}`) : null;
+  if (!el || !(el.matches('[data-expr]') || el.matches('input:not([type]), textarea'))) el = panel.querySelector('[data-expr]');
+  if (!el) { copyText(text); return; }
+  const focused = el === document.activeElement;
+  el.focus(); el.setRangeText(text, focused ? el.selectionStart : el.value.length, focused ? el.selectionEnd : el.value.length, 'end');
+  el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/* --- run drawer --- */
+function renderDrawer() {
+  const drawer = $('#drawer'); if (!drawer) return;
+  drawer.classList.toggle('open', ED.drawer);
+  document.documentElement.style.setProperty('--drawer-h', ED.drawer ? (innerWidth <= 860 ? '46%' : '300px') : '42px');
+  $('#d-body').hidden = !ED.drawer;
+  $('#btn-stop').hidden = !ED.live;
+  const last = ED.execs[0];
+  $('#d-sum').innerHTML = last ? `· son: <span class="pill ${last.status}">${statusLabel(last.status)}</span> ${ago(last.startedAt)}` : '· henüz çalıştırma yok';
+  if (!ED.drawer) return;
+  $('#runs').innerHTML = ED.execs.length ? ED.execs.map(r => `<button class="run${ED.viewId === r.id ? ' on' : ''}" data-run-id="${r.id}">
+      <span class="no">${fmtTime(r.startedAt)}</span><span class="tr">${esc(r.trigger || '')}</span><span class="pill ${r.status}">${statusLabel(r.status)}</span>
+      <span class="meta">${esc(r.mode)}${r.duration != null ? ' · ' + fmtMs(r.duration) : ''}</span></button>`).join('')
+    : '<div class="nodata">Çalıştır\'a basınca her çalıştırma burada listelenir.</div>';
+  const ex = viewedExec(); const det = $('#run-detail');
+  if (!ex) { det.innerHTML = ''; return; }
+  const dur = ex.duration ?? (ED.live === ex ? performance.now() - ex.t0 : null);
+  det.innerHTML = `<div class="rd-head"><h3>${esc(ex.trigger || '')}</h3><span class="pill ${ex.status}">${statusLabel(ex.status)}</span>
+      <span class="meta">${new Date(ex.startedAt).toLocaleString('tr-TR')} · ${esc(ex.mode)}${dur != null ? ' · ' + fmtMs(dur) : ''}</span>
+      ${ex.status === 'error' || ex.status === 'stopped' ? `<button class="btn sm" data-retry="${ex.id}">Yeniden dene</button>` : ''}
+      <a class="btn sm" href="#/calistirma/${ex.id}">Ayrıntı</a></div>
+    ${ex.error && ex.status !== 'success' ? `<div class="err-box" style="margin-bottom:10px">${esc(ex.error)}</div>` : ''}
+    ${timelineHTML({ ...ex, duration: dur }, ED.wf.nodes)}`;
+}
+
+/* ================= executions pages ================= */
+async function pageExecutions() {
+  G.workflows = await api('GET', '/api/workflows');
+  const f = { workflowId: '', status: '' };
+  view.innerHTML = `<div class="page"><div class="page-in">
+    <div class="page-head"><h1>Çalıştırmalar</h1>
+      <div class="filters"><select class="inp" id="x-wf" aria-label="Akış"><option value="">Tüm akışlar</option>${G.workflows.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select>
+      <select class="inp" id="x-st" aria-label="Durum"><option value="">Tüm durumlar</option><option value="success">Başarılı</option><option value="error">Hatalı</option><option value="running">Çalışıyor</option><option value="stopped">Durdurulan</option></select>
+      <button class="btn danger" id="x-clear">Listeyi temizle</button></div></div>
+    <div class="card tablewrap-x"><table class="grid"><thead><tr><th>Durum</th><th>Akış</th><th>Tetikleyici</th><th>Şekil</th><th>Başlangıç</th><th>Süre</th></tr></thead><tbody id="x-body"></tbody></table></div></div></div>`;
+  const load = async () => {
+    const q = new URLSearchParams({ limit: 300, ...(f.workflowId && { workflowId: f.workflowId }), ...(f.status && { status: f.status }) });
+    const { items } = await api('GET', `/api/executions?${q}`);
+    $('#x-body').innerHTML = items.length ? items.map(e => `<tr class="click" data-x="${e.id}"><td><span class="pill ${e.status}">${statusLabel(e.status)}</span></td><td>${esc(e.workflowName)}</td><td>${esc(e.trigger)}</td><td>${esc(e.mode)}</td><td class="num">${new Date(e.startedAt).toLocaleString('tr-TR')}</td><td class="num">${fmtMs(e.duration)}</td></tr>`).join('')
+      : '<tr><td colspan="6" class="nodata">Kayıtlı çalıştırma yok.</td></tr>';
+  };
+  await load();
+  $('#x-wf').addEventListener('change', e => { f.workflowId = e.target.value; load(); });
+  $('#x-st').addEventListener('change', e => { f.status = e.target.value; load(); });
+  $('#x-body').addEventListener('click', e => { const r = e.target.closest('[data-x]'); if (r) location.hash = `#/calistirma/${r.dataset.x}`; });
+  $('#x-clear').addEventListener('click', async () => { if (!confirm('Listelenen çalıştırma kayıtları silinsin mi?')) return; await api('DELETE', `/api/executions${f.workflowId ? `?workflowId=${f.workflowId}` : ''}`); load(); });
+  const onEv = ev => { if (ev.type === 'exec:start' || ev.type === 'exec:end') load(); };
+  live.listeners.add(onEv); cleanup = () => live.listeners.delete(onEv);
+}
+async function pageExecution(id) {
+  const ex = await api('GET', `/api/executions/${id}`);
+  const st = { sel: ex.order.find(i => ex.nodes[i].status === 'error') || ex.order[ex.order.length - 1], tab: 'output' };
+  const nodes = ex.snapshot?.nodes || [];
+  const draw = () => {
+    const r = ex.nodes[st.sel]; const n = nodes.find(x => x.id === st.sel);
+    const outs = n ? (() => { try { return outsOf(n); } catch { return []; } })() : [];
+    view.innerHTML = `<div class="page"><div class="page-in">
+      <div class="page-head"><h1>${esc(ex.workflowName)}</h1><span class="pill ${ex.status}">${statusLabel(ex.status)}</span>
+        <a class="btn" href="#/akis/${ex.workflowId}">Editörde aç</a>
+        <button class="btn" id="xd-retry">Yeniden dene</button><button class="btn danger" id="xd-del">${icon('trash')}Sil</button></div>
+      <p class="lead">${new Date(ex.startedAt).toLocaleString('tr-TR')} · ${esc(ex.mode)} · ${esc(ex.trigger)} · ${fmtMs(ex.duration)}${ex.retryOf ? ` · <a href="#/calistirma/${ex.retryOf}">önceki denemenin</a> tekrarı` : ''}</p>
+      ${ex.error ? `<div class="err-box">${esc(ex.error)}</div>` : ''}
+      <div class="xd"><div class="card">${timelineHTML(ex, nodes, st.sel, true)}</div>
+      <div class="card" id="xd-data" style="display:flex;flex-direction:column;gap:12px">${r ? `
+        <div class="tabs" style="padding:0"><button data-xtab="input" class="${st.tab === 'input' ? 'on' : ''}">Girdi</button><button data-xtab="output" class="${st.tab === 'output' ? 'on' : ''}">Çıktı</button></div>
+        ${r.error ? `<div class="err-box">${esc(r.error)}</div>` : ''}
+        ${r.logs?.length ? `<pre class="logs">${esc(r.logs.join('\n'))}</pre>` : ''}
+        ${st.tab === 'input' ? dataView(r.input?.length ? r.input : null, ['Girdi 1', 'Girdi 2'], 'Bu node girdi almadı.') : dataView(r.output, outs, r.status === 'skipped' ? 'Bu node atlandı.' : 'Çıktı yok.')}` : '<div class="nodata">Node seçin</div>'}</div></div></div></div>`;
+    view.querySelector('.xd .card').addEventListener('click', e => { const b = e.target.closest('[data-tl]'); if (b) { st.sel = b.dataset.tl; DV.port = 0; draw(); } });
+    $('#xd-data').addEventListener('click', e => { const b = e.target.closest('[data-xtab]'); if (b) { st.tab = b.dataset.xtab; DV.port = 0; draw(); } });
+    bindDataView($('#xd-data'), draw);
+    $('#xd-retry').addEventListener('click', async () => { try { const r = await api('POST', `/api/executions/${id}/retry`, {}); toast('Yeniden çalıştırılıyor…'); setTimeout(() => { location.hash = `#/calistirma/${r.executionId}`; }, 600); } catch (e) { toast(e.message, true); } });
+    $('#xd-del').addEventListener('click', async () => { await api('DELETE', `/api/executions/${id}`); location.hash = '#/calistirmalar'; });
+  };
+  draw();
+}
+
+/* ================= credentials ================= */
+async function pageCredentials() {
+  G.creds = await api('GET', '/api/credentials');
+  const ct = G.types.credentialTypes;
+  view.innerHTML = `<div class="page"><div class="page-in">
+    <div class="page-head"><h1>Kimlik bilgileri</h1><button class="btn primary" id="c-new">${icon('plus')}Yeni kimlik bilgisi</button></div>
+    <p class="lead">API anahtarları ve şifreler bilgisayarınızdaki veri klasöründe AES-256 ile şifreli saklanır ve editöre geri gönderilmez.</p>
+    <div class="card list">${G.creds.length ? G.creds.map(c => `<div class="lrow" data-id="${c.id}"><span class="ttl">${esc(c.name)}</span><div class="meta"><span class="tag">${esc(ct[c.type]?.label || c.type)}</span><span>güncellendi ${ago(c.updatedAt)}</span></div>
+      <div class="acts"><button class="btn sm" data-act="edit">Düzenle</button><button class="btn sm danger" data-act="del" aria-label="Sil">${icon('trash')}</button></div></div>`).join('') : '<div class="empty">Henüz kimlik bilgisi yok. Claude, Telegram, e-posta ya da API anahtarı gerektiren HTTP istekleri için ekleyin.</div>'}</div></div></div>`;
+  $('#c-new').addEventListener('click', () => openCredential(null, null, () => pageCredentials()));
+  view.querySelector('.list').addEventListener('click', async e => {
+    const b = e.target.closest('[data-act]'); if (!b) return; const id = b.closest('[data-id]').dataset.id;
+    if (b.dataset.act === 'edit') openCredential(id, null, () => pageCredentials());
+    if (b.dataset.act === 'del') { if (!confirm('Bu kimlik bilgisi silinsin mi? Onu kullanan node\'lar çalışmaz.')) return; await api('DELETE', `/api/credentials/${id}`); pageCredentials(); }
+  });
+}
+async function openCredential(id, types, onSaved) {
+  const ct = G.types.credentialTypes;
+  const existing = id ? await api('GET', `/api/credentials/${id}`) : null;
+  const allowed = types || Object.keys(ct);
+  let type = existing?.type || allowed[0];
+  const draw = () => {
+    const t = ct[type];
+    openModal(`<div class="mhead"><h2>${existing ? 'Kimlik bilgisini düzenle' : 'Yeni kimlik bilgisi'}</h2><button class="icon-btn" data-close aria-label="Kapat">${icon('x')}</button></div>
+      <div class="mbody">
+        ${existing ? '' : `<div class="field"><label for="c-type">Tür</label><select class="inp" id="c-type">${allowed.map(k => `<option value="${k}"${k === type ? ' selected' : ''}>${esc(ct[k].label)}</option>`).join('')}</select></div>`}
+        <div class="field"><label for="c-name">Ad</label><input class="inp" id="c-name" value="${esc(existing?.name || t.label)}"></div>
+        ${t.fields.map(f => `<div class="field"><label for="c-${f.key}">${esc(f.label)}</label>
+          ${f.options ? `<select class="inp" id="c-${f.key}" data-cf="${f.key}">${f.options.map(([k, l]) => `<option value="${k}"${String(existing?.data?.[f.key] ?? f.def) === k ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`
+          : `<input class="inp mono" id="c-${f.key}" data-cf="${f.key}" type="${f.secret ? 'password' : 'text'}" autocomplete="off" value="${esc(f.secret ? '' : existing?.data?.[f.key] ?? f.def ?? '')}" placeholder="${f.secret && existing?.filled?.[f.key] ? 'Kayıtlı (değiştirmek için yazın)' : ''}">`}
+          ${f.help ? `<span class="help">${esc(f.help)}</span>` : ''}</div>`).join('')}
+      </div><div class="mfoot"><span class="x" id="c-err"></span><button class="btn" data-close>Vazgeç</button><button class="btn primary" id="c-save">Kaydet</button></div>`);
+    $('#c-type')?.addEventListener('change', e => { type = e.target.value; draw(); });
+    $('#c-save').addEventListener('click', async () => {
+      const data = {}; $('#modal').querySelectorAll('[data-cf]').forEach(i => { data[i.dataset.cf] = i.value; });
+      const missing = t.fields.find(f => f.secret && !data[f.key] && !existing?.filled?.[f.key]);
+      if (missing) { $('#c-err').textContent = `"${missing.label}" gerekli`; return; }
+      try {
+        const saved = existing ? await api('PUT', `/api/credentials/${id}`, { name: $('#c-name').value, data }) : await api('POST', '/api/credentials', { type, name: $('#c-name').value, data });
+        G.creds = await api('GET', '/api/credentials'); closeModal(); toast('Kaydedildi'); onSaved?.(saved);
+      } catch (e) { $('#c-err').textContent = e.message; }
+    });
+  };
+  draw();
+}
+
+/* ================= variables ================= */
+async function pageVariables() {
+  G.vars = await api('GET', '/api/variables');
+  let rows = Object.entries(G.vars).map(([k, v]) => ({ k, v }));
+  const draw = () => {
+    view.innerHTML = `<div class="page"><div class="page-in">
+      <div class="page-head"><h1>Değişkenler</h1><button class="btn" id="v-add">${icon('plus')}Ekle</button><button class="btn primary" id="v-save">Kaydet</button></div>
+      <p class="lead">Tüm akışlarda kullanılabilen sabit değerler. İfadelerde <code>{{ $vars.ANAHTAR }}</code>, Kod node'unda <code>$vars.ANAHTAR</code> ile okunur. Gizli anahtarlar için Kimlik bilgilerini kullanın.</p>
+      <div class="card" style="padding:12px;display:flex;flex-direction:column;gap:8px">${rows.length ? rows.map((r, i) => `<div class="row" style="border:0;padding:0"><input class="inp mono" placeholder="ANAHTAR" data-vi="${i}" data-vk="k" value="${esc(r.k)}" aria-label="Ad"><input class="inp mono" placeholder="değer" data-vi="${i}" data-vk="v" value="${esc(r.v)}" aria-label="Değer"><button class="icon-btn" data-vrm="${i}" aria-label="Kaldır">${icon('x')}</button></div>`).join('') : '<div class="nodata">Henüz değişken yok.</div>'}</div></div></div>`;
+    view.querySelectorAll('[data-vi]').forEach(i => i.addEventListener('input', () => { rows[+i.dataset.vi][i.dataset.vk] = i.value; }));
+    view.querySelectorAll('[data-vrm]').forEach(b => b.addEventListener('click', () => { rows.splice(+b.dataset.vrm, 1); draw(); }));
+    $('#v-add').addEventListener('click', () => { rows.push({ k: '', v: '' }); draw(); view.querySelector(`[data-vi="${rows.length - 1}"]`)?.focus(); });
+    $('#v-save').addEventListener('click', async () => {
+      const bad = rows.find(r => r.k && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(r.k));
+      if (bad) { toast(`"${bad.k}" geçersiz: harf, rakam ve _ kullanın, rakamla başlamasın`, true); return; }
+      G.vars = await api('PUT', '/api/variables', Object.fromEntries(rows.filter(r => r.k).map(r => [r.k, r.v]))); rows = Object.entries(G.vars).map(([k, v]) => ({ k, v })); draw(); toast('Değişkenler kaydedildi');
+    });
+  };
+  draw();
+}
+
+/* ================= about / settings ================= */
+async function pageAbout() {
+  const [info, files] = await Promise.all([api('GET', '/api/info'), api('GET', '/api/files')]);
+  const theme = (() => { try { return localStorage.getItem('8n8.theme') || ''; } catch { return ''; } })();
+  view.innerHTML = `<div class="page"><div class="page-in">
+    <div class="page-head"><h1>Ayarlar</h1></div>
+    <div class="card" style="padding:16px"><dl class="kvgrid">
+      <dt>Sürüm</dt><dd>8n8 ${esc(info.version)} · Node.js ${esc(info.node)}</dd>
+      <dt>Adres</dt><dd>${esc(info.url)}</dd>
+      <dt>Veri klasörü</dt><dd>${esc(info.data)}</dd>
+      <dt>Dosya klasörü</dt><dd>${esc(info.files)}</dd>
+      <dt>Şifre koruması</dt><dd>${info.password ? 'Açık' : 'Kapalı (yalnızca bu bilgisayardan erişilebilir)'}</dd>
+    </dl></div>
+    <div class="card" style="padding:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><b>Tema</b>
+      <div class="seg" id="theme">${[['', 'Sistem'], ['light', 'Açık'], ['dark', 'Koyu']].map(([k, l]) => `<button data-th="${k}" class="${theme === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><b>Dosya klasöründekiler</b><span class="help">"Dosya oku" ve "Dosyaya yaz" node'ları yalnızca bu klasörde çalışır.</span>
+      ${files.length ? `<div class="tablewrap-x"><table class="grid"><thead><tr><th>Dosya</th><th>Boyut</th><th>Değişti</th></tr></thead><tbody>${files.map(f => `<tr><td>${esc(f.ad)}</td><td class="num">${(f.boyut / 1024).toFixed(1)} KB</td><td class="num">${new Date(f.degisti).toLocaleString('tr-TR')}</td></tr>`).join('')}</tbody></table></div>` : '<span class="help">Klasör boş.</span>'}</div>
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:8px;line-height:1.55"><b>Ortam değişkenleri</b>
+      <span class="help"><code>PORT</code> (varsayılan 5678), <code>N8N8_HOST</code> (ağa açmak için 0.0.0.0), <code>N8N8_PASSWORD</code> (giriş şifresi), <code>N8N8_URL</code> (dışarıdan erişilen adres, webhook bağlantıları için), <code>N8N8_DATA</code> (veri klasörü), <code>N8N8_NO_OPEN=1</code> (tarayıcıyı otomatik açma).</span></div>
+  </div></div>`;
+  $('#theme').addEventListener('click', e => { const b = e.target.closest('[data-th]'); if (!b) return; setTheme(b.dataset.th); pageAbout(); });
+}
+function setTheme(t) { try { localStorage.setItem('8n8.theme', t); } catch {} if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; }
+
+/* ================= boot ================= */
+(async function boot() {
+  try { const t = localStorage.getItem('8n8.theme'); if (t) document.documentElement.dataset.theme = t; } catch {}
+  try {
+    [G.types, G.info] = await Promise.all([api('GET', '/api/node-types'), api('GET', '/api/info')]);
+    $('#ver').textContent = `sürüm ${G.info.version}`;
+    connectEvents();
+    route();
+  } catch (e) { view.innerHTML = `<div class="page"><div class="page-in"><div class="err-box">Sunucuya bağlanılamadı: ${esc(e.message)}</div></div></div>`; }
+})();
+</script>
+</body>
+</html>

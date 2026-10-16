@@ -1,0 +1,116 @@
+# 8n8
+
+8n8, kendi bilgisayarınızda çalışan görsel bir iş akışı otomasyon programıdır. n8n'e benzer: node'ları tuvale sürükler, birbirine bağlar ve akışı çalıştırırsınız. Akışlar zamanlayıcıyla, webhook ile ya da hazır web formlarıyla kendiliğinden de başlayabilir. Bütün veriler bilgisayarınızda kalır.
+
+## Kurulum
+
+1. [Node.js](https://nodejs.org) kurun. Sürüm 18 ya da daha yenisi gerekir; "LTS" sürümü yeterlidir.
+2. Bu klasördeki başlatma dosyasını çalıştırın:
+   - **Windows:** `baslat.bat` dosyasına çift tıklayın.
+   - **macOS:** `baslat.command` dosyasına çift tıklayın. İlk seferde macOS izin isterse dosyaya sağ tıklayıp "Aç"ı seçin.
+   - **Linux:** terminalde `./baslat.sh` komutunu çalıştırın.
+3. Tarayıcı kendiliğinden açılır. Açılmazsa adres çubuğuna http://127.0.0.1:5678 yazın.
+
+Başlatma dosyası ilk çalıştırmada gerekli paketi kendisi kurar (`npm install`). İsterseniz terminalden kendiniz de kurup başlatabilirsiniz:
+
+```
+npm install
+npm start
+```
+
+Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya da pencereyi kapatın. Zamanlayıcılar, webhook'lar ve formlar yalnızca program açıkken çalışır.
+
+## Neler var
+
+**Editör**
+- Sürükle-bırak tuval, yakınlaştırma, mini harita, otomatik düzenleme
+- Geri al / yinele, kopyala / yapıştır, çoklu seçim, klavye kısayolları
+- Her node'un girdisini ve çıktısını tablo ya da JSON olarak görme
+- "Buraya kadar çalıştır" ile akışın bir kısmını deneme
+- Çıktıyı sabitleme: bir node'un çıktısını dondurup sonraki adımları onu yeniden çalıştırmadan deneme
+- Canlı çalışma görünümü ve her node'un süresini gösteren zaman çizelgesi
+- Akış sürümleri (otomatik kayıt, eski sürüme dönme), JSON olarak dışa ve içe aktarma, hazır şablonlar
+- Açık ve koyu tema
+
+**Tetikleyiciler:** Manuel, Zamanlayıcı (aralık ya da cron ifadesi), Webhook (`/webhook/<yol>`), Form (`/form/<yol>` adresinde hazır web formu), Hata tetikleyici, Alt akış girişi
+
+**Node'lar (32 tür)**
+- **Eylemler:** HTTP isteği, Webhook'a yanıt ver, Başka akışı çalıştır
+- **Yapay zekâ:** Claude
+- **Uygulamalar:** Telegram, Slack / Discord, E-posta (SMTP)
+- **Veri:** Alanları ayarla, Filtrele, Sırala, Sınırla, Tekrarları kaldır, Listeyi ayır, Topla, Özetle, Tarih ve saat, Şifreleme / hash, Dosya oku, Dosyaya yaz (JSON, CSV, metin)
+- **Mantık ve akış:** Eğer, Yönlendir (switch), Birleştir, Kod (JavaScript), Bekle, Hiçbir şey yapma, Hata ver
+- **Tuval:** Not
+
+**Çalıştırma ayarları**
+- Node başına: hata olursa yeniden dene (deneme sayısı, bekleme süresi), hataya rağmen devam et, not
+- Akış başına: zaman aşımı, hata akışı (akış hata verince başka bir akışı tetikler)
+- Çalıştırma geçmişi; her çalıştırmada her node'un girdisi ve çıktısı saklanır. Çalışan bir akış durdurulabilir, hata veren bir çalıştırma yeniden denenebilir.
+
+**İfadeler:** Alanların içinde `{{ }}` kullanılır. Örnekler:
+- `{{ $json.ad }}` gelen öğenin `ad` alanı
+- `{{ $node["HTTP isteği"].json.id }}` başka bir node'un çıktısı
+- `{{ $vars.API_ADRESI }}` Değişkenler sayfasındaki bir değer
+- `{{ $dt.format($now, "DD.MM.YYYY") }}` bugünün tarihi
+- `{{ $json.tutar * 1.2 }}` hesaplama
+
+**Güvenlik**
+- API anahtarları ve şifreler AES-256-GCM ile şifrelenerek saklanır ve tarayıcıya geri gönderilmez.
+- Program varsayılan olarak yalnızca bu bilgisayardan erişilebilir (127.0.0.1).
+- `N8N8_PASSWORD` tanımlarsanız arayüz şifre ister.
+
+## Ayarlar (ortam değişkenleri)
+
+| Değişken | Varsayılan | Açıklama |
+|---|---|---|
+| `PORT` ya da `N8N8_PORT` | `5678` | Programın çalıştığı port |
+| `N8N8_HOST` | `127.0.0.1` | Ağdaki diğer cihazlardan erişim için `0.0.0.0` yapın; bu durumda `N8N8_PASSWORD` da tanımlayın |
+| `N8N8_PASSWORD` | yok | Tanımlıysa arayüz ve API şifre ister (kullanıcı adı önemsizdir) |
+| `N8N8_URL` | `http://127.0.0.1:<port>` | Webhook ve form adreslerinde gösterilecek dış adres |
+| `N8N8_DATA` | `~/.8n8` | Verilerin saklandığı klasör |
+| `N8N8_ENCRYPTION_KEY` | otomatik | Kimlik bilgilerini şifreleyen anahtar. Tanımlanmazsa veri klasöründeki `anahtar` dosyasında üretilir |
+| `N8N8_MAX_EXECUTIONS` | `1000` | Saklanacak en fazla çalıştırma sayısı |
+| `N8N8_NO_OPEN` | yok | Tanımlıysa tarayıcı kendiliğinden açılmaz |
+
+Örnek (macOS / Linux): `PORT=8080 N8N8_PASSWORD=gizli npm start`
+Örnek (Windows): `set PORT=8080 && npm start`
+
+## Veriler nerede
+
+Bütün veriler `~/.8n8` klasöründedir (Windows'ta `C:\Users\<ad>\.8n8`):
+- `workflows/`: akışlar
+- `versions/`: akışların önceki sürümleri
+- `executions/`: çalıştırma geçmişi
+- `dosyalar/`: Dosya oku / Dosyaya yaz node'larının klasörü
+- `credentials.json`: şifreli kimlik bilgileri
+- `anahtar`: şifreleme anahtarı
+- `variables.json`: değişkenler
+
+Yedek almak için bu klasörü kopyalamanız yeterli. `anahtar` dosyasını kaybederseniz kayıtlı kimlik bilgileri açılamaz.
+
+## Webhook'u internete açmak
+
+Webhook ve form adresleri varsayılan olarak yalnızca sizin bilgisayarınızdan çalışır. Dışarıdan bir servisin (ödeme sistemi, GitHub vb.) webhook göndermesi için bir tünel kullanın. Örneğin `cloudflared tunnel --url http://127.0.0.1:5678` ya da `ngrok http 5678`. Ardından `N8N8_URL` değişkenine tünel adresini verin ki editör doğru adresi göstersin.
+
+## Claude node'u
+
+Claude node'u için [console.anthropic.com](https://console.anthropic.com) adresinden bir API anahtarı alın ve Kimlik bilgileri sayfasından "Anthropic (Claude)" olarak ekleyin.
+- Varsayılan model Claude Opus 5.5'tir. Sonnet 5.5, Haiku 5.5 ve Fable 5.1 de seçilebilir.
+- "Düşünme çabası" ayarı, hız ile özen arasındaki dengeyi seçer.
+- "Yanıtı JSON olarak çözmeyi dene" açıkken Claude'un yanıtı nesneye çevrilir ve sonraki node'larda `$json.yanit.alan` ile kullanılır.
+- **Sunucu tarafı yedek modeller açıktır.** Opus 5.5, Sonnet 5.5 ve Fable 5.1 isteklerinde, seçilen model o an yoğunsa Anthropic isteği kendiliğinden başka bir uygun modele yönlendirebilir. Yanıtı hangi modelin verdiği, node'un kayıtlarında (Çıktı sekmesindeki günlük satırı) yazar.
+
+## Sınırlar
+
+- **Kod node'u güvenlik sınırı değildir.** Kod, programın kendi içinde ayrı bir bağlamda çalışır. Yalnızca güvendiğiniz kodu çalıştırın ve başkalarından aldığınız akışları içe aktarmadan önce Kod node'larını okuyun.
+- Döngü (bir node'un çıktısını geriye bağlamak) desteklenmez. Tekrarlanan işler için Kod node'unu ya da "Her öğe için ayrı" modunda "Başka akışı çalıştır" node'unu kullanın.
+- Google, Notion, veritabanı gibi servislere hazır node yok. API'si olan her servise HTTP isteği node'u ve uygun kimlik bilgisiyle bağlanabilirsiniz.
+- Tek kullanıcı içindir; ekip hesabı ve yetki yönetimi yoktur.
+
+## Test
+
+```
+npm test
+```
+
+Testler geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, sabitlenmiş veri, şifreli kimlik bilgisi ve e-posta gönderimi (sahte bir SMTP sunucusuna) denenir. İnternet gerekmez.

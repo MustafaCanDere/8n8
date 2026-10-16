@@ -1,0 +1,16 @@
+{
+  "name": "8n8",
+  "version": "1.0.0",
+  "description": "Bilgisayarınızda çalışan görsel iş akışı otomasyon programı",
+  "main": "server.js",
+  "bin": { "8n8": "server.js" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/smoke.js"
+  },
+  "engines": { "node": ">=18.17" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.134.0"
+  },
+  "license": "MIT"
+}
