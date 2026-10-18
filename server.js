@@ -260,7 +260,7 @@ function validateActivation(wf) {
   const trig = wf.nodes.filter(n => NODES[n.type]?.trigger && !n.disabled && !['manual', 'subTrigger', 'errorTrigger'].includes(n.type));
   if (!trig.length && !wf.nodes.some(n => ['subTrigger', 'errorTrigger'].includes(n.type))) throw new HttpError(400, 'Etkinleştirmek için Zamanlayıcı, Webhook, Form, Sohbet ya da yoklama (RSS, Telegram, klasör) tetikleyicisi gerekir. Manuel tetikleyici yalnızca editörden çalışır.');
   for (const n of wf.nodes) if (n.type === 'telegramTrigger' && !n.disabled && !n.params?.credential) throw new HttpError(400, `"${n.name}": Telegram botu seçin`);
-  for (const n of wf.nodes) if (n.type === 'gmailTrigger' && !n.disabled && !n.params?.credential) throw new HttpError(400, `"${n.name}": Google hesabı seçin`);
+  for (const n of wf.nodes) if (NODES[n.type]?.poll && !n.disabled && NODES[n.type].params.some(f => f.key === 'credential') && !n.params?.credential) throw new HttpError(400, `"${n.name}": ${NODES[n.type].params.find(f => f.key === 'credential').label} seçin`);
   for (const n of wf.nodes) {
     if (n.type === 'schedule' && n.params?.mode === 'cron') { try { nextRun(n.params.cron); } catch (e) { throw new HttpError(400, `"${n.name}": ${e.message}`); } }
     if (['webhook', 'form', 'chatTrigger'].includes(n.type) && !n.disabled) {
@@ -322,6 +322,45 @@ route('POST', '/api/workflows/:id/versions/:vid/restore', ({ params }) => {
   arm(saved); return saved;
 });
 route('GET', '/api/executions', ({ query }) => ({ items: store.listExecutions({ workflowId: query.workflowId, status: query.status, limit: query.limit }), running: engine.runningIds() }));
+/* "Özet" page: counts, success rate, per-day chart, per-workflow table and most frequent errors, from the kept execution records */
+route('GET', '/api/stats', ({ query }) => {
+  const days = Math.min(365, Math.max(1, Number(query.days) || 7));
+  const dayKey = d => new Date(d).toLocaleDateString('sv');
+  const from = new Date(); from.setHours(0, 0, 0, 0); from.setDate(from.getDate() - days + 1);
+  const list = store.listExecutions({ all: true }).filter(e => e.startedAt >= from.toISOString());
+  const byDay = new Map(); for (let i = 0; i < days; i++) { const d = new Date(from); d.setDate(d.getDate() + i); byDay.set(dayKey(d), { gun: dayKey(d), basarili: 0, hatali: 0, diger: 0 }); }
+  const byWf = new Map(), errors = new Map(), modes = {};
+  const done = list.filter(e => e.status === 'success' || e.status === 'error');
+  const durs = list.filter(e => e.duration != null).map(e => e.duration).sort((a, b) => a - b);
+  for (const e of list) {
+    const d = byDay.get(dayKey(e.startedAt)); if (d) d[e.status === 'success' ? 'basarili' : e.status === 'error' ? 'hatali' : 'diger']++;
+    modes[e.mode] = (modes[e.mode] || 0) + 1;
+    const w = byWf.get(e.workflowId) || { id: e.workflowId, ad: store.getWorkflow(e.workflowId)?.name || e.workflowName, toplam: 0, basarili: 0, hatali: 0, sure: 0, sureSay: 0, son: null, sonDurum: null };
+    w.toplam++; if (e.status === 'success') w.basarili++; if (e.status === 'error') w.hatali++;
+    if (e.duration != null) { w.sure += e.duration; w.sureSay++; }
+    if (!w.son || e.startedAt > w.son) { w.son = e.startedAt; w.sonDurum = e.status; }
+    byWf.set(e.workflowId, w);
+    if (e.status === 'error' && e.error) {
+      const k = `${e.workflowId}\n${String(e.error).slice(0, 160)}`;
+      const x = errors.get(k) || { hata: String(e.error).slice(0, 300), akis: w.ad, akisId: e.workflowId, sayi: 0, son: '', sonId: '' };
+      x.sayi++; if (e.startedAt > x.son) { x.son = e.startedAt; x.sonId = e.id; }
+      errors.set(k, x);
+    }
+  }
+  const success = list.filter(e => e.status === 'success').length;
+  return {
+    gun: days,
+    toplam: list.length, basarili: success, hatali: list.filter(e => e.status === 'error').length, calisiyor: engine.runningIds().length,
+    basariOrani: done.length ? Math.round(success / done.length * 1000) / 10 : null,
+    ortSure: durs.length ? Math.round(durs.reduce((a, b) => a + b, 0) / durs.length) : null,
+    p95Sure: durs.length ? durs[Math.min(durs.length - 1, Math.floor(durs.length * 0.95))] : null,
+    etkinAkis: store.listWorkflows().filter(w => w.active).length, akisSayisi: store.listWorkflows().length, bekleyenOnay: engine.approvals.size,
+    gunluk: [...byDay.values()], sekiller: modes,
+    akislar: [...byWf.values()].map(({ sure, sureSay, ...w }) => ({ ...w, ortSure: sureSay ? Math.round(sure / sureSay) : null })).sort((a, b) => b.toplam - a.toplam),
+    hatalar: [...errors.values()].sort((a, b) => b.sayi - a.sayi || b.son.localeCompare(a.son)).slice(0, 10),
+    kayitSiniri: Number(process.env.N8N8_MAX_EXECUTIONS || 1000),
+  };
+});
 route('GET', '/api/executions/:id', ({ params }) => { const e = store.getExecution(params.id); if (!e) throw new HttpError(404, 'Çalıştırma bulunamadı'); return e; });
 route('DELETE', '/api/executions/:id', ({ params }) => { store.deleteExecution(params.id); return { ok: true }; });
 route('POST', '/api/executions/:id/stop', ({ params }) => ({ stopped: engine.stop(params.id) }));

@@ -445,6 +445,87 @@ test('Google hesabına OAuth ile bağlanma; Gmail, Drive ve Takvim (sahte API)',
   assert.ok(fakeG.auth.every(a => a === 'Bearer g-at2'));
 });
 
+test('Notion: veritabanına ekle, güncelle, sorgula, metin ekle (sahte API)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'notionApi', name: 'n', data: { token: 'secret_x' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'notionApi', id: cred.id, data: {} })).message, /8n8 bot/);
+  const db = 'https://www.notion.so/ekip/Gorevler-0123456789abcdef0123456789abcdef?v=fedcba9876543210fedcba9876543210';
+  const w = await api('POST', '/api/workflows', wf('notion', [
+    ['manual', { data: '[{"ad":"Rapor yaz","puan":"5","etiket":"iş, acil","bitti":"hayır"}]' }],
+    ['notion', { credential: cred.id, op: 'create', database: db, fields: [{ key: 'Ad', value: '{{ $json.ad }}' }, { key: 'Puan', value: '{{ $json.puan }}' }, { key: 'etiketler', value: '{{ $json.etiket }}' }, { key: 'Bitti', value: '{{ $json.bitti }}' }, { key: 'Durum', value: 'Yapılacak' }], text: 'Birinci paragraf\n\nİkinci paragraf' }, { name: 'ekle' }],
+    ['notion', { credential: cred.id, op: 'update', page: '{{ $json.id }}', fields: [{ key: 'Durum', value: 'Bitti' }, { key: 'Bitti', value: 'true' }] }, { name: 'guncelle' }],
+    ['notion', { credential: cred.id, op: 'append', page: '{{ $json.id }}', text: 'Not: tamamlandı' }, { name: 'metin' }],
+    ['notion', { credential: cred.id, op: 'query', database: db, filter: '{"property":"Durum","status":{"equals":"Bitti"}}' }, { name: 'sorgu' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const created = fakeN.pages[0];
+  assert.equal(created.parent.database_id, '0123456789abcdef0123456789abcdef', 'bağlantıdan veritabanı kimliği alınmalı');
+  assert.deepEqual(created.properties.Puan, { number: 5 });
+  assert.deepEqual(created.properties.Etiketler.multi_select.map(x => x.name), ['iş', 'acil'], 'alan adı büyük-küçük harfe duyarsız eşleşmeli');
+  assert.equal(outOf(e, 'ekle')[0].Bitti, false);
+  assert.deepEqual(created.children.map(b => b.paragraph.rich_text[0].text.content), ['Birinci paragraf', 'İkinci paragraf', 'Not: tamamlandı']);
+  assert.equal(outOf(e, 'ekle')[0].Ad, 'Rapor yaz');
+  assert.equal(outOf(e, 'guncelle')[0].Durum, 'Bitti');
+  assert.equal(outOf(e, 'guncelle')[0].Bitti, true);
+  assert.equal(outOf(e, 'metin')[0].eklenenBlok, 1);
+  assert.deepEqual(outOf(e, 'sorgu').map(r => [r.Ad, r.Puan, r.Etiketler]), [['Rapor yaz', 5, ['iş', 'acil']]]);
+  assert.ok(fakeN.auth.every(a => a === 'Bearer secret_x'));
+});
+
+test('Slack: kanal adıyla mesaj, konu yanıtı, tepki ve tetikleyici (sahte API)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'slackBot', name: 's', data: { token: 'xoxb-1' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'slackBot', id: cred.id, data: {} })).message, /Ekip.*@robot/);
+  const w = await api('POST', '/api/workflows', wf('slack', [
+    ['manual', { data: '[{"ad":"Ayşe"}]' }],
+    ['slack', { credential: cred.id, op: 'send', channel: '#genel', text: 'Yeni kayıt: {{ $json.ad }}' }, { name: 'gonder' }],
+    ['slack', { credential: cred.id, op: 'send', channel: '{{ $json.kanal }}', text: 'Ayrıntılar', thread: '{{ $json.ts }}' }, { name: 'yanit' }],
+    ['slack', { credential: cred.id, op: 'react', channel: 'C111111', ts: '{{ $json.ts }}', emoji: ':tada:' }, { name: 'tepki' }],
+    ['slack', { credential: cred.id, op: 'send', channel: '#yok', text: 'x' }, { name: 'hata', settings: { continueOnFail: true } }],
+  ], [[0, 1], [1, 2], [2, 3], [0, 4]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(fakeS.posts.map(p => [p.channel, p.text, p.thread_ts]), [['C111111', 'Yeni kayıt: Ayşe', undefined], ['C111111', 'Ayrıntılar', '1.0001']]);
+  assert.deepEqual(fakeS.reactions, ['tada']);
+  assert.match(JSON.stringify(outOf(e, 'hata')), /kanalı bulunamadı/);
+  const t = await api('POST', '/api/workflows', wf('slack-tetik', [['slackTrigger', { credential: cred.id, channel: '#genel', every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${t.id}`, { active: true });
+  await sleep(1300);
+  fakeS.history.push({ ts: '5.0001', text: 'yeni soru', user: 'U2' }, { ts: '5.0002', text: 'bot', bot_id: 'B1' });
+  await sleep(4500); // polls are at least 5 s apart
+  await api('PUT', `/api/workflows/${t.id}`, { active: false });
+  const { items } = await api('GET', `/api/executions?workflowId=${t.id}`);
+  assert.equal(items.length, 1, 'yalnız yeni insan mesajı akışı başlatmalı');
+  assert.equal(outOf(await waitExec(items[0].id), 'son')[0].metin, 'yeni soru');
+});
+
+test('Microsoft hesabına bağlanma ve Outlook: gönder, oku, yanıtla, okundu (sahte API)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'microsoftOAuth', name: 'MS', data: { clientId: 'mcid', clientSecret: 'msec', tenant: 'common' } });
+  let r = await fetch(`${B}/oauth/start?cred=${cred.id}`, { redirect: 'manual' });
+  const loc = new URL(r.headers.get('location'));
+  assert.equal(loc.pathname, '/ms-auth');
+  assert.match(loc.searchParams.get('scope'), /offline_access .*Mail\.Send/);
+  r = await fetch(`${B}/oauth/callback?code=mkod&state=${loc.searchParams.get('state')}`);
+  assert.match(await r.text(), /Bağlandı/);
+  assert.equal((await api('GET', `/api/credentials/${cred.id}`)).account, 'can@contoso.com', 'preferred_username hesap adı olmalı');
+  const w = await api('POST', '/api/workflows', wf('outlook', [
+    ['manual', { data: '[{"eposta":"Ali <ali@ornek.com>","ad":"Ali"}]' }],
+    ['outlook', { credential: cred.id, op: 'send', to: '{{ $json.eposta }}', subject: 'Merhaba {{ $json.ad }}', body: 'Toplantı yarın.' }, { name: 'gonder' }],
+    ['outlook', { credential: cred.id, op: 'list', unread: true, max: 5 }, { name: 'oku' }],
+    ['outlook', { credential: cred.id, op: 'reply', body: 'Teşekkürler' }, { name: 'yanit' }],
+    ['outlook', { credential: cred.id, op: 'read' }, { name: 'okundu' }],
+    ['http', { url: `http://127.0.0.1:${fakeClaude.port}/graph/me`, auth: 'cred', credential: cred.id }, { name: 'http' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(fakeM.sent[0].message.toRecipients, [{ emailAddress: { address: 'ali@ornek.com' } }]);
+  const m = outOf(e, 'oku')[0];
+  assert.equal(m.konu, 'Merhaba Ali'); assert.equal(m.kimden, 'Can <can@contoso.com>'); assert.equal(m.metin, 'Toplantı\nyarın.'); assert.equal(m.okunmadi, true);
+  assert.deepEqual(fakeM.replies, ['Teşekkürler']);
+  assert.equal(fakeM.mails[0].isRead, true);
+  assert.equal(outOf(e, 'http')[0].ad, 'Can');
+  assert.ok(fakeM.auth.every(a => a === 'Bearer ms-at'));
+});
+
 test('Onay bekle: akış onay sayfasından gelen kararla devam eder, zaman aşımına sayılmaz', async () => {
   const w = await api('POST', '/api/workflows', wf('onay', [
     ['manual', { data: '[{"ad":"Ayşe","tutar":250}]' }],
@@ -466,6 +547,16 @@ test('Onay bekle: akış onay sayfasından gelen kararla devam eder, zaman aşı
   assert.equal(outOf(e, 'evet')[0].onay.not, 'Tamam');
   assert.equal(outOf(e, 'link')[0].link, a.url);
   assert.equal((await fetch(a.url)).status, 404, 'karar verilen onay sayfası kapanmalı');
+});
+
+test('Özet: çalıştırma sayıları, başarı oranı ve sık hatalar', async () => {
+  const st = await api('GET', '/api/stats?days=7');
+  assert.ok(st.toplam > 10 && st.basarili > 0 && st.hatali > 0, JSON.stringify(st).slice(0, 200));
+  assert.equal(st.gunluk.length, 7);
+  assert.equal(st.gunluk.reduce((a, d) => a + d.basarili + d.hatali + d.diger, 0), st.toplam);
+  assert.equal(st.akislar.reduce((a, w) => a + w.toplam, 0), st.toplam);
+  assert.ok(st.basariOrani > 0 && st.basariOrani < 100);
+  assert.ok(st.hatalar[0].sayi >= 1 && st.hatalar[0].sonId);
 });
 
 test('Sunucu bozuk isteklere dayanır: hatalı adres, yabancı Host, bozuk akış', async () => {
@@ -551,6 +642,77 @@ function fakeGoogleOAuth(req, res, raw) {
   }
   return json({ error: { message: 'yok ' + p } }, 404);
 }
+const fakeN = { auth: [], pages: [] };
+function fakeNotion(req, res, raw) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  fakeN.auth.push(req.headers.authorization);
+  if (req.headers['notion-version'] !== '2022-06-28') return json({ message: 'version' }, 400);
+  const p = new URL(req.url, 'http://x').pathname.replace(/^\/notion/, ''); const body = raw ? JSON.parse(raw) : {};
+  const DB = '0123456789abcdef0123456789abcdef';
+  const schema = { Ad: { id: 'a', name: 'Ad', type: 'title' }, Puan: { id: 'b', name: 'Puan', type: 'number' }, Etiketler: { id: 'c', name: 'Etiketler', type: 'multi_select' }, Bitti: { id: 'd', name: 'Bitti', type: 'checkbox' }, Durum: { id: 'e', name: 'Durum', type: 'status' } };
+  const out = pg => {
+    const props = {};
+    for (const [k, d] of Object.entries(schema)) {
+      const v = pg.properties[k];
+      props[k] = { type: d.type, [d.type]: d.type === 'title' ? (v?.title || []).map(t => ({ plain_text: t.text.content })) : d.type === 'status' ? v?.status || null : d.type === 'multi_select' ? v?.multi_select || [] : v?.[d.type] ?? null };
+    }
+    return { object: 'page', id: pg.id, url: `https://notion.so/${pg.id}`, created_time: '2026-01-01T00:00:00.000Z', last_edited_time: '2026-01-01T00:00:00.000Z', parent: pg.parent, properties: props };
+  };
+  if (p === '/users/me') return json({ object: 'user', name: '8n8 bot', type: 'bot' });
+  if (p === `/databases/${DB}`) return json({ id: DB, properties: schema });
+  if (p === '/pages' && req.method === 'POST') { if (body.parent.database_id !== DB) return json({ message: 'no db' }, 404); const pg = { ...body, id: `aaaaaaaa-bbbb-cccc-dddd-00000000000${fakeN.pages.length + 1}` }; fakeN.pages.push(pg); return json(out(pg)); }
+  let m;
+  if ((m = p.match(/^\/pages\/(\w+)$/))) {
+    const pg = fakeN.pages.find(x => x.id.replace(/-/g, '') === m[1]); if (!pg) return json({ message: 'yok' }, 404);
+    if (req.method === 'PATCH') Object.assign(pg.properties, body.properties || {});
+    return json(out({ ...pg, parent: { database_id: '01234567-89ab-cdef-0123-456789abcdef' } }));
+  }
+  if ((m = p.match(/^\/blocks\/(\w+)\/children$/))) { fakeN.pages.find(x => x.id.replace(/-/g, '') === m[1]).children.push(...body.children); return json({ results: body.children }); }
+  if (p === `/databases/${DB}/query`) {
+    const st = body.filter?.status?.equals;
+    return json({ results: fakeN.pages.filter(pg => !st || pg.properties.Durum?.status?.name === st).map(out), has_more: false, next_cursor: null });
+  }
+  return json({ message: 'yok ' + p }, 404);
+}
+const fakeS = { posts: [], reactions: [], history: [{ ts: '1.0001', text: 'eski', user: 'U1' }] };
+function fakeSlack(req, res, raw) {
+  const json = o => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  if (req.headers.authorization !== 'Bearer xoxb-1') return json({ ok: false, error: 'invalid_auth' });
+  const u = new URL(req.url, 'http://x'); const method = u.pathname.replace('/slack/', ''); const body = raw ? JSON.parse(raw) : Object.fromEntries(u.searchParams);
+  if (method === 'auth.test') return json({ ok: true, team: 'Ekip', user: 'robot' });
+  if (method === 'conversations.list') return json({ ok: true, channels: [{ id: 'C111111', name: 'genel', is_member: true }] });
+  if (method === 'chat.postMessage') { if (body.channel !== 'C111111') return json({ ok: false, error: 'channel_not_found' }); fakeS.posts.push(body); return json({ ok: true, ts: `1.000${fakeS.posts.length}`, channel: body.channel }); }
+  if (method === 'reactions.add') { fakeS.reactions.push(body.name); return json({ ok: true }); }
+  if (method === 'conversations.history') return json({ ok: true, messages: fakeS.history.filter(m => !body.oldest || Number(m.ts) > Number(body.oldest)).reverse() });
+  return json({ ok: false, error: 'unknown_method' });
+}
+const fakeM = { auth: [], sent: [], mails: [], replies: [] };
+function fakeMicrosoft(req, res, raw) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); if (st === 202) return res.end(); res.end(JSON.stringify(o)); };
+  const u = new URL(req.url, 'http://x');
+  if (u.pathname === '/ms-token') {
+    const b = Object.fromEntries(new URLSearchParams(raw));
+    if (b.client_id !== 'mcid' || b.code !== 'mkod') return json({ error: 'invalid_grant' }, 400);
+    const idt = ['e30', Buffer.from(JSON.stringify({ preferred_username: 'can@contoso.com', name: 'Can' })).toString('base64url'), 'x'].join('.');
+    return json({ access_token: 'ms-at', refresh_token: 'ms-rt', expires_in: 3600, id_token: idt });
+  }
+  fakeM.auth.push(req.headers.authorization);
+  const p = u.pathname.replace(/^\/graph/, ''); const body = raw ? JSON.parse(raw) : {};
+  if (p === '/me') return json({ ad: 'Can', mail: 'can@contoso.com' });
+  if (p === '/me/sendMail') {
+    fakeM.sent.push(body); const msg = body.message;
+    fakeM.mails.push({ id: `AAM${fakeM.mails.length + 1}`, conversationId: 'c1', subject: msg.subject, from: { emailAddress: { name: 'Can', address: 'can@contoso.com' } }, toRecipients: msg.toRecipients, receivedDateTime: new Date().toISOString(), bodyPreview: msg.body.content, body: { contentType: 'html', content: `<p>${msg.body.content.replace(' ', '<br>')}</p>` }, isRead: false, hasAttachments: false, webLink: 'https://outlook/x' });
+    return json(null, 202);
+  }
+  if (p === '/me/mailFolders/inbox/messages') {
+    if (u.searchParams.get('$filter') !== 'isRead eq false' || u.searchParams.get('$top') !== '5') return json({ error: { message: 'beklenmeyen sorgu' } }, 400);
+    return json({ value: fakeM.mails.filter(m => !m.isRead) });
+  }
+  let m;
+  if ((m = p.match(/^\/me\/messages\/(\w+)\/reply$/))) { fakeM.replies.push(body.comment); return json(null, 202); }
+  if ((m = p.match(/^\/me\/messages\/(\w+)$/)) && req.method === 'PATCH') { const x = fakeM.mails.find(y => y.id === m[1]); Object.assign(x, body); return json(x); }
+  return json({ error: { message: 'yok ' + p } }, 404);
+}
 function fakeTelegramApi(req, res) {
   const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
   const m = req.url.match(/^\/tg\/bot123:abc\/(\w+)/); if (!m) return json({ ok: false, description: 'Unauthorized' }, 401);
@@ -566,6 +728,8 @@ function fakeTelegramApi(req, res) {
 }
 const fakeServer = require('http').createServer((req, res) => {
   if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
+  const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft]];
+  for (const [re, fn] of routes) if (re.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fn(req, res, raw)); }
   if (/^\/(oauth-token|gmail\/|drive\/|upload\/|calendar\/)/.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleOAuth(req, res, raw)); }
   if (req.url === '/token' || req.url.startsWith('/v4/')) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleApi(req, res, raw)); }
   if (req.url === '/rss.xml') { res.writeHead(200, { 'Content-Type': 'application/rss+xml' }); return res.end('<?xml version="1.0"?><rss><channel><title>T</title><item><title>İlk yazı</title><link>https://x.com/1</link><guid>1</guid></item></channel></rss>'); }
@@ -584,7 +748,7 @@ const fakeServer = require('http').createServer((req, res) => {
 
 (async () => {
   await new Promise(r => fakeServer.listen(0, '127.0.0.1', r)); fakeClaude.port = fakeServer.address().port;
-  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token` }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token` }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0;

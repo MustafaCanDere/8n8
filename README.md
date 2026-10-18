@@ -32,14 +32,15 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 - Akış sürümleri (otomatik kayıt, eski sürüme dönme), JSON olarak dışa ve içe aktarma, hazır şablonlar
 - **Claude ile akış oluştur:** "Her sabah RSS'teki yeni yazıları özetleyip Telegram'a gönder" gibi yazın, akışı Claude kursun. Editörde mevcut akışı da değiştirebilir; değişiklik geri alınabilir.
 - **n8n'den içe aktarma:** n8n'den dışa aktarılan JSON'u İçe aktar penceresine yapıştırın. Bilinen node'lar ve ifadeler dönüştürülür, karşılığı olmayanlar notla işaretlenir.
+- **Özet sayfası:** seçilen dönemdeki çalıştırma sayısı, başarı oranı, ortalama süre, günlük grafik, akış başına başarı ve en sık hatalar
 - Açık ve koyu tema
 
-**Tetikleyiciler:** Manuel, Zamanlayıcı (aralık ya da cron ifadesi), Webhook (`/webhook/<yol>`, isteğe bağlı başlık / Bearer / Basic kimlik doğrulaması), Form (`/form/<yol>` adresinde hazır web formu), Sohbet (`/sohbet/<yol>` adresinde hazır sohbet sayfası), RSS yeni yazı, Telegram mesajı gelince, Gmail'e e-posta gelince, Klasör izleyici, Hata tetikleyici, Alt akış girişi
+**Tetikleyiciler:** Manuel, Zamanlayıcı (aralık ya da cron ifadesi), Webhook (`/webhook/<yol>`, isteğe bağlı başlık / Bearer / Basic kimlik doğrulaması), Form (`/form/<yol>` adresinde hazır web formu), Sohbet (`/sohbet/<yol>` adresinde hazır sohbet sayfası), RSS yeni yazı, Telegram mesajı gelince, Gmail'e e-posta gelince, Outlook'a e-posta gelince, Slack'e mesaj gelince, Klasör izleyici, Hata tetikleyici, Alt akış girişi
 
-**Node'lar (55 tür)**
+**Node'lar (60 tür)**
 - **Eylemler:** HTTP isteği, Webhook'a yanıt ver, Başka akışı çalıştır, RSS oku
 - **Yapay zekâ:** Claude, Claude ajanı (araç kullanan, hafızalı ajan)
-- **Uygulamalar:** Gmail, Google Drive, Google Takvim, Google E-Tablolar, Veritabanı (PostgreSQL, MySQL / MariaDB, SQLite), Telegram, Slack / Discord, E-posta (SMTP)
+- **Uygulamalar:** Gmail, Google Drive, Google Takvim, Google E-Tablolar, Outlook (Microsoft 365), Slack, Notion, Veritabanı (PostgreSQL, MySQL / MariaDB, SQLite), Telegram, Slack / Discord webhook, E-posta (SMTP)
 - **Veri:** Veri tablosu, Alanları ayarla, Alanları yeniden adlandır, Filtrele, Sırala, Sınırla, Tekrarları kaldır, Yeni öğeleri bul, Listeyi ayır, Topla, Özetle, Veri setlerini karşılaştır, Tarih ve saat, Şifreleme / hash, Dosya oku, Dosyaya yaz (JSON, CSV, metin)
 - **Dönüştürme:** HTML'den veri çıkar (CSS seçici), XML ⇄ JSON, Markdown ⇄ HTML, Metin işlemleri
 - **Mantık ve akış:** Onay bekle, Döngü (parça parça işle), Eğer, Yönlendir (switch), Birleştir, Kod (JavaScript), Bekle, Hiçbir şey yapma, Hata ver
@@ -59,11 +60,21 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 3. "Kimlik bilgileri → OAuth istemci kimliği → Web uygulaması" oluşturun ve 8n8'in gösterdiği yönlendirme adresini (`http://localhost:5678/oauth/callback`) ekleyin.
 4. İstemci kimliğini ve gizli anahtarı 8n8'e girip "Hesaba bağlan"a basın. Oturum süresi dolunca 8n8 kendiliğinden yeniler.
 
-Aynı yolla "OAuth2 (başka servisler)" türüyle GitHub, Microsoft, Spotify gibi servislere bağlanıp HTTP isteği node'unda kullanabilirsiniz.
+**Microsoft hesabı (Outlook):** Kimlik bilgileri sayfasında "Microsoft hesabı" ekleyin:
+1. [Azure portalı](https://portal.azure.com)'nda Microsoft Entra ID → Uygulama kayıtları → Yeni kayıt açın. Hesap türü olarak "herhangi bir kuruluş dizini ve kişisel Microsoft hesapları"nı seçin.
+2. Yönlendirme adresi olarak platform "Web" ile 8n8'in gösterdiği adresi ekleyin.
+3. Sertifikalar ve gizli diziler → Yeni istemci gizli dizisi oluşturun ve "Değer"i kopyalayın.
+4. Uygulama (istemci) kimliğini ve gizli diziyi 8n8'e girip "Hesaba bağlan"a basın. Outlook node'u e-posta gönderir, okur, yanıtlar, okundu işaretler ve siler; HTTP isteği node'unda da bu kimlik bilgisiyle Microsoft Graph'a istek atabilirsiniz.
+
+**Slack:** [api.slack.com/apps](https://api.slack.com/apps)'te bir uygulama açın, OAuth & Permissions'ta `chat:write`, `channels:read`, `channels:history`, `reactions:write` izinlerini ekleyip çalışma alanına kurun ve "Bot User OAuth Token"ı (`xoxb-…`) kimlik bilgisi olarak girin. Botu kanala `/invite @bot` ile ekleyin. Kanalı `#genel` gibi adıyla yazabilirsiniz. Slack node'u mesaj gönderir (konuya yanıt dahil), günceller, tepki ekler, kanal mesajlarını ve kanalları listeler; "Slack'e mesaj gelince" tetikleyicisi kanaldaki yeni insan mesajlarında akışı başlatır.
+
+**Notion:** [notion.so/my-integrations](https://www.notion.so/my-integrations)'da bir entegrasyon açın, anahtarını kimlik bilgisi olarak girin ve kullanacağınız veritabanında ••• → Bağlantılar'dan entegrasyonu ekleyin. Veritabanı alanına tarayıcıdaki bağlantıyı yapıştırabilirsiniz. Notion node'u veritabanını sorgular (isteğe bağlı Notion filtresiyle), satır ekler, sayfayı günceller, sayfaya metin ekler, arşivler ve arama yapar. Satır eklerken "sütun adı = değer" yazmanız yeter; metin, sayı, seçim, çoklu seçim, tarih, onay kutusu gibi türler veritabanından okunur.
+
+Aynı yolla "OAuth2 (başka servisler)" türüyle GitHub, Spotify gibi servislere bağlanıp HTTP isteği node'unda kullanabilirsiniz.
 
 **Onay bekle:** Akış bu node'da durur ve bir onay sayfası açılır. Sayfanın adresini önceki bir node'da `{{ $execution.onayAdresi }}` ile e-posta ya da Telegram mesajına koyun; kişi "Onayla" ya da "Reddet"e basınca akış ilgili çıkıştan devam eder. Bekleme süresi akış zaman aşımına sayılmaz. Program kapanırsa bekleyen onaylar iptal olur.
 
-**Bağlantıyı dene:** Kimlik bilgisi penceresindeki düğme Claude, Telegram, SMTP, veritabanı ve Google bilgilerinin çalışıp çalışmadığını kaydetmeden önce gösterir.
+**Bağlantıyı dene:** Kimlik bilgisi penceresindeki düğme Claude, Telegram, Slack, Notion, SMTP, veritabanı ve Google hizmet hesabı bilgilerinin çalışıp çalışmadığını kaydetmeden önce gösterir.
 
 **Çalıştırma ayarları**
 - Node başına: hata olursa yeniden dene (deneme sayısı, bekleme süresi), hataya rağmen devam et, not
@@ -136,8 +147,10 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 - Kod node'u ayrı ve kısıtlı bir süreçte çalışır: dosyalara, başka programlara ve API anahtarlarınıza erişemez, bellek ve süre sınırı vardır. İnternete (fetch) erişebilir; başkalarından aldığınız akışlardaki kodu yine de okuyun.
 - Telegram tetikleyicisi botun mesajlarını sorgulayarak alır; botta webhook kuruluysa (ayar açıkken) onu kaldırır.
 - RSS, Telegram ve klasör tetikleyicileri yalnızca program açıkken kontrol eder.
-- Notion, Slack (bot), Microsoft 365 gibi servisler için hazır node yok; bunlara HTTP isteği node'u ve API anahtarı ya da OAuth2 kimlik bilgisiyle bağlanabilirsiniz.
-- Gmail tetikleyicisi ve onay bekleme program açıkken çalışır.
+- Hazır node'u olmayan servislere HTTP isteği node'u ve API anahtarı ya da OAuth2 kimlik bilgisiyle bağlanabilirsiniz.
+- Gmail, Outlook ve Slack tetikleyicileri ile onay bekleme program açıkken çalışır; tetikleyiciler en sık 5 saniyede bir kontrol eder.
+- Notion, Slack ve Outlook node'ları ve Microsoft girişi gerçek hesaplarla değil, resmî API belgelerine göre yazılmış sahte sunucularla test edildi.
+- Özet sayfası saklanan çalıştırma kayıtlarından hesaplanır (`N8N8_MAX_EXECUTIONS`, varsayılan son 1000).
 - Tek kullanıcı içindir; ekip hesabı ve yetki yönetimi yoktur.
 
 ## Test
@@ -146,4 +159,4 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 npm test
 ```
 
-Testler (28 adet) geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, döngü, veri tabloları, sohbet ve Claude ajanı, Claude ile akış oluşturma, n8n içe aktarma, RSS ve klasör izleyici, Kod node'unun kısıtlı süreci, SQLite, Google E-Tablolar, Telegram tetikleyicisi, Google OAuth girişi ve token yenileme, Gmail, Drive, Takvim, onay bekleme ve bozuk isteklere dayanıklılık denenir. Claude, Google, Telegram, SMTP ve RSS için sahte yerel sunucular kullanılır; internet ve API anahtarı gerekmez.
+Testler (32 adet) geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, döngü, veri tabloları, sohbet ve Claude ajanı, Claude ile akış oluşturma, n8n içe aktarma, RSS ve klasör izleyici, Kod node'unun kısıtlı süreci, SQLite, Google E-Tablolar, Telegram tetikleyicisi, Google OAuth girişi ve token yenileme, Gmail, Drive, Takvim, Notion, Slack ve Slack tetikleyicisi, Microsoft girişi ve Outlook, Özet istatistikleri, onay bekleme ve bozuk isteklere dayanıklılık denenir. Claude, Google, Microsoft, Notion, Slack, Telegram, SMTP ve RSS için sahte yerel sunucular kullanılır; internet ve API anahtarı gerekmez.

@@ -254,6 +254,19 @@ table.dt { border-collapse: collapse; font-size: 12px; width: max-content; min-w
 pre.json { margin: 0; font: 12px/1.55 var(--mono); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow: auto; max-height: 60vh; white-space: pre; }
 .json .k { color: var(--c-logic); } .json .s { color: var(--accent); } .json .n { color: var(--c-action); } .json .b { color: var(--c-code); }
 pre.logs { margin: 0; font: 12px/1.5 var(--mono); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow: auto; max-height: 30vh; white-space: pre-wrap; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 18px 0; }
+.kpi { padding: 14px 16px; } .kpi b { display: block; font-size: 26px; letter-spacing: -0.02em; margin-top: 4px; font-variant-numeric: tabular-nums; } .kpi span { color: var(--muted); font-size: 12.5px; } .kpi small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.chart { padding: 16px; margin-bottom: 18px; } .chart h2, .stat-sec h2 { font-size: 15px; margin: 0 0 12px; }
+.bars { display: flex; align-items: flex-end; gap: 3px; height: 150px; border-bottom: 1px solid var(--line); }
+.bars .col { flex: 1; display: flex; flex-direction: column-reverse; min-width: 2px; height: 100%; justify-content: flex-start; position: relative; }
+.bars .col i { display: block; width: 100%; } .bars .col .s { background: var(--ok); } .bars .col .e { background: var(--err); } .bars .col .o { background: var(--edge); }
+.bars .col:hover { outline: 2px solid var(--accent-soft); }
+.bar-x { display: flex; justify-content: space-between; color: var(--muted); font-size: 11.5px; margin-top: 6px; }
+.legend { display: flex; gap: 14px; font-size: 12.5px; color: var(--muted); margin-top: 8px; } .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.ratebar { height: 6px; border-radius: 3px; background: var(--err); overflow: hidden; min-width: 60px; } .ratebar i { display: block; height: 100%; background: var(--ok); }
+.stat-sec { margin-bottom: 18px; } .stat-sec .card { padding: 4px 0; }
+.errrow { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; padding: 10px 16px; border-top: 1px solid var(--line); align-items: baseline; } .errrow:first-child { border-top: 0; }
+.errrow .n { font-weight: 600; color: var(--err); font-variant-numeric: tabular-nums; } .errrow .m { overflow-wrap: anywhere; font-size: 13px; } .errrow .w { color: var(--muted); font-size: 12px; grid-column: 2 / 4; }
 .nodata { color: var(--muted); font-size: 13px; padding: 18px 0; text-align: center; }
 
 /* ---------- drawer ---------- */
@@ -352,6 +365,7 @@ kbd { font: 500 11px var(--mono); border: 1px solid var(--line); border-bottom-w
     <div class="logo">8<b>n</b>8</div>
     <a class="navlink" href="#/akislar" data-nav="akislar"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h6v5H4zM14 13h6v5h-6zM10 8.5h2a2 2 0 0 1 2 2v5"/></svg>Akışlar</a>
     <a class="navlink" href="#/calistirmalar" data-nav="calistirmalar"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h13"/></svg>Çalıştırmalar <span class="badge" id="run-badge" hidden></span></a>
+    <a class="navlink" href="#/ozet" data-nav="ozet"><svg class="i" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Özet</a>
     <a class="navlink" href="#/kimlik" data-nav="kimlik"><svg class="i" viewBox="0 0 24 24"><path d="M15 7a4 4 0 1 1-3.9 4.9L4 19v-3h2v-2h2l1.6-1.6"/><circle cx="15.5" cy="8.5" r="1"/></svg>Kimlik bilgileri</a>
     <a class="navlink" href="#/tablolar" data-nav="tablolar"><svg class="i" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 10h16M4 15h16M10 5v14"/></svg>Tablolar</a>
     <a class="navlink" href="#/degiskenler" data-nav="degiskenler"><svg class="i" viewBox="0 0 24 24"><path d="M7 4c-2 0-2 2-2 4s-2 4-2 4 2 2 2 4 0 4 2 4M17 4c2 0 2 2 2 4s2 4 2 4-2 2-2 4 0 4-2 4M9 15l6-6M9 9l6 6"/></svg>Değişkenler</a>
@@ -469,6 +483,7 @@ async function route() {
     if (page === 'akis' && arg) await openEditor(arg);
     else if (page === 'calistirmalar') await pageExecutions();
     else if (page === 'calistirma' && arg) await pageExecution(arg);
+    else if (page === 'ozet') await pageStats(arg);
     else if (page === 'kimlik') await pageCredentials();
     else if (page === 'degiskenler') await pageVariables();
     else if (page === 'tablolar') await pageTables();
@@ -1280,7 +1295,7 @@ function triggerInfo(n) {
       <div class="urlrow"><code>${esc(base)}/sohbet/${esc(p)}</code>${ED.wf.active ? `<a class="btn sm" href="/sohbet/${esc(p)}" target="_blank">Aç</a>` : '<span class="pill idle">akış kapalı</span>'}</div>
       <span class="help">Sayfa her mesajı bu akışa gönderir ve son node'un "${esc(n.params.replyField || 'yanit')}" alanını cevap olarak gösterir. Başka sitelerden <code>POST {"mesaj": "…", "oturum": "…"}</code> ile de çağrılabilir.</span></div>`;
   }
-  if (['rssTrigger', 'telegramTrigger', 'fileTrigger', 'gmailTrigger'].includes(n.type)) {
+  if (T(n.type)?.poll) {
     const st = ED.wf.polls?.[n.id];
     return `<div class="info-box">${ED.wf.active ? (st ? `Son kontrol: <b>${new Date(st.lastPoll).toLocaleString('tr-TR')}</b>${st.lastError ? `<div class="err-box" style="margin-top:6px">${esc(st.lastError)}</div>` : ` · bulunan: ${st.found || 0}`}` : 'İlk kontrol birazdan yapılacak…') : 'Akış etkin değil. Düzenli kontrol için üstteki <b>Etkin</b> anahtarını açın. "Buradan çalıştır" ile şimdi örnek veri alabilirsiniz.'}${n.type === 'fileTrigger' ? `<span class="help">İzlenen klasör: <code>${esc(G.info?.files || 'dosyalar')}/${esc(n.params.folder || '')}</code></span>` : ''}</div>`;
   }
@@ -1469,6 +1484,43 @@ function renderDrawer() {
       <a class="btn sm" href="#/calistirma/${ex.id}">Ayrıntı</a></div>
     ${ex.error && ex.status !== 'success' ? `<div class="err-box" style="margin-bottom:10px">${esc(ex.error)}</div>` : ''}
     ${timelineHTML({ ...ex, duration: dur }, ED.wf.nodes)}`;
+}
+
+/* ================= stats page ================= */
+async function pageStats(arg) {
+  const days = [7, 30, 90].includes(Number(arg)) ? Number(arg) : 7;
+  const d = await api('GET', `/api/stats?days=${days}`);
+  const max = Math.max(1, ...d.gunluk.map(x => x.basarili + x.hatali + x.diger));
+  const fmtDay = k => new Date(k + 'T12:00:00').toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' });
+  const kpi = (label, value, note = '') => `<div class="card kpi"><span>${label}</span><b>${value}</b>${note ? `<small>${note}</small>` : ''}</div>`;
+  const modeLabel = Object.entries(d.sekiller).sort((a, b) => b[1] - a[1]).map(([m, n]) => `${esc(m)} ${n}`).join(' · ');
+  view.innerHTML = `<div class="page"><div class="page-in">
+    <div class="page-head"><h1>Özet</h1>
+      <div class="filters"><select class="inp" id="st-days" aria-label="Dönem">${[7, 30, 90].map(n => `<option value="${n}"${n === days ? ' selected' : ''}>Son ${n} gün</option>`).join('')}</select>
+      <button class="btn" id="st-refresh">Yenile</button></div></div>
+    <div class="kpis">
+      ${kpi('Çalıştırma', d.toplam.toLocaleString('tr-TR'), d.calisiyor ? `şu an ${d.calisiyor} çalışıyor` : '')}
+      ${kpi('Başarı oranı', d.basariOrani == null ? '–' : `%${d.basariOrani.toLocaleString('tr-TR')}`, `${d.basarili} başarılı · ${d.hatali} hatalı`)}
+      ${kpi('Ortalama süre', d.ortSure == null ? '–' : fmtMs(d.ortSure), d.p95Sure == null ? '' : `%95'i ${fmtMs(d.p95Sure)} altında`)}
+      ${kpi('Etkin akış', `${d.etkinAkis} / ${d.akisSayisi}`, d.bekleyenOnay ? `${d.bekleyenOnay} onay bekliyor` : '')}
+    </div>
+    <div class="card chart"><h2>Günlük çalıştırmalar</h2>
+      <div class="bars" role="img" aria-label="Günlük çalıştırma grafiği">${d.gunluk.map(x => `<div class="col" title="${fmtDay(x.gun)}: ${x.basarili} başarılı, ${x.hatali} hatalı${x.diger ? `, ${x.diger} diğer` : ''}">${['s:basarili', 'e:hatali', 'o:diger'].map(k => { const [c, f] = k.split(':'); return x[f] ? `<i class="${c}" style="height:${x[f] / max * 100}%"></i>` : ''; }).join('')}</div>`).join('')}</div>
+      <div class="bar-x"><span>${fmtDay(d.gunluk[0].gun)}</span><span>${fmtDay(d.gunluk[d.gunluk.length - 1].gun)}</span></div>
+      <div class="legend"><span><i style="background:var(--ok)"></i>Başarılı</span><span><i style="background:var(--err)"></i>Hatalı</span><span><i style="background:var(--edge)"></i>Durdurulan / bekleyen</span>${modeLabel ? `<span style="margin-left:auto">${modeLabel}</span>` : ''}</div>
+    </div>
+    <div class="stat-sec"><h2>Akışlar</h2><div class="card tablewrap-x"><table class="grid"><thead><tr><th>Akış</th><th>Çalıştırma</th><th>Başarı</th><th>Ort. süre</th><th>Son çalışma</th></tr></thead><tbody>
+      ${d.akislar.length ? d.akislar.map(w => { const rate = w.basarili + w.hatali ? w.basarili / (w.basarili + w.hatali) : null; return `<tr><td>${w.ad ? `<a href="#/akis/${esc(w.id)}">${esc(w.ad)}</a>` : '<span class="help">silinmiş akış</span>'}</td><td class="num">${w.toplam}</td>
+        <td>${rate == null ? '–' : `<div style="display:flex;align-items:center;gap:8px"><div class="ratebar"><i style="width:${rate * 100}%"></i></div><span class="num">%${Math.round(rate * 100)}</span></div>`}</td>
+        <td class="num">${w.ortSure == null ? '–' : fmtMs(w.ortSure)}</td><td><span class="pill ${w.sonDurum}">${statusLabel(w.sonDurum)}</span> ${ago(w.son)}</td></tr>`; }).join('') : '<tr><td colspan="5" class="nodata">Bu dönemde çalıştırma yok.</td></tr>'}
+    </tbody></table></div></div>
+    <div class="stat-sec"><h2>En sık hatalar</h2><div class="card">${d.hatalar.length ? d.hatalar.map(x => `<div class="errrow"><span class="n">${x.sayi}×</span><span class="m">${esc(x.hata)}</span><a class="btn sm" href="#/calistirma/${esc(x.sonId)}">Son örnek</a><span class="w">${esc(x.akis || '')} · en son ${ago(x.son)}</span></div>`).join('') : '<div class="nodata">Bu dönemde hata yok.</div>'}</div></div>
+    <p class="help">Son ${d.kayitSiniri} çalıştırma kaydına göre hesaplanır; daha eskileri otomatik silinir.</p>
+  </div></div>`;
+  $('#st-days').addEventListener('change', e => { location.hash = `#/ozet/${e.target.value}`; });
+  $('#st-refresh').addEventListener('click', () => route());
+  let t; const onEv = ev => { if (ev.type === 'exec:end') { clearTimeout(t); t = setTimeout(() => { if (location.hash.startsWith('#/ozet')) route(); }, 1500); } };
+  live.listeners.add(onEv); cleanup = () => { clearTimeout(t); live.listeners.delete(onEv); };
 }
 
 /* ================= executions pages ================= */
