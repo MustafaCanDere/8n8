@@ -34,15 +34,15 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 - **n8n'den içe aktarma:** n8n'den dışa aktarılan JSON'u İçe aktar penceresine yapıştırın. Bilinen node'lar ve ifadeler dönüştürülür, karşılığı olmayanlar notla işaretlenir.
 - Açık ve koyu tema
 
-**Tetikleyiciler:** Manuel, Zamanlayıcı (aralık ya da cron ifadesi), Webhook (`/webhook/<yol>`, isteğe bağlı başlık / Bearer / Basic kimlik doğrulaması), Form (`/form/<yol>` adresinde hazır web formu), Sohbet (`/sohbet/<yol>` adresinde hazır sohbet sayfası), RSS yeni yazı, Telegram mesajı gelince, Klasör izleyici, Hata tetikleyici, Alt akış girişi
+**Tetikleyiciler:** Manuel, Zamanlayıcı (aralık ya da cron ifadesi), Webhook (`/webhook/<yol>`, isteğe bağlı başlık / Bearer / Basic kimlik doğrulaması), Form (`/form/<yol>` adresinde hazır web formu), Sohbet (`/sohbet/<yol>` adresinde hazır sohbet sayfası), RSS yeni yazı, Telegram mesajı gelince, Gmail'e e-posta gelince, Klasör izleyici, Hata tetikleyici, Alt akış girişi
 
-**Node'lar (50 tür)**
+**Node'lar (55 tür)**
 - **Eylemler:** HTTP isteği, Webhook'a yanıt ver, Başka akışı çalıştır, RSS oku
 - **Yapay zekâ:** Claude, Claude ajanı (araç kullanan, hafızalı ajan)
-- **Uygulamalar:** Veritabanı (PostgreSQL, MySQL / MariaDB, SQLite), Google E-Tablolar, Telegram, Slack / Discord, E-posta (SMTP)
+- **Uygulamalar:** Gmail, Google Drive, Google Takvim, Google E-Tablolar, Veritabanı (PostgreSQL, MySQL / MariaDB, SQLite), Telegram, Slack / Discord, E-posta (SMTP)
 - **Veri:** Veri tablosu, Alanları ayarla, Alanları yeniden adlandır, Filtrele, Sırala, Sınırla, Tekrarları kaldır, Yeni öğeleri bul, Listeyi ayır, Topla, Özetle, Veri setlerini karşılaştır, Tarih ve saat, Şifreleme / hash, Dosya oku, Dosyaya yaz (JSON, CSV, metin)
 - **Dönüştürme:** HTML'den veri çıkar (CSS seçici), XML ⇄ JSON, Markdown ⇄ HTML, Metin işlemleri
-- **Mantık ve akış:** Döngü (parça parça işle), Eğer, Yönlendir (switch), Birleştir, Kod (JavaScript), Bekle, Hiçbir şey yapma, Hata ver
+- **Mantık ve akış:** Onay bekle, Döngü (parça parça işle), Eğer, Yönlendir (switch), Birleştir, Kod (JavaScript), Bekle, Hiçbir şey yapma, Hata ver
 - **Tuval:** Not
 
 **Döngü:** Döngü node'u öğeleri parça parça işler. "Döngü" çıkışından işlenecek adımlara gidin, son adımı yeniden Döngü node'una bağlayın; bütün parçalar bitince "Bitti" çıkışı devam eder. Geriye dönen bağlantılar yalnızca Döngü node'una girebilir.
@@ -52,6 +52,16 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 **Claude ajanı:** Ajan; web isteği, hesap makinesi, saat, veri tabloları ve araç olarak seçtiğiniz başka akışları kendisi kullanarak cevap verir. Sohbet tetikleyicisiyle birlikte konuşma geçmişini hatırlar (akış ayarlarındaki "Hafızayı temizle" ile sıfırlanır).
 
 **Veritabanları ve Google E-Tablolar:** Veritabanı node'u SQL sorgusu çalıştırır ya da tablo adı ve eşleştirme sütunuyla satır okur, ekler, ekler-ya-da-günceller, günceller ve siler. Değerleri SQL'e `$1, $2` yer tutucularıyla verin; bu SQL enjeksiyonuna karşı korur. Google E-Tablolar için Google Cloud'da bir hizmet hesabı açıp JSON anahtarını kimlik bilgisi olarak ekleyin ve tabloyu o hesabın e-posta adresiyle paylaşın.
+
+**Google hesabı ve OAuth:** Gmail, Drive, Takvim ve E-Tablolar için Kimlik bilgileri sayfasında "Google hesabı" ekleyin:
+1. [Google Cloud Console](https://console.cloud.google.com)'da bir proje açın; Gmail, Drive, Calendar ve Sheets API'lerini etkinleştirin.
+2. "OAuth izin ekranı"nı ayarlayın (Harici; kendinizi test kullanıcısı olarak ekleyin).
+3. "Kimlik bilgileri → OAuth istemci kimliği → Web uygulaması" oluşturun ve 8n8'in gösterdiği yönlendirme adresini (`http://localhost:5678/oauth/callback`) ekleyin.
+4. İstemci kimliğini ve gizli anahtarı 8n8'e girip "Hesaba bağlan"a basın. Oturum süresi dolunca 8n8 kendiliğinden yeniler.
+
+Aynı yolla "OAuth2 (başka servisler)" türüyle GitHub, Microsoft, Spotify gibi servislere bağlanıp HTTP isteği node'unda kullanabilirsiniz.
+
+**Onay bekle:** Akış bu node'da durur ve bir onay sayfası açılır. Sayfanın adresini önceki bir node'da `{{ $execution.onayAdresi }}` ile e-posta ya da Telegram mesajına koyun; kişi "Onayla" ya da "Reddet"e basınca akış ilgili çıkıştan devam eder. Bekleme süresi akış zaman aşımına sayılmaz. Program kapanırsa bekleyen onaylar iptal olur.
 
 **Bağlantıyı dene:** Kimlik bilgisi penceresindeki düğme Claude, Telegram, SMTP, veritabanı ve Google bilgilerinin çalışıp çalışmadığını kaydetmeden önce gösterir.
 
@@ -126,7 +136,8 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 - Kod node'u ayrı ve kısıtlı bir süreçte çalışır: dosyalara, başka programlara ve API anahtarlarınıza erişemez, bellek ve süre sınırı vardır. İnternete (fetch) erişebilir; başkalarından aldığınız akışlardaki kodu yine de okuyun.
 - Telegram tetikleyicisi botun mesajlarını sorgulayarak alır; botta webhook kuruluysa (ayar açıkken) onu kaldırır.
 - RSS, Telegram ve klasör tetikleyicileri yalnızca program açıkken kontrol eder.
-- Google E-Tablolar dışındaki Google servisleri (Gmail, Drive) ve Notion gibi servisler için hazır node yok; OAuth girişi desteklenmiyor. API'si olan her servise HTTP isteği node'u ve API anahtarıyla bağlanabilirsiniz.
+- Notion, Slack (bot), Microsoft 365 gibi servisler için hazır node yok; bunlara HTTP isteği node'u ve API anahtarı ya da OAuth2 kimlik bilgisiyle bağlanabilirsiniz.
+- Gmail tetikleyicisi ve onay bekleme program açıkken çalışır.
 - Tek kullanıcı içindir; ekip hesabı ve yetki yönetimi yoktur.
 
 ## Test
@@ -135,4 +146,4 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 npm test
 ```
 
-Testler (26 adet) geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, döngü, veri tabloları, sohbet ve Claude ajanı, Claude ile akış oluşturma, n8n içe aktarma, RSS ve klasör izleyici, Kod node'unun kısıtlı süreci, SQLite, Google E-Tablolar, Telegram tetikleyicisi ve bozuk isteklere dayanıklılık denenir. Claude, Google, Telegram, SMTP ve RSS için sahte yerel sunucular kullanılır; internet ve API anahtarı gerekmez.
+Testler (28 adet) geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, döngü, veri tabloları, sohbet ve Claude ajanı, Claude ile akış oluşturma, n8n içe aktarma, RSS ve klasör izleyici, Kod node'unun kısıtlı süreci, SQLite, Google E-Tablolar, Telegram tetikleyicisi, Google OAuth girişi ve token yenileme, Gmail, Drive, Takvim, onay bekleme ve bozuk isteklere dayanıklılık denenir. Claude, Google, Telegram, SMTP ve RSS için sahte yerel sunucular kullanılır; internet ve API anahtarı gerekmez.

@@ -157,6 +157,7 @@ textarea.code { min-height: 220px; }
 .node.st-success { border-color: var(--ok); }
 .node.st-error { border-color: var(--err); box-shadow: 0 0 0 3px color-mix(in srgb, var(--err) 22%, transparent), var(--shadow); }
 .node.st-running { border-color: var(--accent); animation: pulse 1s ease-in-out infinite; }
+.node.st-waiting { border-color: var(--warn); border-style: dashed; }
 .node.st-skipped { opacity: .62; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 25%, transparent), var(--shadow); } }
 .nbody { position: absolute; inset: 0; display: flex; align-items: center; gap: 10px; padding: 0 12px; overflow: hidden; }
@@ -690,6 +691,7 @@ async function openEditor(id) {
   G.vars = await api('GET', '/api/variables');
   G.tables = await api('GET', '/api/tables');
   try { wf.polls = (await api('GET', `/api/workflows/${id}/status`)).polls; } catch {}
+  try { G.approvals = await api('GET', '/api/approvals'); } catch { G.approvals = []; }
   for (const n of wf.nodes) if (T(n.type)) n.params = { ...defaults(n.type), ...(n.params || {}) }; // nodes made through the API or by Claude may lack some settings
   Object.assign(ED, { wf, sel: new Set(), selEdge: null, panelOpen: false, tab: 'params', execs: ex.items, viewId: null, cache: new Map(), live: null, hist: { past: [], future: [] }, dirty: false });
   ED.drawer = ED.drawer && ex.items.length > 0;
@@ -767,6 +769,11 @@ function handleLive(ev) {
     if (ev.type === 'exec:end') { const s = ED.execs.find(x => x.id === ev.execId); if (s) Object.assign(s, { status: ev.status, duration: ev.duration, error: ev.error }); renderDrawer(); }
     return;
   } else if (ev.type === 'node:start') { ED.live.nodes[ev.nodeId] = { status: 'running', t: performance.now() - ED.live.t0 }; ED.live.order.push(ev.nodeId); }
+  else if (ev.type === 'node:waiting') {
+    ED.live.nodes[ev.nodeId] = { ...(ED.live.nodes[ev.nodeId] || {}), status: 'waiting' };
+    api('GET', '/api/approvals').then(a => { G.approvals = a; if (ED.panelOpen) renderPanel(); }).catch(() => {});
+    toast(`"${nodeById(ev.nodeId)?.name || 'Onay'}" onay bekliyor. Adresi node'un ayarlarında bulabilirsiniz.`);
+  }
   else if (ev.type === 'node:end') {
     const n = nodeById(ev.nodeId);
     ED.live.nodes[ev.nodeId] = { ...(ED.live.nodes[ev.nodeId] || {}), status: ev.status, d: ev.d, error: ev.error, name: n?.name, type: n?.type, outCounts: ev.out, inCounts: ev.in };
@@ -775,6 +782,7 @@ function handleLive(ev) {
   } else if (ev.type === 'exec:end') {
     const s = ED.execs.find(x => x.id === ev.execId); if (s) Object.assign(s, { status: ev.status, duration: ev.duration, error: ev.error });
     const id = ev.execId; ED.live = null;
+    if (G.approvals?.some(a => a.execId === id)) G.approvals = G.approvals.filter(a => a.execId !== id);
     if (ev.status === 'error') toast(`Çalıştırma hata verdi: ${ev.error}`, true);
     else if (ev.status === 'success') toast(`Çalıştırma tamamlandı · ${fmtMs(ev.duration)}`);
     loadExec(id);
@@ -1247,6 +1255,11 @@ function fieldHTML(n, f) {
 }
 function triggerInfo(n) {
   const base = location.origin;
+  if (n.type === 'approval') {
+    const w = (G.approvals || []).filter(a => a.node === n.name && a.workflow === ED.wf.name);
+    return `<div class="info-box">${w.length ? w.map(a => `<b>Onay bekleniyor</b> · ${new Date(a.since).toLocaleTimeString('tr-TR')}<div class="urlrow"><code>${esc(a.url)}</code><a class="btn sm" href="${esc(a.url)}" target="_blank" rel="noopener">Onay sayfasını aç</a></div>`).join('')
+      : 'Çalıştığında akış burada durur ve onay sayfasının adresi oluşur. Adresi kişiye ulaştırmak için bu node\'dan <b>önce</b> bir E-posta, Gmail ya da Telegram node\'u koyup metne <code>{{ $execution.onayAdresi }}</code> yazın.'}</div>`;
+  }
   if (n.type === 'webhook') {
     const p = encodeURI(n.params.path || ''); const m = n.params.method === 'ANY' ? 'POST' : n.params.method;
     return `<div class="info-box"><b>Webhook adresleri</b>
@@ -1267,7 +1280,7 @@ function triggerInfo(n) {
       <div class="urlrow"><code>${esc(base)}/sohbet/${esc(p)}</code>${ED.wf.active ? `<a class="btn sm" href="/sohbet/${esc(p)}" target="_blank">Aç</a>` : '<span class="pill idle">akış kapalı</span>'}</div>
       <span class="help">Sayfa her mesajı bu akışa gönderir ve son node'un "${esc(n.params.replyField || 'yanit')}" alanını cevap olarak gösterir. Başka sitelerden <code>POST {"mesaj": "…", "oturum": "…"}</code> ile de çağrılabilir.</span></div>`;
   }
-  if (['rssTrigger', 'telegramTrigger', 'fileTrigger'].includes(n.type)) {
+  if (['rssTrigger', 'telegramTrigger', 'fileTrigger', 'gmailTrigger'].includes(n.type)) {
     const st = ED.wf.polls?.[n.id];
     return `<div class="info-box">${ED.wf.active ? (st ? `Son kontrol: <b>${new Date(st.lastPoll).toLocaleString('tr-TR')}</b>${st.lastError ? `<div class="err-box" style="margin-top:6px">${esc(st.lastError)}</div>` : ` · bulunan: ${st.found || 0}`}` : 'İlk kontrol birazdan yapılacak…') : 'Akış etkin değil. Düzenli kontrol için üstteki <b>Etkin</b> anahtarını açın. "Buradan çalıştır" ile şimdi örnek veri alabilirsiniz.'}${n.type === 'fileTrigger' ? `<span class="help">İzlenen klasör: <code>${esc(G.info?.files || 'dosyalar')}/${esc(n.params.folder || '')}</code></span>` : ''}</div>`;
   }
@@ -1542,8 +1555,32 @@ async function openCredential(id, types, onSaved) {
           : f.multiline ? `<textarea class="inp mono" id="c-${f.key}" data-cf="${f.key}" rows="6" spellcheck="false" autocomplete="off" placeholder="${f.secret && existing?.filled?.[f.key] ? 'Kayıtlı (değiştirmek için yapıştırın)' : ''}">${esc(f.secret ? '' : existing?.data?.[f.key] ?? f.def ?? '')}</textarea>`
           : `<input class="inp mono" id="c-${f.key}" data-cf="${f.key}" type="${f.secret ? 'password' : 'text'}" autocomplete="off" value="${esc(f.secret ? '' : existing?.data?.[f.key] ?? f.def ?? '')}" placeholder="${f.secret && existing?.filled?.[f.key] ? 'Kayıtlı (değiştirmek için yazın)' : ''}">`}
           ${f.help ? `<span class="help">${esc(f.help)}</span>` : ''}</div>`).join('')}
-      </div><div class="mfoot"><span class="x" id="c-err" role="status"></span>${t.testable ? '<button class="btn" id="c-test">Bağlantıyı dene</button>' : ''}<button class="btn" data-close>Vazgeç</button><button class="btn primary" id="c-save">Kaydet</button></div>`);
+        ${t.oauth ? `<div class="field"><label>Yönlendirme adresi (sağlayıcının ayarlarına ekleyin)</label><div class="urlrow"><code>${esc(G.info?.oauthRedirect || '')}</code><button class="btn sm" type="button" data-copyredir>Kopyala</button></div>
+          <div class="info-box" id="c-oauth">${existing?.connected ? `Bağlı${existing.account ? `: <b>${esc(existing.account)}</b>` : ''}` : 'Henüz bir hesaba bağlanmadı.'}</div></div>` : ''}
+      </div><div class="mfoot"><span class="x" id="c-err" role="status"></span>${t.testable ? '<button class="btn" id="c-test">Bağlantıyı dene</button>' : ''}${t.oauth ? `<button class="btn" id="c-connect">${existing?.connected ? 'Yeniden bağlan' : 'Hesaba bağlan'}</button>` : ''}<button class="btn" data-close>Vazgeç</button><button class="btn primary" id="c-save">Kaydet</button></div>`);
     $('#c-type')?.addEventListener('change', e => { type = e.target.value; draw(); });
+    $('#modal [data-copyredir]')?.addEventListener('click', () => copyText(G.info?.oauthRedirect || ''));
+    // OAuth: save first (the popup reads the client id/secret from the stored credential), then sign in in a popup
+    $('#c-connect')?.addEventListener('click', async () => {
+      const data = {}; $('#modal').querySelectorAll('[data-cf]').forEach(i => { data[i.dataset.cf] = i.value; });
+      const missing = t.fields.find(f => f.secret && !data[f.key] && !existing?.filled?.[f.key] && !id) || t.fields.find(f => !f.secret && f.key === 'clientId' && !data.clientId);
+      if (missing) { $('#c-err').textContent = `"${missing.label}" gerekli`; return; }
+      const win = window.open('about:blank', '8n8-oauth', 'width=520,height=680');
+      try {
+        const saved = id ? await api('PUT', `/api/credentials/${id}`, { name: $('#c-name').value, data }) : await api('POST', '/api/credentials', { type, name: $('#c-name').value, data });
+        id = saved.id; G.creds = await api('GET', '/api/credentials');
+        if (win) win.location = `/oauth/start?cred=${encodeURIComponent(id)}`; else location.href = `/oauth/start?cred=${encodeURIComponent(id)}`;
+        $('#c-oauth').textContent = 'Açılan pencerede giriş yapın…';
+        const onMsg = async ev => {
+          if (ev.source !== win || ev.data?.type !== '8n8-oauth') return; // the callback may be on localhost while the editor is on 127.0.0.1
+          window.removeEventListener('message', onMsg);
+          const cur = await api('GET', `/api/credentials/${id}`);
+          const box = $('#c-oauth'); if (box) box.innerHTML = cur.connected ? `Bağlı${cur.account ? `: <b>${esc(cur.account)}</b>` : ''}` : 'Bağlanamadı. Açılan penceredeki mesajı okuyun.';
+          if (cur.connected) { toast('Hesap bağlandı'); onSaved?.(cur); }
+        };
+        window.addEventListener('message', onMsg);
+      } catch (err) { win?.close(); $('#c-err').textContent = err.message; }
+    });
     $('#c-test')?.addEventListener('click', async e => {
       const data = {}; $('#modal').querySelectorAll('[data-cf]').forEach(i => { data[i.dataset.cf] = i.value; });
       const b = e.currentTarget, out = $('#c-err'); b.disabled = true; out.className = 'x'; out.textContent = 'Deneniyor…';
@@ -1552,10 +1589,10 @@ async function openCredential(id, types, onSaved) {
     });
     $('#c-save').addEventListener('click', async () => {
       const data = {}; $('#modal').querySelectorAll('[data-cf]').forEach(i => { data[i.dataset.cf] = i.value; });
-      const missing = t.fields.find(f => f.secret && !data[f.key] && !existing?.filled?.[f.key]);
+      const missing = t.fields.find(f => f.secret && !data[f.key] && !existing?.filled?.[f.key] && !id);
       if (missing) { $('#c-err').textContent = `"${missing.label}" gerekli`; return; }
       try {
-        const saved = existing ? await api('PUT', `/api/credentials/${id}`, { name: $('#c-name').value, data }) : await api('POST', '/api/credentials', { type, name: $('#c-name').value, data });
+        const saved = id ? await api('PUT', `/api/credentials/${id}`, { name: $('#c-name').value, data }) : await api('POST', '/api/credentials', { type, name: $('#c-name').value, data });
         G.creds = await api('GET', '/api/credentials'); closeModal(); toast('Kaydedildi'); onSaved?.(saved);
       } catch (e) { $('#c-err').textContent = e.message; }
     });

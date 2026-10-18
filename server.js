@@ -10,6 +10,7 @@ const { spawn } = require('child_process');
 const store = require('./lib/store');
 const engine = require('./lib/engine');
 const { NODES, describe, defaults, CREDENTIAL_TYPES, testCredential } = require('./lib/nodes');
+const oauth = require('./lib/oauth');
 const { nextRun } = require('./lib/cron');
 const templates = require('./lib/templates');
 const aiBuilder = require('./lib/ai-builder');
@@ -259,6 +260,7 @@ function validateActivation(wf) {
   const trig = wf.nodes.filter(n => NODES[n.type]?.trigger && !n.disabled && !['manual', 'subTrigger', 'errorTrigger'].includes(n.type));
   if (!trig.length && !wf.nodes.some(n => ['subTrigger', 'errorTrigger'].includes(n.type))) throw new HttpError(400, 'Etkinleştirmek için Zamanlayıcı, Webhook, Form, Sohbet ya da yoklama (RSS, Telegram, klasör) tetikleyicisi gerekir. Manuel tetikleyici yalnızca editörden çalışır.');
   for (const n of wf.nodes) if (n.type === 'telegramTrigger' && !n.disabled && !n.params?.credential) throw new HttpError(400, `"${n.name}": Telegram botu seçin`);
+  for (const n of wf.nodes) if (n.type === 'gmailTrigger' && !n.disabled && !n.params?.credential) throw new HttpError(400, `"${n.name}": Google hesabı seçin`);
   for (const n of wf.nodes) {
     if (n.type === 'schedule' && n.params?.mode === 'cron') { try { nextRun(n.params.cron); } catch (e) { throw new HttpError(400, `"${n.name}": ${e.message}`); } }
     if (['webhook', 'form', 'chatTrigger'].includes(n.type) && !n.disabled) {
@@ -276,7 +278,8 @@ function validateActivation(wf) {
 const routes = [];
 const route = (method, pattern, fn) => routes.push({ method, re: new RegExp(`^${pattern.replace(/:(\w+)/g, '(?<$1>[^/]+)')}$`), fn });
 
-route('GET', '/api/info', () => ({ version: pkg.version, url: PUBLIC_URL, data: store.DATA, files: store.DIRS.files, password: !!PASSWORD, host: HOST, node: process.version }));
+route('GET', '/api/approvals', () => [...engine.approvals.entries()].map(([token, a]) => ({ url: `${PUBLIC_URL}/onay/${token}`, execId: a.execId, workflow: a.workflow, node: a.node, message: a.message, since: a.since })));
+route('GET', '/api/info', () => ({ version: pkg.version, url: PUBLIC_URL, oauthRedirect: OAUTH_REDIRECT, data: store.DATA, files: store.DIRS.files, password: !!PASSWORD, host: HOST, node: process.version }));
 route('GET', '/api/node-types', () => describe());
 route('GET', '/api/workflows', () => store.listWorkflows().map(workflowSummary));
 function checkTypes(nodes) {
@@ -340,7 +343,7 @@ route('GET', '/api/credentials/:id', ({ params }) => {
   const t = describe().credentialTypes[c.type];
   const data = Object.fromEntries((t?.fields || []).map(f => [f.key, f.secret ? '' : c.data[f.key] ?? '']));
   const filled = Object.fromEntries((t?.fields || []).filter(f => f.secret).map(f => [f.key, !!c.data[f.key]]));
-  return { id: c.id, name: c.name, type: c.type, data, filled };
+  return { id: c.id, name: c.name, type: c.type, data, filled, ...(oauth.isOAuth(c.type) ? { connected: !!c.data.access_token, account: c.data.account || '' } : {}) };
 });
 route('POST', '/api/credentials', ({ body }) => { if (!describe().credentialTypes[body.type]) throw new HttpError(400, 'Bilinmeyen kimlik bilgisi türü'); return store.saveCredential(body); });
 route('POST', '/api/credentials/test', async ({ body }) => {
@@ -439,6 +442,40 @@ function hostAllowed(req) {
   if (o && req.method !== 'GET' && req.method !== 'HEAD') { try { if (!ALLOWED_HOSTS.has(new URL(o).hostname.toLowerCase()) && `[${new URL(o).hostname}]` !== h) return false; } catch { return false; } }
   return true;
 }
+// Google and most providers accept plain http only for "localhost", so loopback addresses use that name
+const OAUTH_REDIRECT = `${PUBLIC_URL.replace(/^http:\/\/(127\.0\.0\.1|\[::1\])(?=[:/]|$)/, 'http://localhost')}/oauth/callback`;
+engine.setPublicUrl(PUBLIC_URL);
+/* approval page for "Onay bekle": GET shows the question (link previews and mail scanners only read),
+   POST records the decision */
+async function handleApproval(req, res, token) {
+  const a = engine.approvals.get(token);
+  const page = (body, status = 200) => send(res, status, `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Onay</title>
+<style>:root{--bg:#eef1f4;--card:#fff;--fg:#15202b;--muted:#5a6876;--line:#d6dde4;--ok:#15803d;--no:#c62828}@media(prefers-color-scheme:dark){:root{--bg:#0d1217;--card:#151c23;--fg:#e2e8ee;--muted:#8b9aa8;--line:#2a3540;--ok:#3ccf6e;--no:#ff6b6b}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;display:grid;place-items:center;min-height:100vh;padding:24px 16px;box-sizing:border-box}
+main{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px;max-width:480px;width:100%;box-sizing:border-box}h1{font-size:19px;margin:0 0 4px}.m{color:var(--muted);font-size:13px;margin:0 0 16px}.q{white-space:pre-wrap;margin:0 0 16px}
+textarea{width:100%;box-sizing:border-box;min-height:70px;border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit;background:transparent;color:inherit}
+.b{display:flex;gap:10px;margin-top:14px}button{flex:1;border:0;border-radius:8px;padding:11px;font:600 15px system-ui;color:#fff;cursor:pointer}.y{background:var(--ok)}.n{background:var(--no)}</style></head><body><main>${body}</main></body></html>`, { 'Content-Type': 'text/html; charset=utf-8' });
+  if (!a) return page('<h1>Bu onay artık geçerli değil</h1><p class="m">Karar zaten verilmiş, süresi dolmuş ya da akış durdurulmuş olabilir.</p>', 404);
+  if (req.method === 'POST') {
+    const b = await readBody(req);
+    const karar = b?.karar === 'evet' ? 'evet' : b?.karar === 'hayir' ? 'hayır' : null;
+    if (!karar) return page('<h1>Geçersiz karar</h1>', 400);
+    engine.decide(token, karar, b.not);
+    return page(`<h1>${karar === 'evet' ? 'Onaylandı' : 'Reddedildi'}</h1><p class="m">Kararınız kaydedildi; akış devam ediyor. Bu sayfayı kapatabilirsiniz.</p>`);
+  }
+  return page(`<h1>Onayınız bekleniyor</h1><p class="m">${esc(a.workflow)} · ${esc(a.node)} · ${new Date(a.since).toLocaleString('tr-TR')}</p><p class="q">${esc(a.message)}</p>
+<form method="post"><label for="not" class="m">Not (isteğe bağlı)</label><textarea id="not" name="not"></textarea><div class="b"><button class="y" name="karar" value="evet">Onayla</button><button class="n" name="karar" value="hayir">Reddet</button></div></form>`);
+}
+async function oauthCallback(res, url) {
+  const page = (ok, msg) => send(res, ok ? 200 : 400, `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>8n8 · Hesap bağlantısı</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;padding:16px;box-sizing:border-box;background:#eef1f4;color:#15202b}@media(prefers-color-scheme:dark){body{background:#0d1217;color:#e2e8ee}}div{max-width:420px;text-align:center}b{color:${ok ? '#15803d' : '#c62828'}}</style></head>
+<body><div><p><b>${ok ? 'Bağlandı' : 'Bağlanamadı'}</b></p><p>${esc(msg)}</p><p>Bu pencereyi kapatabilirsiniz.</p></div>
+<script>try{window.opener&&window.opener.postMessage({type:'8n8-oauth',ok:${ok}},'*')}catch(e){}${ok ? 'setTimeout(()=>window.close(),1200)' : ''}</script></body></html>`, { 'Content-Type': 'text/html; charset=utf-8' });
+  const err = url.searchParams.get('error');
+  if (err) return page(false, err === 'access_denied' ? 'İzin verilmedi.' : `Sağlayıcı hata döndürdü: ${err}`);
+  try { const r = await oauth.finish(url.searchParams.get('state'), url.searchParams.get('code')); return page(true, `"${r.name}"${r.account ? ` (${r.account})` : ''} artık kullanılabilir.`); }
+  catch (e) { return page(false, e.message); }
+}
 const UNAUTH = res => send(res, 401, 'Giriş gerekli', { 'WWW-Authenticate': 'Basic realm="8n8"' });
 
 const server = http.createServer(async (req, res) => {
@@ -453,8 +490,12 @@ const server = http.createServer(async (req, res) => {
       const kind = m[1].replace('-test', '');
       return await (kind === 'webhook' ? handleWebhook : kind === 'form' ? handleForm : handleChat)(req, res, cleanPath(m[2]), test);
     }
+    // public by design: an unguessable token ties each to a sign-in or an approval this program started
+    if (p === '/oauth/callback') return await oauthCallback(res, url);
+    if ((m = p.match(/^\/onay\/([A-Za-z0-9_-]{10,64})$/))) return await handleApproval(req, res, m[1]);
     if (!hostAllowed(req)) return send(res, 403, 'Bu adresten erişime izin verilmiyor. Başka bir adres kullanıyorsanız N8N8_ALLOWED_HOSTS ile ekleyin.');
     if (!authorized(req)) return UNAUTH(res);
+    if (p === '/oauth/start') { res.writeHead(302, { Location: oauth.startUrl(url.searchParams.get('cred'), OAUTH_REDIRECT), 'Cache-Control': 'no-store' }); return res.end(); }
     if ((req.method === 'GET' || req.method === 'HEAD') && STATIC[p]) {
       const [file, type] = STATIC[p];
       return send(res, 200, fs.readFileSync(path.join(__dirname, file)), { 'Content-Type': type });

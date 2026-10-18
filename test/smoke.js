@@ -404,6 +404,70 @@ test('Telegram tetikleyicisi botun webhook\'unu kaldırıp mesajları alır (sah
   assert.equal(outOf(await waitExec(items[0].id), 'son')[0].mesaj, 'selam');
 });
 
+test('Google hesabına OAuth ile bağlanma; Gmail, Drive ve Takvim (sahte API)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'googleOAuth', name: 'Google', data: { clientId: 'cid', clientSecret: 'sec', services: 'gmail,drive,calendar' } });
+  let r = await fetch(`${B}/oauth/start?cred=${cred.id}`, { redirect: 'manual' });
+  assert.equal(r.status, 302);
+  const loc = new URL(r.headers.get('location'));
+  assert.equal(loc.searchParams.get('client_id'), 'cid');
+  assert.match(loc.searchParams.get('scope'), /gmail\.modify .*drive .*calendar/);
+  fakeG.challenge = loc.searchParams.get('code_challenge');
+  r = await fetch(`${B}/oauth/callback?code=kod1&state=${loc.searchParams.get('state')}`);
+  assert.match(await r.text(), /Bağlandı/);
+  r = await fetch(`${B}/oauth/callback?code=kod1&state=sahte`); assert.equal(r.status, 400, 'bilinmeyen state reddedilmeli');
+  const got = await api('GET', `/api/credentials/${cred.id}`);
+  assert.equal(got.connected, true); assert.equal(got.account, 'ayse@gmail.com');
+  assert.ok(!JSON.stringify(got).includes('g-at'), 'token tarayıcıya dönmemeli');
+  const w = await api('POST', '/api/workflows', wf('google', [
+    ['manual', { data: '[{"eposta":"can@ornek.com","ad":"Can"}]' }],
+    ['gmail', { credential: cred.id, op: 'send', to: '{{ $json.eposta }}', subject: 'Merhaba {{ $json.ad }}', body: 'Toplanti yarin.' }, { name: 'gönder' }],
+    ['gmail', { credential: cred.id, op: 'list', query: 'is:unread', max: 5 }, { name: 'oku' }],
+    ['gmail', { credential: cred.id, op: 'read', messageId: '{{ $json.id }}' }, { name: 'okundu' }],
+    ['drive', { credential: cred.id, op: 'upload', name: 'not.txt', source: 'text', content: 'Merhaba Drive' }, { name: 'yükle' }],
+    ['drive', { credential: cred.id, op: 'download', fileId: '{{ $json.id }}' }, { name: 'indir' }],
+    ['calendar', { credential: cred.id, op: 'create', title: 'Görüşme', start: '2030-01-02T10:00:00Z', minutes: 45, attendees: 'can@ornek.com' }, { name: 'etkinlik' }],
+    ['calendar', { credential: cred.id, op: 'list', days: 3650 }, { name: 'takvim' }],
+  ], [[0, 1], [1, 2], [2, 3], [0, 4], [4, 5], [0, 6], [6, 7]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.equal(outOf(e, 'gönder')[0].gonderildi, true);
+  const mail = outOf(e, 'oku')[0];
+  assert.equal(mail.kime, 'can@ornek.com'); assert.equal(mail.konu, 'Merhaba Can'); assert.equal(mail.metin, 'Toplanti yarin.');
+  assert.deepEqual(fakeG.mails[0].labelIds, ['INBOX'], 'okundu işaretlenmeli');
+  assert.equal(outOf(e, 'indir')[0].dosya, 'not.txt');
+  assert.equal(fs.readFileSync(path.join(DATA, 'dosyalar', 'not.txt'), 'utf8'), 'Merhaba Drive');
+  const ev = outOf(e, 'etkinlik')[0];
+  assert.equal(ev.baslik, 'Görüşme'); assert.deepEqual(ev.davetliler, ['can@ornek.com']);
+  assert.equal(new Date(ev.bitis) - new Date(ev.baslangic), 45 * 60000);
+  assert.equal(outOf(e, 'takvim').length, 1);
+  assert.deepEqual([...new Set(fakeG.tokens)], ['authorization_code', 'refresh_token'], 'süresi dolan token yenilenmeli');
+  assert.equal(fakeG.tokens.filter(t => t === 'refresh_token').length, 1, 'paralel node\'lar tek yenileme yapmalı');
+  assert.ok(fakeG.auth.every(a => a === 'Bearer g-at2'));
+});
+
+test('Onay bekle: akış onay sayfasından gelen kararla devam eder, zaman aşımına sayılmaz', async () => {
+  const w = await api('POST', '/api/workflows', wf('onay', [
+    ['manual', { data: '[{"ad":"Ayşe","tutar":250}]' }],
+    ['set', { fields: [{ key: 'link', value: '{{ $execution.onayAdresi }}' }], keep: true }, { name: 'link' }],
+    ['approval', { message: '{{ $json.ad }} için {{ $json.tutar }} TL iade?', amount: 1, unit: 'h' }, { name: 'onay' }],
+    ['noop', {}, { name: 'evet' }], ['noop', {}, { name: 'hayır' }],
+  ], [[0, 1], [1, 2], [2, 3, 0], [2, 4, 1]], { settings: { timeout: 1 } }));
+  const { executionId } = await api('POST', `/api/workflows/${w.id}/run`, {});
+  await sleep(1600); // longer than the 1 s workflow timeout: waiting must not count
+  const [a] = await api('GET', '/api/approvals');
+  assert.ok(a && a.message === 'Ayşe için 250 TL iade?', JSON.stringify(a));
+  const page = await (await fetch(a.url)).text();
+  assert.ok(page.includes('Ayşe için 250 TL iade?') && page.includes('Onayla'));
+  const r = await fetch(a.url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'karar=evet&not=Tamam' });
+  assert.match(await r.text(), /Onaylandı/);
+  const e = await waitExec(executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.equal(outOf(e, 'evet')[0].onay.karar, 'evet');
+  assert.equal(outOf(e, 'evet')[0].onay.not, 'Tamam');
+  assert.equal(outOf(e, 'link')[0].link, a.url);
+  assert.equal((await fetch(a.url)).status, 404, 'karar verilen onay sayfası kapanmalı');
+});
+
 test('Sunucu bozuk isteklere dayanır: hatalı adres, yabancı Host, bozuk akış', async () => {
   let r = await fetch(`${B}/%E0%A4%A`); assert.equal(r.status, 400);
   r = await new Promise(res => require('http').get({ host: '127.0.0.1', port: PORT, path: '/api/credentials', headers: { Host: 'saldirgan.example' } }, res));
@@ -445,6 +509,48 @@ function fakeGoogleApi(req, res, raw) {
   if (req.method === 'PUT') { rows[rowOf(m[1])] = body.values[0]; return json({}); }
   return json({ values: rows.map(r => r.map(v => (typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v))) });
 }
+const fakeG = { tokens: [], auth: [], mails: [], files: [], events: [], challenge: null };
+function fakeGoogleOAuth(req, res, raw) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  const u = new URL(req.url, 'http://x');
+  if (u.pathname === '/oauth-token') {
+    const b = Object.fromEntries(new URLSearchParams(raw)); fakeG.tokens.push(b.grant_type);
+    if (b.client_id !== 'cid' || b.client_secret !== 'sec') return json({ error: 'invalid_client' }, 401);
+    if (b.grant_type === 'authorization_code') {
+      const ok = b.code === 'kod1' && require('crypto').createHash('sha256').update(b.code_verifier || '').digest('base64url') === fakeG.challenge;
+      if (!ok) return json({ error: 'invalid_grant' }, 400);
+      const idt = ['e30', Buffer.from(JSON.stringify({ email: 'ayse@gmail.com' })).toString('base64url'), 'x'].join('.');
+      return json({ access_token: 'g-at1', refresh_token: 'g-rt', expires_in: 30, id_token: idt, scope: 'gmail' }); // expires at once: forces a refresh
+    }
+    if (b.grant_type === 'refresh_token' && b.refresh_token === 'g-rt') return json({ access_token: 'g-at2', expires_in: 3600 });
+    return json({ error: 'bad' }, 400);
+  }
+  fakeG.auth.push(req.headers.authorization);
+  const p = u.pathname;
+  if (p === '/gmail/v1/users/me/messages/send') {
+    const mime = Buffer.from(JSON.parse(raw).raw, 'base64url').toString('utf8'); const [head, body] = mime.split('\r\n\r\n');
+    const hdr = name => (head.match(new RegExp(`^${name}: (.*)$`, 'mi')) || [])[1] || '';
+    const text = Buffer.from(body.replace(/\s+/g, ''), 'base64').toString('utf8');
+    const m = { id: `m${fakeG.mails.length + 1}`, threadId: 't1', snippet: text.slice(0, 40), internalDate: String(Date.now()), labelIds: ['INBOX', 'UNREAD'], payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'ayse@gmail.com' }, { name: 'To', value: hdr('To') }, { name: 'Subject', value: hdr('Subject') }], body: { data: Buffer.from(text).toString('base64url') } } };
+    fakeG.mails.push(m); return json({ id: m.id, threadId: m.threadId });
+  }
+  if (p === '/gmail/v1/users/me/messages') return json({ messages: fakeG.mails.map(m => ({ id: m.id })) });
+  let mm;
+  if ((mm = p.match(/^\/gmail\/v1\/users\/me\/messages\/(\w+)\/modify$/))) { const m = fakeG.mails.find(x => x.id === mm[1]); m.labelIds = m.labelIds.filter(l => !(JSON.parse(raw).removeLabelIds || []).includes(l)); return json({}); }
+  if ((mm = p.match(/^\/gmail\/v1\/users\/me\/messages\/(\w+)$/))) return json(fakeG.mails.find(x => x.id === mm[1]));
+  if (p === '/upload/drive/v3/files') {
+    const meta = JSON.parse(raw.split('\r\n\r\n')[1].split('\r\n--')[0]); const content = raw.split('\r\n\r\n')[2].split('\r\n--')[0];
+    const f = { id: `f${fakeG.files.length + 1}`, name: meta.name, mimeType: 'text/plain', size: String(Buffer.byteLength(content)), content, modifiedTime: new Date().toISOString() };
+    fakeG.files.push(f); return json(f);
+  }
+  if (p === '/drive/v3/files') return json({ files: fakeG.files.filter(f => !u.searchParams.get('q').includes('name contains') || u.searchParams.get('q').includes(f.name.slice(0, 5))) });
+  if ((mm = p.match(/^\/drive\/v3\/files\/(\w+)$/))) { const f = fakeG.files.find(x => x.id === mm[1]); if (u.searchParams.get('alt') === 'media') { res.writeHead(200); return res.end(f.content); } return json(f); }
+  if (p === '/calendar/v3/calendars/primary/events') {
+    if (req.method === 'POST') { const e = { ...JSON.parse(raw), id: `e${fakeG.events.length + 1}`, htmlLink: 'https://calendar/x' }; fakeG.events.push(e); return json(e); }
+    return json({ items: fakeG.events });
+  }
+  return json({ error: { message: 'yok ' + p } }, 404);
+}
 function fakeTelegramApi(req, res) {
   const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
   const m = req.url.match(/^\/tg\/bot123:abc\/(\w+)/); if (!m) return json({ ok: false, description: 'Unauthorized' }, 401);
@@ -460,6 +566,7 @@ function fakeTelegramApi(req, res) {
 }
 const fakeServer = require('http').createServer((req, res) => {
   if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
+  if (/^\/(oauth-token|gmail\/|drive\/|upload\/|calendar\/)/.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleOAuth(req, res, raw)); }
   if (req.url === '/token' || req.url.startsWith('/v4/')) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleApi(req, res, raw)); }
   if (req.url === '/rss.xml') { res.writeHead(200, { 'Content-Type': 'application/rss+xml' }); return res.end('<?xml version="1.0"?><rss><channel><title>T</title><item><title>İlk yazı</title><link>https://x.com/1</link><guid>1</guid></item></channel></rss>'); }
   let raw = ''; req.on('data', d => { raw += d; }); req.on('end', () => {
@@ -477,7 +584,7 @@ const fakeServer = require('http').createServer((req, res) => {
 
 (async () => {
   await new Promise(r => fakeServer.listen(0, '127.0.0.1', r)); fakeClaude.port = fakeServer.address().port;
-  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg` }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token` }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0;
