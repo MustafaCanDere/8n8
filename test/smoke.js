@@ -549,6 +549,109 @@ test('Onay bekle: akış onay sayfasından gelen kararla devam eder, zaman aşı
   assert.equal((await fetch(a.url)).status, 404, 'karar verilen onay sayfası kapanmalı');
 });
 
+test('GitHub: konu aç, yorum yaz, kapat, dosya kaydet ve oku (sahte API)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'githubApi', name: 'gh', data: { token: 'ghp_x' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'githubApi', id: cred.id, data: {} })).message, /@ayse/);
+  const repo = 'https://github.com/ornek/depo/issues';
+  const w = await api('POST', '/api/workflows', wf('github', [
+    ['manual', { data: '[{"baslik":"Giriş bozuk","detay":"Boş sayfa"}]' }],
+    ['github', { credential: cred.id, repo, op: 'createIssue', title: '{{ $json.baslik }}', body: '{{ $json.detay }}', labels: 'hata, acil' }, { name: 'ac' }],
+    ['github', { credential: cred.id, repo: 'ornek/depo', op: 'comment', body: 'Bakıyorum' }, { name: 'yorum' }],
+    ['github', { credential: cred.id, repo: 'ornek/depo', op: 'updateIssue', number: '{{ $json.numara }}', state: 'closed' }, { name: 'kapat' }],
+    ['github', { credential: cred.id, repo: 'ornek/depo', op: 'saveFile', path: 'notlar/rapor.md', content: '# Rapor', message: 'rapor' }, { name: 'kaydet' }],
+    ['github', { credential: cred.id, repo: 'ornek/depo', op: 'saveFile', path: 'notlar/rapor.md', content: '# Rapor 2' }, { name: 'guncelle' }],
+    ['github', { credential: cred.id, repo: 'ornek/depo', op: 'getFile', path: 'notlar/rapor.md' }, { name: 'oku' }],
+    ['github', { credential: cred.id, repo: 'ornek/depo', op: 'listIssues', filter: 'all' }, { name: 'liste' }],
+  ], [[0, 1], [1, 2], [2, 3], [0, 4], [4, 5], [5, 6], [3, 7]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(fakeGH.issues.find(i => i.number === 1).labels, ['hata', 'acil']);
+  assert.deepEqual(fakeGH.comments, [[1, 'Bakıyorum']]);
+  assert.equal(outOf(e, 'kapat')[0].durum, 'closed');
+  assert.deepEqual([outOf(e, 'kaydet')[0].islem, outOf(e, 'guncelle')[0].islem], ['olusturuldu', 'guncellendi']);
+  assert.equal(outOf(e, 'oku')[0].icerik, '# Rapor 2');
+  assert.deepEqual(outOf(e, 'liste').map(x => x.numara), [1], 'PR\'lar konu listesine karışmamalı');
+  assert.ok(fakeGH.auth.every(a => a === 'Bearer ghp_x'));
+});
+
+test('Airtable: ekle, ekle-ya-da-güncelle, filtreyle listele, sil (sahte API)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'airtableApi', name: 'at', data: { token: 'patX' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'airtableApi', id: cred.id, data: {} })).message, /ayse@ornek.com/);
+  const link = 'https://airtable.com/appABCDEFGHIJKLMN/tblABCDEFGHIJKLMN/viwABCDEFGHIJKLMN';
+  const rows = Array.from({ length: 12 }, (_, i) => ({ ad: `Kişi ${i + 1}`, eposta: `k${i + 1}@x.com` }));
+  const w = await api('POST', '/api/workflows', wf('airtable', [
+    ['manual', { data: JSON.stringify(rows) }],
+    ['airtable', { credential: cred.id, base: link, op: 'create', fields: [{ key: 'Ad', value: '{{ $json.ad }}' }, { key: 'E-posta', value: '{{ $json.eposta }}' }] }, { name: 'ekle' }],
+    ['code', { code: 'return [{ "Ad": "Yeni Ad", "E-posta": "k2@x.com" }, { "Ad": "Kişi 13", "E-posta": "k13@x.com" }];' }],
+    ['airtable', { credential: cred.id, base: 'appABCDEFGHIJKLMN', table: 'Kişiler', op: 'upsert', mergeOn: 'E-posta', fieldsMode: 'all' }, { name: 'upsert' }],
+    ['airtable', { credential: cred.id, base: link, op: 'list', formula: '{E-posta} = "k2@x.com"' }, { name: 'liste' }],
+    ['airtable', { credential: cred.id, base: link, op: 'delete' }, { name: 'sil' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.equal(outOf(e, 'ekle').length, 12);
+  assert.deepEqual(fakeAT.batches, [10, 2, 2], '10\'arlı gruplar halinde gönderilmeli');
+  assert.deepEqual(outOf(e, 'upsert').map(r => r._islem), ['guncellendi', 'eklendi']);
+  assert.deepEqual(outOf(e, 'liste').map(r => r.Ad), ['Yeni Ad']);
+  assert.equal(fakeAT.records.length, 12, 'filtrelenen kayıt silinmeli');
+});
+
+test('Discord: mesaj, kart, yanıt, tepki; GitHub ve Discord tetikleyicileri (sahte API)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'discordBot', name: 'd', data: { token: 'dtok' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'discordBot', id: cred.id, data: {} })).message, /8n8bot/);
+  const CH = '111111111111111111';
+  const w = await api('POST', '/api/workflows', wf('discord', [
+    ['manual', { data: '[{"ad":"Ayşe"}]' }],
+    ['discord', { credential: cred.id, op: 'send', channel: `https://discord.com/channels/9/${CH}`, text: 'Merhaba {{ $json.ad }}', embedTitle: 'Sipariş', embedText: 'Hazır', embedColor: '#ff0000' }, { name: 'gonder' }],
+    ['discord', { credential: cred.id, op: 'send', channel: '{{ $json.kanal }}', text: 'Ek bilgi', replyTo: '{{ $json.id }}' }, { name: 'yanit' }],
+    ['discord', { credential: cred.id, op: 'react', channel: CH, emoji: '👍' }, { name: 'tepki' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.equal(fakeDC.sent[0].embeds[0].color, 0xff0000);
+  assert.equal(fakeDC.sent[1].message_reference.message_id, outOf(e, 'gonder')[0].id);
+  assert.deepEqual(fakeDC.reactions, ['👍']);
+  const ghc = await api('POST', '/api/credentials', { type: 'githubApi', name: 'gh2', data: { token: 'ghp_x' } });
+  const t1 = await api('POST', '/api/workflows', wf('dc-tetik', [['discordTrigger', { credential: cred.id, channel: CH, every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  const t2 = await api('POST', '/api/workflows', wf('gh-tetik', [['githubTrigger', { credential: ghc.id, repo: 'ornek/depo', event: 'issues', every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${t1.id}`, { active: true }); await api('PUT', `/api/workflows/${t2.id}`, { active: true });
+  await sleep(1300);
+  fakeDC.history.push({ id: '900000000000000001', channel_id: CH, content: 'yeni soru', author: { id: '5', username: 'can' } }, { id: '900000000000000002', channel_id: CH, content: 'bot', author: { id: '6', username: 'b', bot: true } });
+  fakeGH.issues.push({ number: 99, id: 99, title: 'Yeni konu', state: 'open', body: '', user: { login: 'can' }, labels: [], html_url: 'x' });
+  await sleep(4500);
+  await api('PUT', `/api/workflows/${t1.id}`, { active: false }); await api('PUT', `/api/workflows/${t2.id}`, { active: false });
+  for (const [t, field, val] of [[t1, 'metin', 'yeni soru'], [t2, 'baslik', 'Yeni konu']]) {
+    const { items } = await api('GET', `/api/executions?workflowId=${t.id}`);
+    assert.equal(items.length, 1, `${t.name}: yalnız yeni olay akışı başlatmalı`);
+    assert.equal(outOf(await waitExec(items[0].id), 'son')[0][field], val);
+  }
+});
+
+test('Yedekle ve geri yükle: akış, tablo, değişken, şifreli kimlik bilgisi', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'httpBearer', name: 'yedek-token', data: { token: 'gizli-123' } });
+  const tbl = await api('POST', '/api/tables', { name: 'Yedek tablosu', columns: ['ad'] });
+  await api('POST', `/api/tables/${tbl.id}/rows`, { rows: [{ ad: 'Ayşe' }, { ad: 'Can' }] });
+  await api('PUT', '/api/variables', { ...(await api('GET', '/api/variables')), YEDEK_DENEME: 'evet' });
+  const w = await api('POST', '/api/workflows', { ...wf('yedeklenen', [['schedule', { mode: 'interval', every: 1, unit: 'h' }], ['noop']], [[0, 1]]), tags: ['yedek'] });
+  await api('PUT', `/api/workflows/${w.id}`, { active: true });
+  await assert.rejects(api('POST', '/api/backup', { password: 'kisa' }), /en az 8/);
+  const b = await api('POST', '/api/backup', { password: 'uzun-sifre-1' });
+  assert.ok(!JSON.stringify(b).includes('gizli-123'), 'kimlik bilgisi düz metin olmamalı');
+  const plain = await api('POST', '/api/backup', {});
+  assert.equal(plain.kimlikBilgileri, null);
+  await api('DELETE', `/api/workflows/${w.id}`); await api('DELETE', `/api/credentials/${cred.id}`); await api('DELETE', `/api/tables/${tbl.id}`);
+  await assert.rejects(api('POST', '/api/restore', { backup: b, password: 'yanlis-sifre' }), /şifresi yanlış/);
+  await assert.rejects(api('POST', '/api/restore', { backup: { format: 'baska' } }), /8n8 yedeği değil/);
+  const r = await api('POST', '/api/restore', { backup: b, password: 'uzun-sifre-1' });
+  assert.ok(r.akislar >= 1 && r.kimlikBilgileri >= 1 && r.tablolar >= 1, JSON.stringify(r));
+  const back = await api('GET', `/api/workflows/${w.id}`);
+  assert.equal(back.active, true, 'etkin akış yeniden etkinleşmeli'); assert.deepEqual(back.tags, ['yedek']);
+  assert.deepEqual((await api('GET', `/api/tables/${tbl.id}`)).rows.map(x => x.ad), ['Ayşe', 'Can']);
+  assert.equal((await api('GET', '/api/variables')).YEDEK_DENEME, 'evet');
+  assert.ok((await api('GET', '/api/credentials')).some(c => c.id === cred.id && c.name === 'yedek-token'));
+  await api('PUT', `/api/workflows/${w.id}`, { active: false });
+});
+
 test('Özet: çalıştırma sayıları, başarı oranı ve sık hatalar', async () => {
   const st = await api('GET', '/api/stats?days=7');
   assert.ok(st.toplam > 10 && st.basarili > 0 && st.hatali > 0, JSON.stringify(st).slice(0, 200));
@@ -713,6 +816,71 @@ function fakeMicrosoft(req, res, raw) {
   if ((m = p.match(/^\/me\/messages\/(\w+)$/)) && req.method === 'PATCH') { const x = fakeM.mails.find(y => y.id === m[1]); Object.assign(x, body); return json(x); }
   return json({ error: { message: 'yok ' + p } }, 404);
 }
+const fakeGH = { auth: [], issues: [{ number: 7, id: 7, title: 'PR', state: 'open', user: { login: 'x' }, labels: [], pull_request: {} }], comments: [], files: {} };
+function fakeGithub(req, res, raw) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  fakeGH.auth.push(req.headers.authorization);
+  if (req.headers['user-agent'] !== '8n8') return json({ message: 'UA gerekli' }, 403);
+  const u = new URL(req.url, 'http://x'); const p = u.pathname.replace(/^\/gh/, ''); const body = raw ? JSON.parse(raw) : {};
+  if (p === '/user') return json({ login: 'ayse' });
+  if (!p.startsWith('/repos/ornek/depo/')) return json({ message: 'Not Found' }, 404);
+  const r = p.slice('/repos/ornek/depo'.length); let m;
+  const issue = x => ({ ...x, labels: (x.labels || []).map(name => (typeof name === 'string' ? { name } : name)), html_url: `https://github.com/ornek/depo/issues/${x.number}` });
+  if (r === '/issues' && req.method === 'POST') { const x = { number: 1, id: 1, state: 'open', user: { login: 'ayse' }, ...body }; fakeGH.issues.push(x); return json(issue(x), 201); }
+  if (r === '/issues') return json(fakeGH.issues.slice().reverse().map(issue));
+  if ((m = r.match(/^\/issues\/(\d+)\/comments$/))) { fakeGH.comments.push([Number(m[1]), body.body]); return json({ id: 5, html_url: 'c' }, 201); }
+  if ((m = r.match(/^\/issues\/(\d+)$/))) { const x = fakeGH.issues.find(i => i.number === Number(m[1])); Object.assign(x, body); return json(issue(x)); }
+  if ((m = r.match(/^\/contents\/(.+)$/))) {
+    const path = decodeURIComponent(m[1]); const f = fakeGH.files[path];
+    if (req.method === 'PUT') {
+      if (f && body.sha !== f.sha) return json({ message: 'sha eşleşmiyor' }, 409);
+      if (!f && body.sha) return json({ message: 'sha olmamalı' }, 422);
+      fakeGH.files[path] = { content: body.content, sha: `s${Date.now()}` };
+      return json({ content: { path, sha: fakeGH.files[path].sha, html_url: 'f' }, commit: { sha: 'c1' } }, f ? 200 : 201);
+    }
+    return f ? json({ type: 'file', path, content: f.content, sha: f.sha, size: 1 }) : json({ message: 'Not Found' }, 404);
+  }
+  return json({ message: 'Not Found' }, 404);
+}
+const fakeAT = { records: [], batches: [], seq: 0 };
+function fakeAirtable(req, res, raw) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  if (req.headers.authorization !== 'Bearer patX') return json({ error: { type: 'AUTHENTICATION_REQUIRED' } }, 401);
+  const u = new URL(req.url, 'http://x'); const p = decodeURIComponent(u.pathname.replace(/^\/at/, '')); const body = raw ? JSON.parse(raw) : {};
+  if (p === '/meta/whoami') return json({ id: 'usr1', email: 'ayse@ornek.com' });
+  const m = p.match(/^\/appABCDEFGHIJKLMN\/(tblABCDEFGHIJKLMN|Kişiler)(?:\/(rec\w+))?$/); if (!m) return json({ error: { type: 'NOT_FOUND' } }, 404);
+  const rec = r => ({ id: r.id, createdTime: '2026-01-01T00:00:00.000Z', fields: r.fields });
+  if (m[2]) { const i = fakeAT.records.findIndex(r => r.id === m[2]); if (i < 0) return json({ error: { type: 'NOT_FOUND' } }, 404); if (req.method === 'DELETE') { fakeAT.records.splice(i, 1); return json({ id: m[2], deleted: true }); } return json(rec(fakeAT.records[i])); }
+  if (req.method === 'POST' || req.method === 'PATCH') {
+    if (body.records.length > 10) return json({ error: { type: 'INVALID_RECORDS', message: 'en fazla 10' } }, 422);
+    fakeAT.batches.push(body.records.length); const created = []; const out = [];
+    for (const r of body.records) {
+      let x = r.id ? fakeAT.records.find(y => y.id === r.id) : body.performUpsert ? fakeAT.records.find(y => body.performUpsert.fieldsToMergeOn.every(k => y.fields[k] === r.fields[k])) : null;
+      if (x) Object.assign(x.fields, r.fields); else { x = { id: `rec${String(++fakeAT.seq).padStart(14, '0')}`, fields: { ...r.fields } }; fakeAT.records.push(x); created.push(x.id); }
+      out.push(rec(x));
+    }
+    return json({ records: out, ...(body.performUpsert ? { createdRecords: created, updatedRecords: out.map(r => r.id).filter(id => !created.includes(id)) } : {}) });
+  }
+  const f = u.searchParams.get('filterByFormula'); const fm = f && f.match(/^\{(.+)\} = "(.*)"$/);
+  const all = fakeAT.records.filter(r => !fm || r.fields[fm[1]] === fm[2]);
+  const size = Number(u.searchParams.get('pageSize')) || 100; const off = Number(u.searchParams.get('offset') || 0);
+  return json({ records: all.slice(off, off + size).map(rec), ...(off + size < all.length ? { offset: String(off + size) } : {}) });
+}
+const fakeDC = { sent: [], reactions: [], history: [{ id: '800000000000000001', channel_id: '111111111111111111', content: 'eski', author: { id: '4', username: 'ali' } }] };
+function fakeDiscord(req, res, raw) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  if (req.headers.authorization !== 'Bot dtok') return json({ message: '401: Unauthorized', code: 0 }, 401);
+  const u = new URL(req.url, 'http://x'); const p = decodeURIComponent(u.pathname.replace(/^\/dc/, '')); const body = raw ? JSON.parse(raw) : {};
+  if (p === '/users/@me') return json({ id: '1', username: '8n8bot' });
+  let m;
+  if ((m = p.match(/^\/channels\/(\d+)\/messages\/(\d+)\/reactions\/(.+)\/@me$/))) { fakeDC.reactions.push(m[3]); res.writeHead(204); return res.end(); }
+  if ((m = p.match(/^\/channels\/111111111111111111\/messages$/))) {
+    if (req.method === 'POST') { fakeDC.sent.push(body); return json({ id: `70000000000000000${fakeDC.sent.length}`, channel_id: '111111111111111111', content: body.content, author: { id: '1', username: '8n8bot', bot: true }, timestamp: new Date().toISOString() }); }
+    const after = u.searchParams.get('after'); const lim = Number(u.searchParams.get('limit')) || 50;
+    return json(fakeDC.history.filter(x => !after || BigInt(x.id) > BigInt(after)).sort((a, b) => (BigInt(b.id) > BigInt(a.id) ? 1 : -1)).slice(0, lim));
+  }
+  return json({ message: 'Unknown Channel', code: 10003 }, 404);
+}
 function fakeTelegramApi(req, res) {
   const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
   const m = req.url.match(/^\/tg\/bot123:abc\/(\w+)/); if (!m) return json({ ok: false, description: 'Unauthorized' }, 401);
@@ -728,7 +896,7 @@ function fakeTelegramApi(req, res) {
 }
 const fakeServer = require('http').createServer((req, res) => {
   if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
-  const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft]];
+  const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord]];
   for (const [re, fn] of routes) if (re.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fn(req, res, raw)); }
   if (/^\/(oauth-token|gmail\/|drive\/|upload\/|calendar\/)/.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleOAuth(req, res, raw)); }
   if (req.url === '/token' || req.url.startsWith('/v4/')) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleApi(req, res, raw)); }
@@ -748,7 +916,7 @@ const fakeServer = require('http').createServer((req, res) => {
 
 (async () => {
   await new Promise(r => fakeServer.listen(0, '127.0.0.1', r)); fakeClaude.port = fakeServer.address().port;
-  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token` }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc` }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0;

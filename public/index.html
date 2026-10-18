@@ -78,6 +78,10 @@ svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-widt
 .lrow .meta { color: var(--muted); font-size: 12.5px; display: flex; gap: 6px 12px; flex-wrap: wrap; align-items: center; }
 .lrow .acts { display: flex; gap: 6px; align-items: center; grid-row: 1 / 3; grid-column: 2; flex-wrap: wrap; justify-content: flex-end; }
 .empty { padding: 40px 16px; text-align: center; color: var(--muted); display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.wf-filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.tagbar { display: flex; gap: 6px; flex-wrap: wrap; }
+button.tag { cursor: pointer; } button.tag:hover { border-color: var(--accent); color: var(--accent); }
+.tag.on, .tag.usertag { background: var(--accent-soft); color: var(--accent); border-color: transparent; } .tag.on { outline: 1.5px solid var(--accent); }
 .tag { font: 500 11px var(--mono); padding: 1px 7px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--line); color: var(--muted); }
 table.grid { width: 100%; border-collapse: collapse; }
 .grid th, .grid td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -514,7 +518,8 @@ function updateBadge() { const b = $('#run-badge'); b.hidden = !G.running.size; 
 /* ================= workflows page ================= */
 async function pageWorkflows() {
   G.workflows = await api('GET', '/api/workflows');
-  const q = { s: '' };
+  const q = { s: '', tag: '', state: '' };
+  const allTags = () => [...new Set(G.workflows.flatMap(w => w.tags || []))].sort((a, b) => a.localeCompare(b, 'tr'));
   view.innerHTML = `<div class="page"><div class="page-in">
     <div class="page-head"><h1>Akışlar</h1>
       <input class="inp" id="wf-search" placeholder="Ara…" style="width:200px" aria-label="Akışlarda ara">
@@ -522,16 +527,20 @@ async function pageWorkflows() {
       <button class="btn" id="wf-tpl">${icon('grid')}<span class="lbl">Şablonlar</span></button>
       <button class="btn" id="wf-ai">${icon('wand')}<span class="lbl">Claude ile oluştur</span></button>
       <button class="btn primary" id="wf-new">${icon('plus')}Yeni akış</button></div>
+    <div class="wf-filters"><div class="seg" id="wf-state">${[['', 'Hepsi'], ['on', 'Etkin'], ['off', 'Kapalı']].map(([k, l]) => `<button data-st="${k}" class="${k ? '' : 'on'}">${l}</button>`).join('')}</div><div id="wf-tags" class="tagbar"></div></div>
     <p class="lead">Etkin akışlar program açık olduğu sürece zamanlayıcı, webhook ve formlardan kendiliğinden çalışır. Manuel akışlar editörden çalıştırılır.</p>
     <div class="card list" id="wf-list"></div></div></div>`;
   const draw = () => {
-    const list = G.workflows.filter(w => !q.s || w.name.toLocaleLowerCase('tr').includes(q.s));
+    const tags = allTags(); if (q.tag && !tags.includes(q.tag)) q.tag = '';
+    $('#wf-tags').innerHTML = tags.length ? tags.map(t => `<button class="tag${q.tag === t ? ' on' : ''}" data-tagf="${esc(t)}">#${esc(t)}</button>`).join('') : '';
+    const list = G.workflows.filter(w => (!q.s || w.name.toLocaleLowerCase('tr').includes(q.s) || (w.tags || []).some(t => t.toLocaleLowerCase('tr').includes(q.s)))
+      && (!q.tag || (w.tags || []).includes(q.tag)) && (!q.state || (q.state === 'on') === !!w.active));
     $('#wf-list').innerHTML = list.length ? list.map(w => {
       const trig = [...new Set(w.triggers)].map(t => `<span class="tag">${esc(T(t)?.label || t)}</span>`).join('');
       const last = w.lastExecution;
       return `<div class="lrow" data-id="${w.id}">
         <a class="ttl" href="#/akis/${w.id}">${esc(w.name)}</a>
-        <div class="meta">${trig}<span>${w.nodeCount} node</span><span>güncellendi ${ago(w.updatedAt)}</span>
+        <div class="meta">${(w.tags || []).map(t => `<button class="tag usertag" data-tagf="${esc(t)}">#${esc(t)}</button>`).join('')}${trig}<span>${w.nodeCount} node</span><span>güncellendi ${ago(w.updatedAt)}</span>
           ${last ? `<span><span class="pill ${last.status}">${statusLabel(last.status)}</span> ${ago(last.startedAt)}</span>` : '<span>henüz çalışmadı</span>'}</div>
         <div class="acts">
           <label class="switch" title="Etkin akışlar kendiliğinden tetiklenir"><input type="checkbox" data-act="active" ${w.active ? 'checked' : ''}><span class="track"></span><span class="lbl">Etkin</span></label>
@@ -539,11 +548,13 @@ async function pageWorkflows() {
           <button class="btn sm" data-act="export">Dışa aktar</button>
           <button class="btn sm danger" data-act="del" aria-label="Sil">${icon('trash')}</button>
         </div></div>`;
-    }).join('') : `<div class="empty">${G.workflows.length ? 'Aramaya uyan akış yok.' : 'Henüz akış yok.<button class="btn primary" id="wf-new2">İlk akışı oluştur</button>'}</div>`;
+    }).join('') : `<div class="empty">${G.workflows.length ? 'Seçime uyan akış yok.' : 'Henüz akış yok.<button class="btn primary" id="wf-new2">İlk akışı oluştur</button>'}</div>`;
     $('#wf-new2')?.addEventListener('click', newWorkflow);
   };
   draw();
   $('#wf-search').addEventListener('input', e => { q.s = e.target.value.toLocaleLowerCase('tr'); draw(); });
+  $('#wf-state').addEventListener('click', e => { const b = e.target.closest('[data-st]'); if (!b) return; q.state = b.dataset.st; $('#wf-state').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); draw(); });
+  view.querySelector('.page-in').addEventListener('click', e => { const b = e.target.closest('[data-tagf]'); if (!b) return; q.tag = q.tag === b.dataset.tagf ? '' : b.dataset.tagf; draw(); });
   $('#wf-new').addEventListener('click', newWorkflow);
   $('#wf-tpl').addEventListener('click', openTemplates);
   $('#wf-ai').addEventListener('click', () => openAIBuild(null));
@@ -1808,6 +1819,12 @@ async function pageAbout() {
       <dt>Dosya klasörü</dt><dd>${esc(info.files)}</dd>
       <dt>Şifre koruması</dt><dd>${info.password ? 'Açık' : 'Kapalı (yalnızca bu bilgisayardan erişilebilir)'}</dd>
     </dl></div>
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><b>Yedekleme</b>
+      <span class="help">Akışlar, veri tabloları ve değişkenler tek bir dosyaya kaydedilir. Kimlik bilgilerini de almak için bir şifre girin; bilgiler bu şifreyle şifrelenir ve dosyayı başka bir bilgisayara taşıyabilirsiniz. Çalıştırma kayıtları ve dosya klasörü yedeğe girmez.</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input class="inp" id="bk-pass" type="password" autocomplete="new-password" placeholder="Şifre (isteğe bağlı, en az 8 karakter)" style="flex:1;min-width:220px"><button class="btn primary" id="bk-make">${icon('download')}Yedeği indir</button></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid var(--line);padding-top:10px"><b style="font-size:13px">Geri yükle</b><input type="file" id="rs-file" accept=".json,application/json" class="inp" style="flex:1;min-width:200px"><input class="inp" id="rs-pass" type="password" autocomplete="off" placeholder="Yedek şifresi" style="width:180px"><button class="btn" id="rs-go">Geri yükle</button></div>
+      <span class="help">Geri yükleme mevcut verileri silmez: aynı kimlikteki akış, tablo ve kimlik bilgileri yedektekiyle değişir, diğerleri eklenir. Değişen akışların önceki hali Sürümler'de kalır.</span>
+      <div id="bk-msg" role="status"></div></div>
     <div class="card" style="padding:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><b>Tema</b>
       <div class="seg" id="theme">${[['', 'Sistem'], ['light', 'Açık'], ['dark', 'Koyu']].map(([k, l]) => `<button data-th="${k}" class="${theme === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><b>Dosya klasöründekiler</b><span class="help">"Dosya oku" ve "Dosyaya yaz" node'ları yalnızca bu klasörde çalışır.</span>
@@ -1816,6 +1833,26 @@ async function pageAbout() {
       <span class="help"><code>PORT</code> (varsayılan 5678), <code>N8N8_HOST</code> (ağa açmak için 0.0.0.0), <code>N8N8_PASSWORD</code> (giriş şifresi), <code>N8N8_URL</code> (dışarıdan erişilen adres, webhook bağlantıları için), <code>N8N8_DATA</code> (veri klasörü), <code>N8N8_NO_OPEN=1</code> (tarayıcıyı otomatik açma).</span></div>
   </div></div>`;
   $('#theme').addEventListener('click', e => { const b = e.target.closest('[data-th]'); if (!b) return; setTheme(b.dataset.th); pageAbout(); });
+  const msg = (html, err) => { $('#bk-msg').innerHTML = `<div class="${err ? 'err-box' : 'info-box'}">${html}</div>`; };
+  $('#bk-make').addEventListener('click', async e => {
+    e.target.disabled = true;
+    try {
+      const pass = $('#bk-pass').value; const b = await api('POST', '/api/backup', { password: pass });
+      download(`8n8-yedek-${new Date().toLocaleDateString('sv')}.json`, JSON.stringify(b));
+      msg(`Yedek indirildi: ${b.akislar.length} akış, ${b.tablolar.length} tablo, ${Object.keys(b.degiskenler).length} değişken${pass ? `, ${b.kimlikSayisi} kimlik bilgisi (şifreli)` : b.kimlikSayisi ? `. Kimlik bilgileri (${b.kimlikSayisi}) şifre girilmediği için yedeğe alınmadı.` : ''}.`);
+    } catch (err) { msg(esc(err.message), true); } finally { e.target.disabled = false; }
+  });
+  $('#rs-go').addEventListener('click', async e => {
+    const f = $('#rs-file').files[0]; if (!f) return msg('Önce yedek dosyasını seçin.', true);
+    let backup; try { backup = JSON.parse(await f.text()); } catch { return msg('Dosya okunamadı: geçerli bir JSON değil.', true); }
+    if (!confirm(`"${f.name}" geri yüklensin mi? Aynı kimlikteki akışlar ve tablolar yedektekiyle değişir.`)) return;
+    e.target.disabled = true;
+    try {
+      const r = await api('POST', '/api/restore', { backup, password: $('#rs-pass').value });
+      msg(`Geri yüklendi: ${r.akislar} akış (${r.etkin} etkin), ${r.tablolar} tablo, ${r.degiskenler} değişken, ${r.kimlikBilgileri} kimlik bilgisi.${r.uyarilar.length ? `<ul style="margin:6px 0 0;padding-left:18px">${r.uyarilar.map(u => `<li>${esc(u)}</li>`).join('')}</ul>` : ''}`);
+      G.creds = null;
+    } catch (err) { msg(esc(err.message), true); } finally { e.target.disabled = false; }
+  });
 }
 function setTheme(t) { try { localStorage.setItem('8n8.theme', t); } catch {} if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; }
 

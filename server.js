@@ -10,6 +10,7 @@ const { spawn } = require('child_process');
 const store = require('./lib/store');
 const engine = require('./lib/engine');
 const { NODES, describe, defaults, CREDENTIAL_TYPES, testCredential } = require('./lib/nodes');
+const backup = require('./lib/backup');
 const oauth = require('./lib/oauth');
 const { nextRun } = require('./lib/cron');
 const templates = require('./lib/templates');
@@ -31,10 +32,10 @@ function send(res, status, body, headers = {}) {
   res.writeHead(status, { 'Content-Type': isStr ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
   res.end(isStr ? body : JSON.stringify(body));
 }
-function readBody(req) {
+function readBody(req, max = MAX_BODY) {
   return new Promise((resolve, reject) => {
     const chunks = []; let size = 0;
-    req.on('data', c => { size += c.length; if (size > MAX_BODY) { reject(new HttpError(413, 'İstek gövdesi çok büyük (16 MB sınırı)')); req.destroy(); } else chunks.push(c); });
+    req.on('data', c => { size += c.length; if (size > max) { reject(new HttpError(413, `İstek gövdesi çok büyük (${Math.round(max / 1048576)} MB sınırı)`)); req.destroy(); } else chunks.push(c); });
     req.on('end', () => {
       const raw = Buffer.concat(chunks).toString('utf8');
       const ct = req.headers['content-type'] || '';
@@ -304,6 +305,24 @@ route('PUT', '/api/workflows/:id', ({ params, body }) => {
   arm(wf);
   return { ...wf, nextRuns: nextRuns(wf.id) };
 });
+/* full backup / restore (settings page) */
+route('POST', '/api/backup', ({ body }) => {
+  const password = String(body.password || '');
+  if (password && password.length < 8) throw new HttpError(400, 'Yedek şifresi en az 8 karakter olmalı');
+  return backup.create({ password, version: pkg.version });
+});
+route('POST', '/api/restore', ({ body }) => {
+  const r = backup.restore(body.backup, { password: String(body.password || ''), checkWorkflow: w => checkTypes(w?.nodes) });
+  const wasActive = new Map((body.backup.akislar || []).map(w => [w?.id, !!w?.active]));
+  let active = 0;
+  for (const wf of r.akislar) {
+    disarm(wf.id);
+    if (!wasActive.get(wf.id)) continue;
+    try { validateActivation({ ...wf, active: true }); arm(store.saveWorkflow({ ...wf, active: true }, { version: false })); active++; }
+    catch (e) { r.atlanan.push(`${wf.name}: geri yüklendi ama etkinleştirilemedi (${e.message})`); }
+  }
+  return { akislar: r.akislar.length, etkin: active, tablolar: r.tablolar, degiskenler: r.degiskenler, kimlikBilgileri: r.kimlikBilgileri, uyarilar: r.atlanan };
+});
 route('DELETE', '/api/workflows/:id', ({ params }) => { disarm(params.id); store.deleteWorkflow(params.id); return { ok: true }; });
 route('POST', '/api/workflows/:id/duplicate', ({ params }) => {
   const wf = store.getWorkflow(params.id); if (!wf) throw new HttpError(404, 'Akış bulunamadı');
@@ -551,7 +570,7 @@ const server = http.createServer(async (req, res) => {
       for (const r of routes) {
         if (r.method !== req.method) continue;
         const mm = p.match(r.re); if (!mm) continue;
-        const body = ['POST', 'PUT'].includes(req.method) ? await readBody(req) : {};
+        const body = ['POST', 'PUT'].includes(req.method) ? await readBody(req, p === '/api/restore' ? 256 * 1024 * 1024 : MAX_BODY) : {};
         const out = await r.fn({ params: mm.groups || {}, query: Object.fromEntries(url.searchParams), body: typeof body === 'object' ? body : {} });
         return send(res, 200, out);
       }
