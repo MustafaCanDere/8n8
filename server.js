@@ -11,6 +11,8 @@ const store = require('./lib/store');
 const engine = require('./lib/engine');
 const { AI, NODES, describe, defaults, CREDENTIAL_TYPES, testCredential } = require('./lib/nodes');
 const backup = require('./lib/backup');
+const kb = require('./lib/kb');
+const notify = require('./lib/notify');
 const crypto = require('crypto');
 const oauth = require('./lib/oauth');
 const { nextRun } = require('./lib/cron');
@@ -339,9 +341,23 @@ route('POST', '/api/restore', ({ body }) => {
     try { validateActivation({ ...wf, active: true }); arm(store.saveWorkflow({ ...wf, active: true }, { version: false })); active++; }
     catch (e) { r.atlanan.push(`${wf.name}: geri yüklendi ama etkinleştirilemedi (${e.message})`); }
   }
-  return { akislar: r.akislar.length, etkin: active, tablolar: r.tablolar, degiskenler: r.degiskenler, kimlikBilgileri: r.kimlikBilgileri, uyarilar: r.atlanan };
+  return { akislar: r.akislar.length, etkin: active, tablolar: r.tablolar, bilgiTabanlari: r.bilgiTabanlari, degiskenler: r.degiskenler, kimlikBilgileri: r.kimlikBilgileri, uyarilar: r.atlanan };
 });
 route('DELETE', '/api/workflows/:id', ({ params }) => { disarm(params.id); store.deleteWorkflow(params.id); return { ok: true }; });
+/* error notifications (settings page) */
+engine.onEnd((wf, exec) => notify.onEnd(wf, exec, PUBLIC_URL));
+route('GET', '/api/notify', () => notify.get());
+route('PUT', '/api/notify', ({ body }) => notify.set(body));
+route('POST', '/api/notify/test', async ({ body }) => {
+  const s = { ...notify.get(), ...body };
+  if (!s.kanal) throw new HttpError(400, 'Önce bir kanal seçin');
+  try { await notify.send('✅ 8n8 deneme bildirimi: hata bildirimleri bu kanala gelecek.', '8n8 deneme bildirimi', s); } catch (e) { throw new HttpError(400, e.message); }
+  return { ok: true };
+});
+route('GET', '/api/trash', () => store.listTrash());
+route('POST', '/api/trash/:id/restore', ({ params }) => store.restoreTrash(params.id));
+route('DELETE', '/api/trash/:id', ({ params }) => { store.purgeTrash(params.id); return { ok: true }; });
+route('DELETE', '/api/trash', () => { store.purgeTrash(); return { ok: true }; });
 route('POST', '/api/workflows/:id/duplicate', ({ params }) => {
   const wf = store.getWorkflow(params.id); if (!wf) throw new HttpError(404, 'Akış bulunamadı');
   return store.saveWorkflow({ ...JSON.parse(JSON.stringify(wf)), id: undefined, name: `${wf.name} (kopya)`, active: false });
@@ -475,6 +491,18 @@ route('PUT', '/api/tables/:id/rows/:rowId', ({ params, body }) => {
 });
 route('DELETE', '/api/tables/:id/rows/:rowId', ({ params }) => ({ deleted: store.deleteRows(params.id, r => String(r._id) === params.rowId).length }));
 route('POST', '/api/tables/:id/clear', ({ params }) => ({ deleted: store.deleteRows(params.id, () => true).length }));
+/* knowledge bases ("Bilgi tabanı") */
+route('GET', '/api/kb', () => kb.list());
+route('POST', '/api/kb', ({ body }) => kb.create(body.name));
+route('GET', '/api/kb/:id', ({ params }) => kb.getKb(params.id));
+route('PUT', '/api/kb/:id', ({ params, body }) => kb.rename(params.id, body.name));
+route('DELETE', '/api/kb/:id', ({ params }) => { kb.remove(params.id); return { ok: true }; });
+route('POST', '/api/kb/:id/docs', ({ params, body }) => {
+  if (body.icerik != null) return kb.addDoc(params.id, body.ad, Buffer.from(String(body.icerik), 'base64'));
+  return kb.addDoc(params.id, body.ad || 'metin.txt', String(body.metin ?? ''));
+});
+route('DELETE', '/api/kb/:id/docs/:docId', ({ params }) => { kb.removeDoc(params.id, params.docId); return { ok: true }; });
+route('GET', '/api/kb/:id/search', ({ params, query }) => kb.search(params.id, query.q || '', query.k || 5));
 
 /* AI builder and n8n import */
 route('POST', '/api/ai/build', async ({ body }) => {
@@ -657,7 +685,7 @@ const server = http.createServer(async (req, res) => {
       for (const r of routes) {
         if (r.method !== req.method) continue;
         const mm = p.match(r.re); if (!mm) continue;
-        const body = ['POST', 'PUT'].includes(req.method) ? await readBody(req, p === '/api/restore' ? 256 * 1024 * 1024 : MAX_BODY) : {};
+        const body = ['POST', 'PUT'].includes(req.method) ? await readBody(req, p === '/api/restore' ? 256 * 1024 * 1024 : /^\/api\/kb\/[^/]+\/docs$/.test(p) ? 40 * 1024 * 1024 : MAX_BODY) : {};
         const out = await r.fn({ params: mm.groups || {}, query: Object.fromEntries(url.searchParams), body: typeof body === 'object' ? body : {} });
         return send(res, 200, out);
       }

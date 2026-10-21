@@ -674,6 +674,118 @@ test('Claude ile sınıflandır ve bilgi çıkar (sahte API, yapılandırılmı�
   assert.match(e2.error, /bilinmeyen tür "renk"/);
 });
 
+/* tiny zip writer (stored + deflate) to make a .docx without extra packages */
+function makeZip(files) {
+  const zlib = require('zlib');
+  const crcT = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crc = b => { let c = 0xffffffff; for (const x of b) c = crcT[(c ^ x) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const locals = [], cents = []; let off = 0;
+  for (const [name, text] of Object.entries(files)) {
+    const raw = Buffer.from(text), data = zlib.deflateRawSync(raw), nm = Buffer.from(name);
+    const h = Buffer.alloc(30); h.writeUInt32LE(0x04034b50, 0); h.writeUInt16LE(20, 4); h.writeUInt16LE(8, 8); h.writeUInt32LE(crc(raw), 14); h.writeUInt32LE(data.length, 18); h.writeUInt32LE(raw.length, 22); h.writeUInt16LE(nm.length, 26);
+    const c = Buffer.alloc(46); c.writeUInt32LE(0x02014b50, 0); c.writeUInt16LE(20, 4); c.writeUInt16LE(20, 6); c.writeUInt16LE(8, 10); c.writeUInt32LE(crc(raw), 16); c.writeUInt32LE(data.length, 20); c.writeUInt32LE(raw.length, 24); c.writeUInt16LE(nm.length, 28); c.writeUInt32LE(off, 42);
+    locals.push(h, nm, data); cents.push(c, nm); off += 30 + nm.length + data.length;
+  }
+  const cd = Buffer.concat(cents), e = Buffer.alloc(22); e.writeUInt32LE(0x06054b50, 0); e.writeUInt16LE(cents.length / 2, 8); e.writeUInt16LE(cents.length / 2, 10); e.writeUInt32LE(cd.length, 12); e.writeUInt32LE(off, 16);
+  return Buffer.concat([...locals, cd, e]);
+}
+
+test('Bilgi tabanı: belge yükle (.txt, .docx), ara, Claude belgelere göre cevaplar (sahte API)', async () => {
+  const k = await api('POST', '/api/kb', { name: 'Müşteri SSS' });
+  await assert.rejects(api('POST', '/api/kb', { name: 'müşteri sss' }), /zaten var/);
+  const t = await api('POST', `/api/kb/${k.id}/docs`, { ad: 'iade.txt', icerik: Buffer.from('İade politikası\n\nÜrünleri teslimden sonra 14 gün içinde iade edebilirsiniz. İade kargosu ücretsizdir.\n\nKargo\n\nSiparişler 2 iş gününde kargoya verilir.').toString('base64') });
+  assert.equal(t.parca, 1);
+  const docx = makeZip({ '[Content_Types].xml': '<Types/>', 'word/document.xml': '<w:document><w:body><w:p><w:r><w:t>Çalışma saatleri</w:t></w:r></w:p><w:p><w:r><w:t>Mağazamız hafta içi 09:00-18:00 arası açıktır.</w:t></w:r></w:p></w:body></w:document>' });
+  const d = await api('POST', `/api/kb/${k.id}/docs`, { ad: 'saatler.docx', icerik: docx.toString('base64') });
+  assert.ok(d.karakter > 20, 'docx metni okunmalı');
+  await assert.rejects(api('POST', `/api/kb/${k.id}/docs`, { ad: 'x.pdf', icerik: 'JVBERi0=' }), /PDF/);
+  const s1 = await api('GET', `/api/kb/${k.id}/search?q=${encodeURIComponent('iadeler kaç günde yapılır')}`);
+  assert.equal(s1[0].belge, 'iade.txt');
+  const s2 = await api('GET', `/api/kb/${k.id}/search?q=${encodeURIComponent('mağaza saat kaçta açık')}`);
+  assert.equal(s2[0].belge, 'saatler.docx');
+  const info = await api('GET', `/api/kb/${k.id}`);
+  assert.equal(info.belgeler.length, 2);
+  const cred = await api('POST', '/api/credentials', { type: 'anthropicApi', name: 'c-bilgi', data: { apiKey: 'sk-test' } });
+  const w = await api('POST', '/api/workflows', wf('bilgi', [
+    ['manual', { data: '[{"mesaj":"İade süresi kaç gün?"},{"mesaj":"zzzz qqqq"}]' }],
+    ['knowledge', { kb: 'Müşteri SSS', op: 'ask', credential: cred.id, question: '{{ $json.mesaj }}' }, { name: 'sor' }],
+    ['knowledge', { kb: k.id, op: 'add', docName: 'yeni.txt', source: 'text', content: 'Hediye paketi ücretsizdir.' }, { name: 'ekle' }],
+  ], [[0, 1], [1, 2]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const [a, b] = outOf(e, 'sor');
+  assert.match(a.cevap, /14 gün/);
+  assert.deepEqual([a.kaynaklar, a.bilgiBulundu], [['iade.txt'], true]);
+  assert.equal(b.bilgiBulundu, false);
+  assert.equal(outOf(e, 'ekle')[0].islem, 'eklendi');
+  const req = fakeClaude.calls.filter(c => c.body.output_config?.format?.schema?.properties?.cevap).at(-1).body;
+  assert.ok(String(req.messages[0].content).includes('<bolum no="1" belge="iade.txt">'));
+  assert.equal((await api('GET', `/api/kb/${k.id}`)).docs, 3);
+  // the agent can search the knowledge base as a tool
+  const w2 = await api('POST', '/api/workflows', wf('bilgi-ajan', [['manual', { data: '[{"m":"bilgi tabanına bak: kargo ne zaman"}]' }], ['agent', { credential: cred.id, prompt: '{{ $json.m }}', kb: k.id, toolHttp: false }, { name: 'ajan' }]], [[0, 1]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e2.status, 'success', e2.error);
+  assert.equal(outOf(e2, 'ajan')[0].araclar[0].arac, 'bilgi_tabaninda_ara');
+  assert.match(outOf(e2, 'ajan')[0].yanit, /iade\.txt/);
+  await api('DELETE', `/api/kb/${k.id}/docs/${d.id}`);
+  assert.equal((await api('GET', `/api/kb/${k.id}`)).docs, 2);
+});
+
+test('Hata bildirimi: etkin akış hata verince Telegram\'a bir kez haber verilir', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'telegramApi', name: 'tg-bildirim', data: { token: '123:abc' } });
+  await assert.rejects(api('PUT', '/api/notify', { kanal: 'telegram', credential: cred.id, hedef: '' }), /sohbet kimliğini/);
+  await assert.rejects(api('PUT', '/api/notify', { kanal: 'email', credential: cred.id, hedef: 'a@b.c' }), /uymuyor/);
+  await api('PUT', '/api/notify', { kanal: 'telegram', credential: cred.id, hedef: '55', throttle: 10 });
+  const before = (fakeTelegram.sent || []).length;
+  await api('POST', '/api/notify/test', {});
+  assert.match(fakeTelegram.sent.at(-1).text, /deneme bildirimi/);
+  const w = await api('POST', '/api/workflows', wf('bozuk-webhook', [['webhook', { method: 'POST', path: 'bozuk', respond: 'lastNode' }], ['code', { code: 'throw new Error("stok bitti");' }, { name: 'stok' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${w.id}`, { ...w, active: true });
+  for (let i = 0; i < 2; i++) await fetch(`${B}/webhook/bozuk`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  await new Promise(r => setTimeout(r, 400));
+  const sent = fakeTelegram.sent.slice(before + 1);
+  assert.equal(sent.length, 1, `aynı akış için 10 dakikada bir bildirim: ${JSON.stringify(fakeTelegram.sent)}`);
+  assert.equal(String(sent[0].chat_id), '55');
+  assert.match(sent[0].text, /"bozuk-webhook" akışı hata verdi[\s\S]*stok bitti[\s\S]*#\/calistirma\//);
+  await api('PUT', '/api/workflows/' + w.id, { ...w, active: false });
+  await api('PUT', '/api/notify', { kanal: '' });
+});
+
+test('Çöp kutusu: silinen akış sürümleriyle geri alınır, kalıcı silinir', async () => {
+  const w = await api('POST', '/api/workflows', wf('silinecek', [['manual', {}]], [], { tags: ['deneme'] }));
+  await api('PUT', `/api/workflows/${w.id}`, { ...w, name: 'silinecek 2' });
+  await api('DELETE', `/api/workflows/${w.id}`);
+  await assert.rejects(api('GET', `/api/workflows/${w.id}`), /404|bulunamadı/i);
+  const t = await api('GET', '/api/trash');
+  assert.equal(t.find(x => x.id === w.id)?.name, 'silinecek 2');
+  const r = await api('POST', `/api/trash/${w.id}/restore`, {});
+  assert.equal(r.active, false);
+  assert.ok((await api('GET', `/api/workflows/${w.id}/versions`)).length >= 1, 'sürüm geçmişi geri gelmeli');
+  assert.ok(!(await api('GET', '/api/trash')).some(x => x.id === w.id));
+  await api('DELETE', `/api/workflows/${w.id}`);
+  await api('DELETE', `/api/trash/${w.id}`);
+  assert.ok(!(await api('GET', '/api/trash')).some(x => x.id === w.id));
+  await assert.rejects(api('POST', `/api/trash/${w.id}/restore`, {}), /yok/);
+});
+
+test('Bütün şablonlar açılır; "Metinden bilgi çıkar" şablonu çalışır (sahte API)', async () => {
+  const list = await api('GET', '/api/templates');
+  assert.ok(list.length >= 12);
+  const made = {};
+  for (const t of list) made[t.key] = await api('POST', `/api/templates/${t.key}`, {});
+  const w = made.fatura;
+  const cred = await api('POST', '/api/credentials', { type: 'anthropicApi', name: 'c-sablon', data: { apiKey: 'sk-test' } });
+  for (const n of w.nodes) if (n.type === 'extract') n.params.credential = cred.id;
+  await api('PUT', `/api/workflows/${w.id}`, { ...w, active: true });
+  const r = await fetch(`${B}/webhook/fatura`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ metin: 'ABC Ltd. fatura no F-12, toplam 1.250,50 TL' }) });
+  const out = await r.json();
+  assert.equal(r.status, 200, JSON.stringify(out));
+  assert.equal(out.tutar, 1250.5);
+  const tb = (await api('GET', '/api/tables')).find(x => x.name === 'Faturalar');
+  assert.equal(tb.rowCount, 1);
+  await api('PUT', `/api/workflows/${w.id}`, { ...w, active: false });
+});
+
 test('MCP aracı: Claude istemcisi akışı araç olarak listeler ve çağırır', async () => {
   const tok = await api('POST', '/api/credentials', { type: 'httpBearer', name: 'mcp-token', data: { token: 'mcp-gizli' } });
   const w = await api('POST', '/api/workflows', wf('mcp', [
@@ -956,6 +1068,7 @@ function fakeTelegramApi(req, res) {
   const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
   const m = req.url.match(/^\/tg\/bot123:abc\/(\w+)/); if (!m) return json({ ok: false, description: 'Unauthorized' }, 401);
   if (m[1] === 'getMe') return json({ ok: true, result: { id: 1, username: 'sahte_bot' } });
+  if (m[1] === 'sendMessage') { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => { (fakeTelegram.sent ||= []).push(JSON.parse(raw)); json({ ok: true, result: { message_id: 9, chat: { id: 55 } } }); }); }
   if (m[1] === 'deleteWebhook') { fakeTelegram.webhook = false; return json({ ok: true, result: true }); }
   if (m[1] === 'getUpdates') {
     if (fakeTelegram.webhook) return json({ ok: false, error_code: 409, description: "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first" }, 409);
@@ -979,7 +1092,11 @@ const fakeServer = require('http').createServer((req, res) => {
     const schema = body.output_config?.format?.schema;
     if (schema) { // structured output: classify picks the category named in the text, extract fills known fields
       const text = String(last.content); const props = schema.properties; const o = {};
-      if (props.kategori || props.kategoriler) {
+      if (props.cevap) { // knowledge base answer: quote the passage that mentions the asked word
+        const secs = [...text.matchAll(/<bolum no="(\d+)"[^>]*>\n([\s\S]*?)\n<\/bolum>/g)];
+        const low = x => String(x).toLocaleLowerCase('tr'); const hit = secs.find(m => low(m[2]).includes('iade') && low(text.split('<soru>')[1] || '').includes('iade'));
+        Object.assign(o, hit ? { cevap: (hit[2].match(/[^.]*14 gün[^.]*\./) || [hit[2]])[0].trim(), kaynaklar: [+hit[1]], bilgiVar: true } : { cevap: 'Bilmiyorum', kaynaklar: [], bilgiVar: false });
+      } else if (props.kategori || props.kategoriler) {
         const en = (props.kategori || props.kategoriler.items).enum;
         const hits = en.filter(c => text.toLocaleLowerCase('tr').includes(c.toLocaleLowerCase('tr')));
         if (props.kategori) o.kategori = hits[0] || 'Diğer'; else o.kategoriler = hits;
@@ -990,8 +1107,9 @@ const fakeServer = require('http').createServer((req, res) => {
       return res.end(JSON.stringify({ id: 'msg_s', type: 'message', role: 'assistant', model: body.model, content: [{ type: 'text', text: JSON.stringify(o) }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 10, output_tokens: 5 } }));
     }
     if (String(body.system || '').includes('NODE TÜRLERİ')) content = [{ type: 'text', text: '```json\n{"name":"Hava","nodes":[{"key":"a","type":"schedule","name":"Her sabah","params":{"mode":"cron","cron":"0 8 * * *"}},{"key":"b","type":"http","name":"Hava durumu","params":{"url":"https://api.open-meteo.com"}}],"edges":[["a",0,"b",0]],"notes":"Hazır"}\n```' }];
+    else if (typeof last.content === 'string' && last.content.includes('bilgi tabanına bak')) { content = [{ type: 'tool_use', id: 'tu_2', name: 'bilgi_tabaninda_ara', input: { sorgu: 'kargo' } }]; stop = 'tool_use'; }
     else if (typeof last.content === 'string' && last.content.includes('kaç')) { content = [{ type: 'tool_use', id: 'tu_1', name: 'hesap_makinesi', input: { ifade: '6*7' } }]; stop = 'tool_use'; }
-    else if (Array.isArray(last.content) && last.content[0]?.type === 'tool_result') content = [{ type: 'text', text: `Sonuç: ${JSON.parse(last.content[0].content).sonuc}` }];
+    else if (Array.isArray(last.content) && last.content[0]?.type === 'tool_result') { const r = JSON.parse(last.content[0].content); content = [{ type: 'text', text: Array.isArray(r) ? `Kaynak: ${r[0]?.belge}` : `Sonuç: ${r.sonuc}` }]; }
     else content = [{ type: 'text', text: `Önceki mesaj sayısı: ${body.messages.length - 1}` }];
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: body.model, content, stop_reason: stop, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 5 } }));

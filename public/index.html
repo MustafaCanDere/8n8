@@ -373,6 +373,7 @@ kbd { font: 500 11px var(--mono); border: 1px solid var(--line); border-bottom-w
     <a class="navlink" href="#/ozet" data-nav="ozet"><svg class="i" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Özet</a>
     <a class="navlink" href="#/kimlik" data-nav="kimlik"><svg class="i" viewBox="0 0 24 24"><path d="M15 7a4 4 0 1 1-3.9 4.9L4 19v-3h2v-2h2l1.6-1.6"/><circle cx="15.5" cy="8.5" r="1"/></svg>Kimlik bilgileri</a>
     <a class="navlink" href="#/tablolar" data-nav="tablolar"><svg class="i" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 10h16M4 15h16M10 5v14"/></svg>Tablolar</a>
+    <a class="navlink" href="#/bilgi" data-nav="bilgi"><svg class="i" viewBox="0 0 24 24"><path d="M4 4h6a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H4zM20 4h-6a3 3 0 0 0-3 3v13a2 2 0 0 1 2-2h7z"/></svg>Bilgi tabanı</a>
     <a class="navlink" href="#/degiskenler" data-nav="degiskenler"><svg class="i" viewBox="0 0 24 24"><path d="M7 4c-2 0-2 2-2 4s-2 4-2 4 2 2 2 4 0 4 2 4M17 4c2 0 2 2 2 4s2 4 2 4-2 2-2 4 0 4-2 4M9 15l6-6M9 9l6 6"/></svg>Değişkenler</a>
     <a class="navlink" href="#/hakkinda" data-nav="hakkinda"><svg class="i" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 11v6M12 7.5v.5"/></svg>Ayarlar</a>
     <div class="nav-foot"><span class="conn" id="conn">Bağlı</span><br><span id="ver"></span></div>
@@ -482,7 +483,7 @@ async function route() {
   const h = location.hash.replace(/^#\/?/, '') || 'akislar';
   const [page, arg] = h.split('/');
   if (cleanup) { const c = cleanup; cleanup = null; await c(); }
-  document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === (page === 'akis' ? 'akislar' : page === 'calistirma' ? 'calistirmalar' : page === 'tablo' ? 'tablolar' : page)));
+  document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === (page === 'akis' ? 'akislar' : page === 'calistirma' ? 'calistirmalar' : page === 'tablo' ? 'tablolar' : page === 'cop' ? 'akislar' : page)));
   closeModal();
   try {
     if (page === 'akis' && arg) await openEditor(arg);
@@ -493,6 +494,8 @@ async function route() {
     else if (page === 'degiskenler') await pageVariables();
     else if (page === 'tablolar') await pageTables();
     else if (page === 'tablo' && arg) await pageTable(arg);
+    else if (page === 'bilgi') await pageKb(arg);
+    else if (page === 'cop') await pageTrash();
     else if (page === 'hakkinda') await pageAbout();
     else await pageWorkflows();
   } catch (e) { view.innerHTML = `<div class="page"><div class="page-in"><div class="err-box">${esc(e.message)}</div></div></div>`; }
@@ -529,7 +532,7 @@ async function pageWorkflows() {
       <button class="btn" id="wf-ai">${icon('wand')}<span class="lbl">Claude ile oluştur</span></button>
       <button class="btn primary" id="wf-new">${icon('plus')}Yeni akış</button></div>
     <div class="wf-filters"><div class="seg" id="wf-state">${[['', 'Hepsi'], ['on', 'Etkin'], ['off', 'Kapalı']].map(([k, l]) => `<button data-st="${k}" class="${k ? '' : 'on'}">${l}</button>`).join('')}</div><div id="wf-tags" class="tagbar"></div></div>
-    <p class="lead">Etkin akışlar program açık olduğu sürece zamanlayıcı, webhook ve formlardan kendiliğinden çalışır. Manuel akışlar editörden çalıştırılır.</p>
+    <p class="lead">Etkin akışlar program açık olduğu sürece zamanlayıcı, webhook ve formlardan kendiliğinden çalışır. Manuel akışlar editörden çalıştırılır.<span id="wf-trash"></span></p>
     <div class="card list" id="wf-list"></div></div></div>`;
   const draw = () => {
     const tags = allTags(); if (q.tag && !tags.includes(q.tag)) q.tag = '';
@@ -553,6 +556,8 @@ async function pageWorkflows() {
     $('#wf-new2')?.addEventListener('click', newWorkflow);
   };
   draw();
+  const trashLink = async () => { const t = await api('GET', '/api/trash').catch(() => []); $('#wf-trash').innerHTML = t.length ? ` <a href="#/cop">Çöp kutusu (${t.length}) →</a>` : ''; };
+  trashLink();
   $('#wf-search').addEventListener('input', e => { q.s = e.target.value.toLocaleLowerCase('tr'); draw(); });
   $('#wf-state').addEventListener('click', e => { const b = e.target.closest('[data-st]'); if (!b) return; q.state = b.dataset.st; $('#wf-state').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); draw(); });
   view.querySelector('.page-in').addEventListener('click', e => { const b = e.target.closest('[data-tagf]'); if (!b) return; q.tag = q.tag === b.dataset.tagf ? '' : b.dataset.tagf; draw(); });
@@ -571,9 +576,27 @@ async function pageWorkflows() {
     const id = b.closest('[data-id]').dataset.id; const w = G.workflows.find(x => x.id === id);
     if (b.dataset.act === 'dup') { await api('POST', `/api/workflows/${id}/duplicate`); toast('Kopyası oluşturuldu'); }
     if (b.dataset.act === 'export') { const wf = await api('GET', `/api/workflows/${id}`); download(`${w.name}.8n8.json`, exportJSON(wf)); }
-    if (b.dataset.act === 'del') { if (!confirm(`"${w.name}" silinsin mi? Bu geri alınamaz.`)) return; await api('DELETE', `/api/workflows/${id}`); toast('Akış silindi'); }
+    if (b.dataset.act === 'del') { if (!confirm(`"${w.name}" çöp kutusuna taşınsın mı? 30 gün içinde geri alabilirsiniz.`)) return; await api('DELETE', `/api/workflows/${id}`); toast('Akış çöp kutusuna taşındı'); trashLink(); }
     G.workflows = await api('GET', '/api/workflows'); draw();
   });
+}
+async function pageTrash() {
+  const list = await api('GET', '/api/trash');
+  view.innerHTML = `<div class="page"><div class="page-in">
+    <div class="page-head"><a class="btn icon" href="#/akislar" aria-label="Akışlara dön">${icon('back')}</a><h1>Çöp kutusu</h1>${list.length ? '<button class="btn danger" id="tr-empty">Çöp kutusunu boşalt</button>' : ''}</div>
+    <p class="lead">Silinen akışlar burada 30 gün kalır, sonra kendiliğinden silinir. Geri alınan akış kapalı olarak döner; sürüm geçmişi ve hafızası korunur.</p>
+    <div class="card list">${list.length ? list.map(w => `<div class="lrow" data-id="${w.id}"><span class="ttl">${esc(w.name)}</span>
+      <div class="meta">${w.tags.map(t => `<span class="tag">#${esc(t)}</span>`).join('')}<span>${w.nodes} node</span><span>silindi ${ago(w.deletedAt)}</span></div>
+      <div class="acts"><button class="btn sm" data-act="restore">${icon('undo')}Geri al</button><button class="btn sm danger" data-act="purge" aria-label="Kalıcı olarak sil">${icon('trash')}</button></div></div>`).join('') : '<div class="empty">Çöp kutusu boş.</div>'}</div></div></div>`;
+  $('#tr-empty')?.addEventListener('click', async () => { if (!confirm(`${list.length} akış kalıcı olarak silinsin mi? Bu geri alınamaz.`)) return; await api('DELETE', '/api/trash'); toast('Çöp kutusu boşaltıldı'); pageTrash(); });
+  view.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
+    const w = list.find(x => x.id === b.closest('[data-id]').dataset.id);
+    try {
+      if (b.dataset.act === 'restore') { await api('POST', `/api/trash/${w.id}/restore`, {}); toast(`"${w.name}" geri alındı`); }
+      else { if (!confirm(`"${w.name}" kalıcı olarak silinsin mi? Bu geri alınamaz.`)) return; await api('DELETE', `/api/trash/${w.id}`); toast('Kalıcı olarak silindi'); }
+    } catch (e) { toast(e.message, true); }
+    pageTrash();
+  }));
 }
 async function newWorkflow() {
   const wf = await api('POST', '/api/workflows', { name: 'Yeni akış', nodes: [{ id: uid(), type: 'manual', name: 'Başlat', x: 0, y: 0, params: defaults('manual'), disabled: false, settings: {} }], edges: [] });
@@ -717,6 +740,7 @@ async function openEditor(id) {
   G.workflows = await api('GET', '/api/workflows');
   G.vars = await api('GET', '/api/variables');
   G.tables = await api('GET', '/api/tables');
+  G.kbs = await api('GET', '/api/kb');
   try { wf.polls = (await api('GET', `/api/workflows/${id}/status`)).polls; } catch {}
   try { G.approvals = await api('GET', '/api/approvals'); } catch { G.approvals = []; }
   for (const n of wf.nodes) if (T(n.type)) n.params = { ...defaults(n.type), ...(n.params || {}) }; // nodes made through the API or by Claude may lack some settings
@@ -1260,6 +1284,8 @@ function fieldHTML(n, f) {
       <div class="row"><input class="inp mono" aria-label="Değer" placeholder="değer" data-k="${f.key}" data-i="${i}" data-sub="value" value="${esc(r.value)}" spellcheck="false">
       <input class="inp" aria-label="Çıkış adı" placeholder="çıkış adı" data-k="${f.key}" data-i="${i}" data-sub="label" data-struct value="${esc(r.label)}">${rm(f.key, i, 'Kuralı')}</div>`).join('')}</div>
       <button class="btn sm addrow" data-addrow="${f.key}">+ Kural ekle</button></div>`;
+    case 'kb': return `<div class="field">${lab}<div class="urlrow"><select class="inp" id="${id}" data-k="${f.key}" data-struct><option value="">${f.key === 'kb' && n.type === 'agent' ? 'Kullanma' : 'Seçin…'}</option>${(G.kbs || []).map(k => `<option value="${k.id}"${k.id === v || k.name === v ? ' selected' : ''}>${esc(k.name)} (${k.docs} belge)</option>`).join('')}</select>
+      <button class="btn sm" data-newkb="${f.key}">Yeni</button></div><a href="#/bilgi/${esc((G.kbs || []).find(k => k.id === v || k.name === v)?.id || '')}" class="help">${v ? 'Belgeleri yönet →' : 'Bilgi tabanlarını aç →'}</a></div>`;
     case 'table': return `<div class="field">${lab}<div class="urlrow"><select class="inp" id="${id}" data-k="${f.key}" data-struct><option value="">Seçin…</option>${G.tables.map(t => `<option value="${t.id}"${t.id === v || t.name === v ? ' selected' : ''}>${esc(t.name)} (${t.rowCount} satır)</option>`).join('')}</select>
       <button class="btn sm" data-newtable="${f.key}">Yeni</button></div>${v ? `<a href="#/tablo/${esc(G.tables.find(t => t.id === v || t.name === v)?.id || '')}" class="help">Tabloyu aç →</a>` : ''}</div>`;
     case 'wftools': return `<div class="field"><span class="flabel">${esc(f.label)}</span><div class="rows">${(v || []).map((r, i) => `
@@ -1438,6 +1464,11 @@ function bindPanel() {
     if (b.dataset.tab) { ED.tab = b.dataset.tab; DV.port = 0; renderPanel(); return; }
     if (b.dataset.copy) { copyText(b.dataset.copy); return; }
     if (b.dataset.insert) { insertExpr(exprFor(b.dataset.insert)); return; }
+    if (b.dataset.newkb) {
+      const name = prompt('Yeni bilgi tabanının adı:'); if (!name?.trim()) return;
+      api('POST', '/api/kb', { name: name.trim() }).then(async k => { G.kbs = await api('GET', '/api/kb'); n.params[b.dataset.newkb] = k.id; markDirty(); renderPanel(); toast(`"${k.name}" oluşturuldu. Belgeleri "Bilgi tabanı" sayfasından ekleyin.`); }).catch(err => toast(err.message, true));
+      return;
+    }
     if (b.dataset.newtable) {
       const name = prompt('Yeni tablonun adı:'); if (!name?.trim()) return;
       api('POST', '/api/tables', { name: name.trim() }).then(async t => { G.tables = await api('GET', '/api/tables'); n.params[b.dataset.newtable] = t.id; markDirty(); renderPanel(); toast(`"${t.name}" tablosu oluşturuldu`); }).catch(err => toast(err.message, true));
@@ -1731,6 +1762,86 @@ function openAIBuild(current) {
   });
 }
 
+/* ================= knowledge bases ================= */
+async function pageKb(sel) {
+  const list = await api('GET', '/api/kb'); G.kbs = list;
+  if (!sel && list.length) sel = list[0].id;
+  const kbd = sel ? await api('GET', `/api/kb/${sel}`).catch(() => null) : null;
+  const size = b => b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
+  view.innerHTML = `<div class="page"><div class="page-in">
+    <div class="page-head"><h1>Bilgi tabanı</h1><button class="btn primary" id="kb-new">${icon('plus')}Yeni bilgi tabanı</button></div>
+    <p class="lead">SSS, ürün bilgileri, fiyat listeleri ya da iç dokümanlarınızı yükleyin; "Bilgi tabanı" node'u ve Claude ajanı sorulara bu belgelere dayanarak cevap verir. Arama bilgisayarınızda yapılır, yalnızca ilgili bölümler Claude'a gönderilir. Desteklenen dosyalar: .txt, .md, .csv, .json, .html, .docx, .odt, .pptx.</p>
+    ${list.length ? `<div class="wf-filters tagbar" style="margin-bottom:12px">${list.map(k => `<a class="btn sm${k.id === sel ? ' primary' : ''}" href="#/bilgi/${k.id}">${esc(k.name)} <span style="opacity:.7">${k.docs}</span></a>`).join('')}</div>` : ''}
+    ${kbd ? `<div class="card" style="margin-bottom:14px;padding:16px">
+      <div class="page-head" style="margin:0 0 10px"><h2 id="kb-name" title="Adı değiştirmek için tıklayın" style="cursor:text;margin:0;font-size:18px">${esc(kbd.name)}</h2>
+        <span class="help">${kbd.docs} belge · ${kbd.passages} bölüm · ${size(kbd.size)}</span>
+        <button class="btn" id="kb-up">${icon('upload')}<span class="lbl">Dosya yükle</span></button>
+        <button class="btn" id="kb-text">${icon('pen')}<span class="lbl">Metin ekle</span></button>
+        <button class="btn sm danger" id="kb-del" aria-label="Bilgi tabanını sil">${icon('trash')}</button></div>
+      <div id="kb-drop" class="list">${kbd.belgeler.length ? kbd.belgeler.map(d => `<div class="lrow"><span class="ttl">${icon('file')} ${esc(d.ad)}</span>
+        <div class="meta"><span>${d.parca} bölüm</span><span>${size(d.boyut)}</span><span>eklendi ${ago(d.eklendi)}</span></div>
+        <div class="acts"><button class="btn sm danger" data-deldoc="${d.id}" aria-label="${esc(d.ad)} belgesini sil">${icon('trash')}</button></div></div>`).join('')
+        : '<div class="empty">Henüz belge yok.<span>Dosyaları buraya sürükleyin ya da "Dosya yükle" ile seçin.</span></div>'}</div>
+      <div id="kb-msg" class="help" style="margin-top:8px"></div></div>
+    <div class="card" style="padding:16px"><h3 style="margin:0 0 8px;font-size:15px">Aramayı deneyin</h3>
+      <div class="urlrow"><input class="inp" id="kb-q" placeholder="Örneğin: iade süresi kaç gün?" aria-label="Arama sorusu"><button class="btn" id="kb-go">Ara</button></div>
+      <div id="kb-res" style="margin-top:10px"></div></div>`
+    : `<div class="card"><div class="empty">Henüz bilgi tabanı yok.<span>Örneğin "Müşteri SSS" adında bir tane açıp sık sorulan sorularınızı yükleyin. Sonra "Bilgi tabanı" node'u ile Telegram ya da e-postadan gelen sorulara otomatik cevap verebilirsiniz.</span></div></div>`}
+  </div></div>`;
+  $('#kb-new').addEventListener('click', async () => {
+    const name = prompt('Bilgi tabanının adı:'); if (!name?.trim()) return;
+    try { const k = await api('POST', '/api/kb', { name: name.trim() }); location.hash = `#/bilgi/${k.id}`; } catch (e) { toast(e.message, true); }
+  });
+  if (!kbd) return;
+  const msg = h => { $('#kb-msg').innerHTML = h; };
+  const upload = async files => {
+    const done = [], errs = [];
+    for (const f of files) {
+      msg(`${esc(f.name)} yükleniyor…`);
+      try {
+        if (f.size > 20 * 1024 * 1024) throw new Error('20 MB\'tan büyük');
+        const b64 = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1] || ''); r.onerror = () => no(r.error); r.readAsDataURL(f); });
+        const r = await api('POST', `/api/kb/${sel}/docs`, { ad: f.name, icerik: b64 });
+        done.push(`${f.name} (${r.parca} bölüm${r.guncellendi ? ', güncellendi' : ''})`);
+      } catch (e) { errs.push(`${f.name}: ${e.message}`); }
+    }
+    await pageKb(sel);
+    msg(`${done.length ? `Eklendi: ${esc(done.join(', '))}.` : ''}${errs.length ? `<div style="color:var(--danger,#c33)">${errs.map(esc).join('<br>')}</div>` : ''}`);
+    if (done.length) toast(`${done.length} belge eklendi`);
+  };
+  $('#kb-up').addEventListener('click', () => {
+    const inp = document.createElement('input'); inp.type = 'file'; inp.multiple = true; inp.accept = '.txt,.md,.csv,.json,.html,.htm,.docx,.odt,.pptx';
+    inp.onchange = () => inp.files.length && upload([...inp.files]); inp.click();
+  });
+  const drop = $('#kb-drop');
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.outline = '2px dashed var(--accent,#7a5cff)'; });
+  drop.addEventListener('dragleave', () => { drop.style.outline = ''; });
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.style.outline = ''; if (e.dataTransfer.files.length) upload([...e.dataTransfer.files]); });
+  $('#kb-text').addEventListener('click', async () => {
+    const ad = prompt('Belgenin adı (örneğin "iade-politikasi"):'); if (!ad?.trim()) return;
+    const metin = prompt('Metni yapıştırın:'); if (!metin?.trim()) return;
+    try { await api('POST', `/api/kb/${sel}/docs`, { ad: /\.\w+$/.test(ad.trim()) ? ad.trim() : `${ad.trim()}.txt`, metin }); toast('Belge eklendi'); pageKb(sel); } catch (e) { toast(e.message, true); }
+  });
+  $('#kb-name').addEventListener('click', async () => { const n = prompt('Yeni ad:', kbd.name); if (!n?.trim() || n === kbd.name) return; try { await api('PUT', `/api/kb/${sel}`, { name: n.trim() }); pageKb(sel); } catch (e) { toast(e.message, true); } });
+  $('#kb-del').addEventListener('click', async () => {
+    if (!confirm(`"${kbd.name}" bilgi tabanı ve ${kbd.docs} belgesi silinsin mi? Bu geri alınamaz.`)) return;
+    await api('DELETE', `/api/kb/${sel}`); toast('Bilgi tabanı silindi'); location.hash = '#/bilgi';
+  });
+  view.querySelectorAll('[data-deldoc]').forEach(b => b.addEventListener('click', async () => {
+    const d = kbd.belgeler.find(x => x.id === b.dataset.deldoc);
+    if (!confirm(`"${d.ad}" silinsin mi?`)) return;
+    await api('DELETE', `/api/kb/${sel}/docs/${d.id}`); toast('Belge silindi'); pageKb(sel);
+  }));
+  const search = async () => {
+    const q = $('#kb-q').value.trim(); if (!q) return;
+    const r = await api('GET', `/api/kb/${sel}/search?q=${encodeURIComponent(q)}&k=5`);
+    $('#kb-res').innerHTML = r.length ? r.map(x => `<div class="lrow" style="display:block"><div class="meta"><span class="tag">${esc(x.belge)}</span><span>${x.parca}. bölüm</span><span>uyum ${Math.round(x.puan * 100)}%</span></div>
+      <div style="white-space:pre-wrap;font-size:13px;margin-top:4px;max-height:140px;overflow:auto">${esc(x.metin)}</div></div>`).join('') : '<div class="empty">Uyan bölüm bulunamadı. Farklı kelimeler deneyin.</div>';
+  };
+  $('#kb-go').addEventListener('click', search);
+  $('#kb-q').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+}
+
 /* ================= data tables ================= */
 async function pageTables() {
   G.tables = await api('GET', '/api/tables');
@@ -1823,7 +1934,8 @@ function parseCSVText(text) {
 
 /* ================= about / settings ================= */
 async function pageAbout() {
-  const [info, files] = await Promise.all([api('GET', '/api/info'), api('GET', '/api/files')]);
+  const [info, files, nt, creds] = await Promise.all([api('GET', '/api/info'), api('GET', '/api/files'), api('GET', '/api/notify'), api('GET', '/api/credentials')]);
+  const NK = { telegram: ['telegramApi', 'Telegram sohbet kimliği', '123456789'], email: ['smtp', 'Gidecek e-posta adresi', 'siz@ornek.com'], webhook: ['webhookUrl', '', ''] };
   const theme = (() => { try { return localStorage.getItem('8n8.theme') || ''; } catch { return ''; } })();
   view.innerHTML = `<div class="page"><div class="page-in">
     <div class="page-head"><h1>Ayarlar</h1></div>
@@ -1835,11 +1947,22 @@ async function pageAbout() {
       <dt>Şifre koruması</dt><dd>${info.password ? 'Açık' : 'Kapalı (yalnızca bu bilgisayardan erişilebilir)'}</dd>
     </dl></div>
     <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><b>Yedekleme</b>
-      <span class="help">Akışlar, veri tabloları ve değişkenler tek bir dosyaya kaydedilir. Kimlik bilgilerini de almak için bir şifre girin; bilgiler bu şifreyle şifrelenir ve dosyayı başka bir bilgisayara taşıyabilirsiniz. Çalıştırma kayıtları ve dosya klasörü yedeğe girmez.</span>
+      <span class="help">Akışlar, veri tabloları, bilgi tabanları ve değişkenler tek bir dosyaya kaydedilir. Kimlik bilgilerini de almak için bir şifre girin; bilgiler bu şifreyle şifrelenir ve dosyayı başka bir bilgisayara taşıyabilirsiniz. Çalıştırma kayıtları ve dosya klasörü yedeğe girmez.</span>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input class="inp" id="bk-pass" type="password" autocomplete="new-password" placeholder="Şifre (isteğe bağlı, en az 8 karakter)" style="flex:1;min-width:220px"><button class="btn primary" id="bk-make">${icon('download')}Yedeği indir</button></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid var(--line);padding-top:10px"><b style="font-size:13px">Geri yükle</b><input type="file" id="rs-file" accept=".json,application/json" class="inp" style="flex:1;min-width:200px"><input class="inp" id="rs-pass" type="password" autocomplete="off" placeholder="Yedek şifresi" style="width:180px"><button class="btn" id="rs-go">Geri yükle</button></div>
       <span class="help">Geri yükleme mevcut verileri silmez: aynı kimlikteki akış, tablo ve kimlik bilgileri yedektekiyle değişir, diğerleri eklenir. Değişen akışların önceki hali Sürümler'de kalır.</span>
       <div id="bk-msg" role="status"></div></div>
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><b>Hata bildirimleri</b>
+      <span class="help">Etkin bir akış hata verince size haber verilir; ayrı bir hata akışı kurmanız gerekmez. Aynı akış için en fazla belirlediğiniz sıklıkta bildirim gelir, aradaki hatalar sayılıp bir sonraki mesajda yazılır.</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select class="inp" id="nt-kanal" style="width:auto" aria-label="Bildirim kanalı">${[['', 'Kapalı'], ['telegram', 'Telegram'], ['email', 'E-posta (SMTP)'], ['webhook', 'Slack / Discord webhook']].map(([k, l]) => `<option value="${k}"${nt.kanal === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
+        <select class="inp" id="nt-cred" style="flex:1;min-width:160px" aria-label="Kimlik bilgisi"></select>
+        <input class="inp" id="nt-hedef" style="flex:1;min-width:160px" value="${esc(nt.hedef)}"></div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+        <label class="help" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="nt-manuel"${nt.manuel ? ' checked' : ''}>Elle başlatılan çalıştırmalar için de bildir</label>
+        <label class="help" style="display:flex;gap:6px;align-items:center">Aynı akış için en fazla <input class="inp" id="nt-thr" type="number" min="0" max="1440" value="${nt.throttle}" style="width:70px"> dakikada bir</label>
+        <span style="flex:1"></span><button class="btn" id="nt-test">Deneme gönder</button><button class="btn primary" id="nt-save">Kaydet</button></div>
+      <div id="nt-msg" role="status"></div></div>
     <div class="card" style="padding:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><b>Tema</b>
       <div class="seg" id="theme">${[['', 'Sistem'], ['light', 'Açık'], ['dark', 'Koyu']].map(([k, l]) => `<button data-th="${k}" class="${theme === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><b>Dosya klasöründekiler</b><span class="help">"Dosya oku" ve "Dosyaya yaz" node'ları yalnızca bu klasörde çalışır.</span>
@@ -1848,13 +1971,24 @@ async function pageAbout() {
       <span class="help"><code>PORT</code> (varsayılan 5678), <code>N8N8_HOST</code> (ağa açmak için 0.0.0.0), <code>N8N8_PASSWORD</code> (giriş şifresi), <code>N8N8_URL</code> (dışarıdan erişilen adres, webhook bağlantıları için), <code>N8N8_DATA</code> (veri klasörü), <code>N8N8_NO_OPEN=1</code> (tarayıcıyı otomatik açma).</span></div>
   </div></div>`;
   $('#theme').addEventListener('click', e => { const b = e.target.closest('[data-th]'); if (!b) return; setTheme(b.dataset.th); pageAbout(); });
+  const ntDraw = () => {
+    const k = $('#nt-kanal').value, [type, lab, ph] = NK[k] || [];
+    const opts = creds.filter(c => c.type === type);
+    $('#nt-cred').innerHTML = k ? (opts.length ? opts.map(c => `<option value="${c.id}"${c.id === nt.credential ? ' selected' : ''}>${esc(c.name)}</option>`).join('') : '<option value="">Önce Kimlik bilgileri sayfasından ekleyin</option>') : '';
+    $('#nt-cred').hidden = !k; $('#nt-hedef').hidden = !lab; $('#nt-hedef').placeholder = ph || ''; $('#nt-hedef').setAttribute('aria-label', lab || '');
+  };
+  ntDraw(); $('#nt-kanal').addEventListener('change', ntDraw);
+  const ntVal = () => ({ kanal: $('#nt-kanal').value, credential: $('#nt-cred').value, hedef: $('#nt-hedef').value, manuel: $('#nt-manuel').checked, throttle: Number($('#nt-thr').value) });
+  const ntMsg = (h, err) => { $('#nt-msg').innerHTML = `<div class="${err ? 'err-box' : 'info-box'}">${h}</div>`; };
+  $('#nt-save').addEventListener('click', async () => { try { Object.assign(nt, await api('PUT', '/api/notify', ntVal())); ntMsg(nt.kanal ? 'Kaydedildi. Hata bildirimleri açık.' : 'Kaydedildi. Hata bildirimleri kapalı.'); } catch (e) { ntMsg(esc(e.message), true); } });
+  $('#nt-test').addEventListener('click', async e => { e.target.disabled = true; try { await api('POST', '/api/notify/test', ntVal()); ntMsg('Deneme bildirimi gönderildi.'); } catch (err) { ntMsg(esc(err.message), true); } finally { e.target.disabled = false; } });
   const msg = (html, err) => { $('#bk-msg').innerHTML = `<div class="${err ? 'err-box' : 'info-box'}">${html}</div>`; };
   $('#bk-make').addEventListener('click', async e => {
     e.target.disabled = true;
     try {
       const pass = $('#bk-pass').value; const b = await api('POST', '/api/backup', { password: pass });
       download(`8n8-yedek-${new Date().toLocaleDateString('sv')}.json`, JSON.stringify(b));
-      msg(`Yedek indirildi: ${b.akislar.length} akış, ${b.tablolar.length} tablo, ${Object.keys(b.degiskenler).length} değişken${pass ? `, ${b.kimlikSayisi} kimlik bilgisi (şifreli)` : b.kimlikSayisi ? `. Kimlik bilgileri (${b.kimlikSayisi}) şifre girilmediği için yedeğe alınmadı.` : ''}.`);
+      msg(`Yedek indirildi: ${b.akislar.length} akış, ${b.tablolar.length} tablo, ${(b.bilgiTabanlari || []).length} bilgi tabanı, ${Object.keys(b.degiskenler).length} değişken${pass ? `, ${b.kimlikSayisi} kimlik bilgisi (şifreli)` : b.kimlikSayisi ? `. Kimlik bilgileri (${b.kimlikSayisi}) şifre girilmediği için yedeğe alınmadı.` : ''}.`);
     } catch (err) { msg(esc(err.message), true); } finally { e.target.disabled = false; }
   });
   $('#rs-go').addEventListener('click', async e => {
@@ -1864,7 +1998,7 @@ async function pageAbout() {
     e.target.disabled = true;
     try {
       const r = await api('POST', '/api/restore', { backup, password: $('#rs-pass').value });
-      msg(`Geri yüklendi: ${r.akislar} akış (${r.etkin} etkin), ${r.tablolar} tablo, ${r.degiskenler} değişken, ${r.kimlikBilgileri} kimlik bilgisi.${r.uyarilar.length ? `<ul style="margin:6px 0 0;padding-left:18px">${r.uyarilar.map(u => `<li>${esc(u)}</li>`).join('')}</ul>` : ''}`);
+      msg(`Geri yüklendi: ${r.akislar} akış (${r.etkin} etkin), ${r.tablolar} tablo, ${r.bilgiTabanlari} bilgi tabanı, ${r.degiskenler} değişken, ${r.kimlikBilgileri} kimlik bilgisi.${r.uyarilar.length ? `<ul style="margin:6px 0 0;padding-left:18px">${r.uyarilar.map(u => `<li>${esc(u)}</li>`).join('')}</ul>` : ''}`);
       G.creds = null;
     } catch (err) { msg(esc(err.message), true); } finally { e.target.disabled = false; }
   });

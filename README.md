@@ -34,15 +34,17 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 - **n8n'den içe aktarma:** n8n'den dışa aktarılan JSON'u İçe aktar penceresine yapıştırın. Bilinen node'lar ve ifadeler dönüştürülür, karşılığı olmayanlar notla işaretlenir.
 - **Editörde hata ayıkla:** Çalıştırma ayrıntısındaki düğme, o çalıştırmanın tetikleyici verisini editörde sabitler; hatayı aynı veriyle adım adım yeniden deneyebilirsiniz
 - **Etiketler:** akış ayarlarından etiket verin; Akışlar sayfasında etikete, etkin/kapalı durumuna ve ada göre süzün
-- **Yedekleme:** Ayarlar sayfasından akışları, veri tablolarını, değişkenleri ve (şifreyle) kimlik bilgilerini tek dosyaya yedekleyin, başka bir bilgisayara geri yükleyin
+- **Hata bildirimleri:** Ayarlar sayfasından Telegram, e-posta ya da Slack/Discord webhook seçin; etkin bir akış hata verince size haber gelir, hata akışı kurmanız gerekmez. Aynı akış için en fazla belirlediğiniz sıklıkta (varsayılan 15 dakika) mesaj gelir
+- **Çöp kutusu:** Silinen akışlar 30 gün çöp kutusunda kalır; sürüm geçmişi ve hafızasıyla geri alınabilir
+- **Yedekleme:** Ayarlar sayfasından akışları, veri tablolarını, bilgi tabanlarını, değişkenleri ve (şifreyle) kimlik bilgilerini tek dosyaya yedekleyin, başka bir bilgisayara geri yükleyin
 - **Özet sayfası:** seçilen dönemdeki çalıştırma sayısı, başarı oranı, ortalama süre, günlük grafik, akış başına başarı ve en sık hatalar
 - Açık ve koyu tema
 
 **Tetikleyiciler:** Manuel, Zamanlayıcı (aralık ya da cron ifadesi), Webhook (`/webhook/<yol>`, isteğe bağlı başlık / Bearer / Basic kimlik doğrulaması), Form (`/form/<yol>` adresinde hazır web formu), Sohbet (`/sohbet/<yol>` adresinde hazır sohbet sayfası), RSS yeni yazı, Telegram mesajı gelince, Gmail'e e-posta gelince, Outlook'a e-posta gelince, Slack'e mesaj gelince, Discord'a mesaj gelince, GitHub'da yeni konu / PR / sürüm / commit, MCP aracı (Claude çağırınca), Klasör izleyici, Hata tetikleyici, Alt akış girişi
 
-**Node'lar (68 tür)**
+**Node'lar (69 tür)**
 - **Eylemler:** HTTP isteği, Webhook'a yanıt ver, Başka akışı çalıştır, RSS oku
-- **Yapay zekâ:** Claude, Claude ajanı (araç kullanan, hafızalı ajan), Claude ile sınıflandır (her kategori ayrı çıkış), Claude ile bilgi çıkar (serbest metinden düzgün alanlar)
+- **Yapay zekâ:** Claude, Claude ajanı (araç kullanan, hafızalı ajan), Claude ile sınıflandır (her kategori ayrı çıkış), Claude ile bilgi çıkar (serbest metinden düzgün alanlar), Bilgi tabanı (belgelerinize göre cevap)
 - **Uygulamalar:** Gmail, Google Drive, Google Takvim, Google E-Tablolar, Outlook (Microsoft 365), Slack, Discord, Notion, Airtable, GitHub, Veritabanı (PostgreSQL, MySQL / MariaDB, SQLite), Telegram, Slack / Discord webhook, E-posta (SMTP)
 - **Veri:** Veri tablosu, Alanları ayarla, Alanları yeniden adlandır, Filtrele, Sırala, Sınırla, Tekrarları kaldır, Yeni öğeleri bul, Listeyi ayır, Topla, Özetle, Veri setlerini karşılaştır, Tarih ve saat, Şifreleme / hash, Dosya oku, Dosyaya yaz (JSON, CSV, metin)
 - **Dönüştürme:** HTML'den veri çıkar (CSS seçici), XML ⇄ JSON, Markdown ⇄ HTML, Metin işlemleri
@@ -53,7 +55,7 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 
 **Veri tabloları:** Tablolar sayfasında programın içinde tablo oluşturun, hücreleri yerinde düzenleyin, CSV içe ve dışa aktarın. Veri tablosu node'u satır ekler, varsa günceller, arar, günceller ve siler.
 
-**Claude ajanı:** Ajan; web isteği, hesap makinesi, saat, veri tabloları ve araç olarak seçtiğiniz başka akışları kendisi kullanarak cevap verir. Sohbet tetikleyicisiyle birlikte konuşma geçmişini hatırlar (akış ayarlarındaki "Hafızayı temizle" ile sıfırlanır).
+**Claude ajanı:** Ajan; web isteği, hesap makinesi, saat, veri tabloları, bilgi tabanı ve araç olarak seçtiğiniz başka akışları kendisi kullanarak cevap verir. Sohbet tetikleyicisiyle birlikte konuşma geçmişini hatırlar (akış ayarlarındaki "Hafızayı temizle" ile sıfırlanır).
 
 **Veritabanları ve Google E-Tablolar:** Veritabanı node'u SQL sorgusu çalıştırır ya da tablo adı ve eşleştirme sütunuyla satır okur, ekler, ekler-ya-da-günceller, günceller ve siler. Değerleri SQL'e `$1, $2` yer tutucularıyla verin; bu SQL enjeksiyonuna karşı korur. Google E-Tablolar için Google Cloud'da bir hizmet hesabı açıp JSON anahtarını kimlik bilgisi olarak ekleyin ve tabloyu o hesabın e-posta adresiyle paylaşın.
 
@@ -82,6 +84,8 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 Aynı yolla "OAuth2 (başka servisler)" türüyle Spotify gibi servislere bağlanıp HTTP isteği node'unda kullanabilirsiniz.
 
 **Claude ile sınıflandır ve bilgi çıkar:** Sınıflandır node'una kategorileri ve ne zaman seçileceklerini yazın; her kategori ayrı bir çıkış olur, uymayanlar "Diğer"den çıkar. Bilgi çıkar node'una alanları `ad:tür = açıklama` biçiminde yazın (türler: metin, sayı, tamsayı, evet-hayır, liste, tarih); Claude metinde olmayanları boş bırakır. İkisi de Claude'un yapılandırılmış çıktısını kullandığı için yanıt her zaman bu alanlara uyar. Varsayılan model ucuz ve hızlı olan Haiku'dur.
+
+**Bilgi tabanı (belgelerinize göre cevap):** "Bilgi tabanı" sayfasından bir taban açıp SSS, ürün bilgisi, fiyat listesi gibi belgeleri yükleyin (.txt, .md, .csv, .json, .html, .docx, .odt, .pptx; PDF henüz yok). Belgeler bölümlere ayrılır ve bilgisayarınızda aranır; "Bilgi tabanı" node'u soruya en uygun bölümleri bulup yalnızca onları Claude'a gönderir. Claude yalnızca bu bölümlere dayanarak cevap verir, hangi belgelere dayandığını yazar, cevap belgelerde yoksa bunu söyler (`bilgiBulundu: false`). Node bölümleri yalnızca bulabilir ya da akıştan belge ekleyebilir. Claude ajanına da araç olarak verilebilir. Arama Türkçe kelime köklerini tanır ("iadeler" "iade"yi bulur) ama anlam araması değildir; farklı kelimelerle sorulan sorularda belgeye eş anlamlıları da yazmak işe yarar.
 
 **MCP aracı (akışlarınızı Claude'a araç olarak verin):** Akışa "MCP aracı" tetikleyicisi koyun, araç adını, açıklamasını ve girdilerini yazıp akışı etkinleştirin. Araç `http://localhost:5678/mcp/<adres>` adresinde yayınlanır; aynı adresteki bütün etkin araçlar tek sunucuda görünür. Claude Code'a eklemek için `claude mcp add --transport http 8n8 http://localhost:5678/mcp/araclar` yazın; uzak (http) MCP sunucusu destekleyen diğer istemcilere de aynı adresi verin. Claude aracı çağırınca akış çalışır ve son node'un çıktısı sonuç olarak döner. Program başka bilgisayarlardan erişilebiliyorsa tetikleyicide kimlik doğrulamayı açın.
 
@@ -138,6 +142,9 @@ Bütün veriler `~/.8n8` klasöründedir (Windows'ta `C:\Users\<ad>\.8n8`):
 - `executions/`: çalıştırma geçmişi
 - `dosyalar/`: Dosya oku / Dosyaya yaz node'larının klasörü
 - `tablolar/`: veri tabloları
+- `bilgi/`: bilgi tabanları
+- `cop/`: çöp kutusundaki akışlar
+- `bildirim.json`: hata bildirimi ayarları
 - `durum/`: akışların hafızası (Yeni öğeleri bul, ajan sohbet geçmişi, RSS'te görülen yazılar)
 - `credentials.json`: şifreli kimlik bilgileri
 - `anahtar`: şifreleme anahtarı
@@ -164,7 +171,7 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 - RSS, Telegram ve klasör tetikleyicileri yalnızca program açıkken kontrol eder.
 - Hazır node'u olmayan servislere HTTP isteği node'u ve API anahtarı ya da OAuth2 kimlik bilgisiyle bağlanabilirsiniz.
 - Gmail, Outlook, Slack, Discord ve GitHub tetikleyicileri ile onay bekleme program açıkken çalışır; tetikleyiciler en sık 5 saniyede bir kontrol eder.
-- Sınıflandır ve Bilgi çıkar node'ları gerçek Claude API'sine karşı değil, sahte sunucuyla denendi. MCP sunucusu resmî MCP istemci kütüphanesiyle (TypeScript SDK) denendi.
+- Sınıflandır, Bilgi çıkar ve Bilgi tabanının "Soru sor" işlemi gerçek Claude API'sine karşı değil, sahte sunucuyla denendi. MCP sunucusu resmî MCP istemci kütüphanesiyle (TypeScript SDK) denendi.
 - Notion, Slack, Outlook, GitHub, Airtable ve Discord node'ları ve Microsoft girişi gerçek hesaplarla değil, resmî API belgelerine göre yazılmış sahte sunucularla test edildi.
 - Özet sayfası saklanan çalıştırma kayıtlarından hesaplanır (`N8N8_MAX_EXECUTIONS`, varsayılan son 1000).
 - Tek kullanıcı içindir; ekip hesabı ve yetki yönetimi yoktur.
@@ -175,4 +182,4 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 npm test
 ```
 
-Testler (39 adet) geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, döngü, veri tabloları, sohbet ve Claude ajanı, Claude ile akış oluşturma, n8n içe aktarma, RSS ve klasör izleyici, Kod node'unun kısıtlı süreci, SQLite, Google E-Tablolar, Telegram tetikleyicisi, Google OAuth girişi ve token yenileme, Gmail, Drive, Takvim, Notion, Slack ve Slack tetikleyicisi, Microsoft girişi ve Outlook, GitHub, Airtable, Discord ve tetikleyicileri, yedekleme ve geri yükleme, Claude ile sınıflandırma ve bilgi çıkarma, MCP sunucusu, aynı anda çalışma sınırı, editörde hata ayıklama, Özet istatistikleri, onay bekleme ve bozuk isteklere dayanıklılık denenir. Claude, Google, Microsoft, Notion, Slack, GitHub, Airtable, Discord, Telegram, SMTP ve RSS için sahte yerel sunucular kullanılır; internet ve API anahtarı gerekmez.
+Testler (43 adet) geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, döngü, veri tabloları, sohbet ve Claude ajanı, Claude ile akış oluşturma, n8n içe aktarma, RSS ve klasör izleyici, Kod node'unun kısıtlı süreci, SQLite, Google E-Tablolar, Telegram tetikleyicisi, Google OAuth girişi ve token yenileme, Gmail, Drive, Takvim, Notion, Slack ve Slack tetikleyicisi, Microsoft girişi ve Outlook, GitHub, Airtable, Discord ve tetikleyicileri, yedekleme ve geri yükleme, Claude ile sınıflandırma ve bilgi çıkarma, bilgi tabanı (.docx dahil belge yükleme, arama, belgelere dayalı cevap), hata bildirimleri, çöp kutusu, şablonlar, MCP sunucusu, aynı anda çalışma sınırı, editörde hata ayıklama, Özet istatistikleri, onay bekleme ve bozuk isteklere dayanıklılık denenir. Claude, Google, Microsoft, Notion, Slack, GitHub, Airtable, Discord, Telegram, SMTP ve RSS için sahte yerel sunucular kullanılır; internet ve API anahtarı gerekmez.
