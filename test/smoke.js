@@ -923,6 +923,183 @@ test('Bütün şablonlar açılır; "Metinden bilgi çıkar" şablonu çalışı
   await api('PUT', `/api/workflows/${w.id}`, { ...w, active: false });
 });
 
+test('Ödeme ve e-ticaret: Stripe, Shopify, WooCommerce ve tetikleyicileri (sahte API)', async () => {
+  const mk = async (type, data) => { const c = await api('POST', '/api/credentials', { type, name: type, data }); return c.id; };
+  const st = await mk('stripeApi', { secretKey: 'sk_test_x' }), sh = await mk('shopifyApi', { shop: 'kupa.myshopify.com', token: 'shpat_x' }), wo = await mk('wooApi', { url: 'https://magaza.com', key: 'ck_x', secret: 'cs_x' });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'stripeApi', id: st, data: {} })).message, /test hesabı/);
+  assert.match((await api('POST', '/api/credentials/test', { type: 'shopifyApi', id: sh, data: { shop: 'kupa.myshopify.com' } })).message, /Kupa Dükkânı/);
+  const bad = await api('POST', '/api/credentials/test', { type: 'wooApi', data: { url: 'https://magaza.com', key: 'ck_x', secret: 'yanlis' } });
+  assert.equal(bad.ok, false); assert.match(bad.message, /WooCommerce \(401\).*listeleyemezsiniz/);
+  const w = await api('POST', '/api/workflows', wf('eticaret', [
+    ['manual', { data: '[{"siparis":"A-7","tutar":"1.250,50"},{"siparis":"A-8","tutar":"99,9"}]' }],
+    ['stripe', { credential: st, op: 'paymentLink', name: 'Sipariş {{ $json.siparis }}', amount: '{{ $json.tutar }}', currency: 'try', quantity: 1, metadata: [{ key: 'siparis', value: '{{ $json.siparis }}' }] }, { name: 'link' }],
+    ['stripe', { credential: st, op: 'findCustomer', email: 'eski@ornek.com' }, { name: 'bul' }],
+    ['shopify', { credential: sh, op: 'tagOrder', orderId: '5001', note: 'Kargoya verildi', tags: 'kargo, eski' }, { name: 'etiket' }],
+    ['shopify', { credential: sh, op: 'stock', sku: 'KUP-1', qty: '12' }, { name: 'stok' }],
+    ['woocommerce', { credential: wo, op: 'status', orderId: '701', status: 'completed' }, { name: 'durum' }],
+    ['woocommerce', { credential: wo, op: 'note', orderId: '701', note: 'Kargo no: 123', customerNote: true }, { name: 'not' }],
+    ['woocommerce', { credential: wo, op: 'stock', sku: 'KLV-1', qty: '0' }, { name: 'wstok' }],
+    ['limit', { max: 1 }],
+    ['stripe', { credential: st, op: 'refund', paymentId: 'pi_1', amount: '' }, { name: 'iade' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 9]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(fakeBiz.stripe.prices.map(p => [p.unit_amount, p.currency, p.name]), [[125050, 'try', 'Sipariş A-7'], [9990, 'try', 'Sipariş A-8']]);
+  assert.deepEqual(outOf(e, 'link').map(x => [x.odemeBaglantisi, x.siparis]), [['https://buy.stripe.com/test_1', 'A-7'], ['https://buy.stripe.com/test_2', 'A-8']]);
+  assert.deepEqual([fakeBiz.stripe.links[0].price, fakeBiz.stripe.links[0].quantity, fakeBiz.stripe.links[1].metadata.siparis], ['price_1', 1, 'A-8']);
+  assert.deepEqual([outOf(e, 'bul')[0].musteriBulundu, outOf(e, 'bul')[0].musteriId], [true, 'cus_0']);
+  assert.equal(fakeBiz.shop.orders[0].tags, 'eski, kargo', 'etiketler birleşmeli, tekrar etmemeli');
+  assert.equal(fakeBiz.shop.orders[0].note, 'Kargoya verildi');
+  assert.deepEqual(fakeBiz.shop.levels[0], { location_id: 9, inventory_item_id: 111, available: 12 });
+  assert.deepEqual([outOf(e, 'stok')[0].urun, outOf(e, 'stok')[0].konum], ['Kupa', 'Ana depo']);
+  assert.equal(fakeBiz.woo.orders[0].status, 'completed');
+  assert.deepEqual(fakeBiz.woo.notes[0], { order: 701, note: 'Kargo no: 123', customer_note: true });
+  assert.deepEqual([fakeBiz.woo.products[0].stock_quantity, fakeBiz.woo.products[0].manage_stock], [0, true]);
+  assert.deepEqual(outOf(e, 'iade')[0], { id: 're_1', durum: 'succeeded', tutar: 250 });
+  // pollers: the first check only remembers, then only new orders/events start the workflow
+  const t1 = await api('POST', '/api/workflows', wf('stripe-tetik', [['stripeTrigger', { credential: st, type: 'payment_intent.succeeded', every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  const t2 = await api('POST', '/api/workflows', wf('shopify-tetik', [['shopifyTrigger', { credential: sh, every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  const t3 = await api('POST', '/api/workflows', wf('woo-tetik', [['wooTrigger', { credential: wo, every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  for (const t of [t1, t2, t3]) await api('PUT', `/api/workflows/${t.id}`, { active: true });
+  await sleep(1300);
+  fakeBiz.stripe.events.unshift({ id: 'evt_2', type: 'payment_intent.succeeded', created: 1761000000, data: { object: { id: 'pi_2', object: 'payment_intent', amount_received: 125050, currency: 'try', receipt_email: 'yeni@ornek.com', status: 'succeeded', metadata: { siparis: 'A-7' } } } });
+  fakeBiz.stripe.events.unshift({ id: 'evt_3', type: 'customer.created', created: 1761000001, data: { object: { id: 'cus_9', object: 'customer', email: 'baska@ornek.com' } } });
+  fakeBiz.shop.orders.unshift({ id: 5002, name: '#1002', email: 'zeynep@ornek.com', total_price: '225.00', currency: 'TRY', financial_status: 'paid', customer: { first_name: 'Zeynep' }, shipping_address: { address1: 'Atatürk Cd. 1', city: 'Bursa', country: 'Turkey' }, line_items: [{ title: 'Kupa', quantity: 1, price: '225.00', sku: 'KUP-1' }] });
+  fakeBiz.woo.orders.unshift({ id: 702, number: '702', status: 'processing', total: '120.00', currency: 'TRY', billing: { first_name: 'Ece', email: 'ece@ornek.com' }, shipping: {}, line_items: [] });
+  await sleep(4500);
+  for (const t of [t1, t2, t3]) await api('PUT', `/api/workflows/${t.id}`, { active: false });
+  for (const [t, check] of [[t1, x => assert.deepEqual([x.olayId, x.tutar, x.eposta, x.metadata.siparis], ['evt_2', 1250.5, 'yeni@ornek.com', 'A-7'])],
+    [t2, x => assert.deepEqual([x.no, x.musteri, x.adres, x.urunler[0].sku], ['#1002', 'Zeynep', 'Atatürk Cd. 1, Bursa, Turkey', 'KUP-1'])],
+    [t3, x => assert.deepEqual([x.id, x.musteri, x.tutar], [702, 'Ece', 120])]]) {
+    const { items } = await api('GET', `/api/executions?workflowId=${t.id}`);
+    assert.equal(items.length, 1, `${t.name}: yalnız yeni kayıt akışı başlatmalı`);
+    check(outOf(await waitExec(items[0].id), 'son')[0]);
+  }
+});
+
+test('İş takibi ve CRM: Trello, Jira, HubSpot, Mailchimp (sahte API)', async () => {
+  const mk = async (type, data) => (await api('POST', '/api/credentials', { type, name: type, data })).id;
+  const tr = await mk('trelloApi', { key: 'tkey', token: 'ttok' }), ji = await mk('jiraApi', { site: 'sirket.atlassian.net', email: 'ayse@ornek.com', token: 'jtok' });
+  const hs = await mk('hubspotApi', { token: 'pat-x' }), mc = await mk('mailchimpApi', { apiKey: 'abc123-us21' });
+  for (const [type, id, data, re] of [['trelloApi', tr, { key: 'tkey' }, /Ayşe Yılmaz/], ['jiraApi', ji, { site: 'sirket.atlassian.net', email: 'ayse@ornek.com' }, /Ayşe Yılmaz/], ['hubspotApi', hs, {}, /kişiler okunabiliyor/], ['mailchimpApi', mc, {}, /Chimpy/]])
+    assert.match((await api('POST', '/api/credentials/test', { type, id, data })).message, re);
+  const w = await api('POST', '/api/workflows', wf('crm', [
+    ['manual', { data: '[{"konu":"Yazıcı çalışmıyor","metin":"Üçüncü kattaki yazıcı.\\n\\nAcil.","eposta":"Var@Ornek.com","ad":"Veli"},{"konu":"Yeni bilgisayar","metin":"","eposta":"yeni@ornek.com","ad":"Nur"}]' }],
+    ['trello', { credential: tr, op: 'create', listId: 'L1', name: '{{ $json.konu }}', desc: '{{ $json.metin }}' }, { name: 'kart' }],
+    ['trello', { credential: tr, op: 'move', listId: 'L2', cardId: '{{ $json.id }}' }, { name: 'tasi' }],
+    ['trello', { credential: tr, op: 'comment', cardId: '{{ $json.id }}', text: 'Ele alındı' }, { name: 'yorum' }],
+    ['trello', { credential: tr, op: 'list', listId: 'L2' }, { name: 'liste' }],
+    ['jira', { credential: ji, op: 'create', project: 'DESTEK', issueType: 'Task', summary: '{{ $json.ad }}', description: '{{ $json.aciklama }}', labels: 'trello, ofis destek' }, { name: 'kayit' }],
+    ['jira', { credential: ji, op: 'comment', issue: '{{ $json.anahtar }}', text: 'Bakılıyor' }, { name: 'jyorum' }],
+    ['limit', { max: 1 }],
+    ['jira', { credential: ji, op: 'transition', issue: '{{ $json.anahtar }}', to: 'done' }, { name: 'gecis' }],
+    ['jira', { credential: ji, op: 'search', jql: 'project = DESTEK AND status != Done' }, { name: 'ara' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 9]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(fakeBiz.trello.cards.map(k => [k.name, k.idList]), [['Yazıcı çalışmıyor', 'L2'], ['Yeni bilgisayar', 'L2']]);
+  assert.equal(fakeBiz.trello.cards[0].desc, 'Üçüncü kattaki yazıcı.\n\nAcil.');
+  assert.deepEqual(fakeBiz.trello.comments.map(x => x.text), ['Ele alındı', 'Ele alındı']);
+  assert.equal(outOf(e, 'liste').length, 2);
+  const iss = fakeBiz.jira.issues[0];
+  assert.deepEqual([iss.key, iss.fields.issuetype.name, iss.fields.labels], ['DESTEK-1', 'Task', ['trello', 'ofis-destek']]);
+  assert.equal(iss.fields.description.content.length, 2, 'boş satırla ayrılan paragraflar ADF paragrafı olmalı');
+  assert.match(outOf(e, 'kayit')[0].adres, /\/browse\/DESTEK-1$/);
+  assert.deepEqual(fakeBiz.jira.moved, [['DESTEK-1', '31']], 'durum adı büyük/küçük harf duyarsız eşleşmeli');
+  assert.deepEqual(outOf(e, 'ara').map(x => [x.anahtar, x.durum]), [['DESTEK-2', 'To Do']]);
+  // HubSpot + Mailchimp
+  const w2 = await api('POST', '/api/workflows', wf('crm2', [
+    ['manual', { data: '[{"eposta":"Var@Ornek.com","ad":"Veli","tutar":"1500,5"},{"eposta":"yeni@ornek.com","ad":"Nur","tutar":""}]' }],
+    ['hubspot', { credential: hs, op: 'upsert', email: '{{ $json.eposta }}', firstname: '{{ $json.ad }}', company: 'ACME', props: [{ key: 'city', value: 'İzmir' }] }, { name: 'kisi' }],
+    ['hubspot', { credential: hs, op: 'deal', email: '{{ $json.eposta }}', dealname: '{{ $json.ad }} - teklif', amount: '{{ $json.tutar }}', stage: 'qualifiedtobuy' }, { name: 'firsat' }],
+    ['mailchimp', { credential: mc, op: 'upsert', listId: 'L1', email: '{{ $json.eposta }}', fname: '{{ $json.ad }}', status: 'pending', tags: 'müşteri, 2026' }, { name: 'abone' }],
+    ['limit', { max: 1 }],
+    ['mailchimp', { credential: mc, op: 'unsubscribe', listId: 'L1', email: '{{ $json.eposta }}' }, { name: 'iptal' }],
+    ['mailchimp', { credential: mc, op: 'lists' }, { name: 'kitle' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e2.status, 'success', e2.error);
+  assert.deepEqual(outOf(e2, 'kisi').map(x => [x.kisiId, x.islem]), [['101', 'guncellendi'], ['102', 'eklendi']]);
+  assert.deepEqual(fakeBiz.hub.contacts[0].properties, { email: 'var@ornek.com', firstname: 'Veli', company: 'ACME', city: 'İzmir' });
+  assert.deepEqual(fakeBiz.hub.deals.map(d => [d.properties.dealname, d.properties.amount, d.properties.dealstage, d.associations[0].to.id]), [['Veli - teklif', '1500.5', 'qualifiedtobuy', '101'], ['Nur - teklif', undefined, 'qualifiedtobuy', '102']]);
+  const hash = require('crypto').createHash('md5').update('var@ornek.com').digest('hex');
+  assert.deepEqual([fakeBiz.mc.members[hash].email, fakeBiz.mc.members[hash].merge], ['var@ornek.com', { FNAME: 'Veli' }]);
+  assert.deepEqual(fakeBiz.mc.tags[0].tags, ['müşteri', '2026']);
+  assert.equal(fakeBiz.mc.members[hash].status, 'unsubscribed');
+  assert.deepEqual(outOf(e2, 'kitle')[0], { id: 'L1', ad: 'Bülten', aboneSayisi: 2 });
+});
+
+test('SMS: Netgsm (Türkçe karakter, numara düzeltme, hata kodu) ve Twilio (sahte API)', async () => {
+  const ng = await api('POST', '/api/credentials', { type: 'netgsmApi', name: 'ng', data: { usercode: '8501112233', password: 'npass', header: 'FIRMAM' } });
+  const tw = await api('POST', '/api/credentials', { type: 'twilioApi', name: 'tw', data: { sid: 'AC1', token: 'ttok', from: '+15550001111' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'netgsmApi', id: ng.id, data: { usercode: '8501112233', header: 'FIRMAM' } })).message, /FIRMAM, DIGER/);
+  const bad = await api('POST', '/api/credentials/test', { type: 'netgsmApi', data: { usercode: '8501112233', password: 'x' } });
+  assert.equal(bad.ok, false); assert.match(bad.message, /şifre hatalı/);
+  assert.match((await api('POST', '/api/credentials/test', { type: 'twilioApi', id: tw.id, data: { sid: 'AC1' } })).message, /Twilio hesabım/);
+  const w = await api('POST', '/api/workflows', wf('sms', [
+    ['manual', { data: '[{"ad":"Gül","telefon":"0 (532) 111 22 33, +90 544 000 11 22"}]' }],
+    ['sms', { credential: ng.id, to: '{{ $json.telefon }}', text: 'Merhaba {{ $json.ad }}, siparişiniz yolda.', turkish: true }, { name: 'tr' }],
+    ['sms', { credential: ng.id, to: '05321112233', text: 'Çiçeğiniz şu an ışıl ışıl.', turkish: false }, { name: 'ascii' }],
+    ['sms', { credential: tw.id, to: '05321112233', text: 'Hello' }, { name: 'twilio' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(fakeBiz.sms[0], { via: 'netgsm', to: '5321112233,5440001122', text: 'Merhaba Gül, siparişiniz yolda.', dil: 'TR' });
+  assert.deepEqual([fakeBiz.sms[1].text, fakeBiz.sms[1].dil], ['Ciceginiz su an isil isil.', undefined]);
+  assert.deepEqual(fakeBiz.sms[2], { via: 'twilio', to: '+905321112233', from: '+15550001111', text: 'Hello' });
+  assert.equal(outOf(e, 'tr')[0].gorevId, '1234567890');
+  const ng2 = await api('POST', '/api/credentials', { type: 'netgsmApi', name: 'ng2', data: { usercode: '8501112233', password: 'npass', header: 'YANLIS' } });
+  const w2 = await api('POST', '/api/workflows', wf('sms-hata', [['manual', {}], ['sms', { credential: ng2.id, to: '5321112233', text: 'x' }]], [[0, 1]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e2.status, 'error'); assert.match(e2.error, /Netgsm: mesaj başlığı sistemde tanımlı değil/);
+});
+
+test('Araçlar: TCMB döviz, hava durumu, QR kod, doğrulama ve Claude metin araçları (sahte API)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'anthropicApi', name: 'c-metin', data: { apiKey: 'sk-test' } });
+  const w = await api('POST', '/api/workflows', wf('araclar', [
+    ['manual', { data: '[{"tutar":"1.000,50","tarih":"2026-10-18","tckn":"10000000146","iban":"tr33 0006 1005 1978 6457 8413 26","tel":"0532 111 22 33","mesaj":"Kargom hâlâ gelmedi, çok kızgınım!"},{"tutar":"200","tarih":"","tckn":"10000000147","iban":"TR330006100519786457841327","tel":"123","mesaj":""}]' }],
+    ['exchangeRate', { op: 'convert', amount: '{{ $json.tutar }}', from: 'USD', to: 'TRY', kind: 'dovizSatis', date: '{{ $json.tarih }}', decimals: 2, output: 'tl' }, { name: 'kur' }],
+    ['exchangeRate', { op: 'convert', amount: '100', from: 'EUR', to: 'JPY', kind: 'dovizSatis', date: '', decimals: 0, output: 'yen' }, { name: 'capraz' }],
+    ['validate', { kind: 'tckn', value: '{{ $json.tckn }}', output: 'kimlik' }, { name: 'tckn' }],
+    ['validate', { kind: 'iban', value: '{{ $json.iban }}', output: 'ibanKontrol', replace: 'iban' }, { name: 'iban' }],
+    ['validate', { kind: 'phone', value: '{{ $json.tel }}', output: 'tk', replace: 'tel' }, { name: 'tel' }],
+    ['aiText', { credential: cred.id, model: 'claude-haiku-5-5', op: 'sentiment', text: '{{ $json.mesaj }}', output: 'duygu' }, { name: 'duygu' }],
+    ['aiText', { credential: cred.id, model: 'claude-haiku-5-5', op: 'reply', tone: 'samimi ve sıcak', text: '{{ $json.mesaj }}', output: 'yanit' }, { name: 'yanit' }],
+    ['aiText', { credential: cred.id, model: 'claude-haiku-5-5', op: 'keywords', text: '{{ $json.mesaj }}', output: 'etiket' }, { name: 'etiket' }],
+    ['qrcode', { text: 'https://buy.stripe.com/test_1', format: 'png', level: 'M', scale: 4, file: 'qr/odeme.png', dataUrl: true }, { name: 'qr' }],
+    ['weather', { place: 'İzmir', days: 3 }, { name: 'hava' }],
+    ['weather', { place: '41.01, 28.97', days: 2, split: true }, { name: 'gunler' }],
+    ['exchangeRate', { op: 'rates', codes: 'usd, EUR', date: '' }, { name: 'kurlar' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [3, 4, 1], [4, 5], [5, 6], [6, 7], [7, 8], [8, 9], [9, 10], [10, 11], [11, 12]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  // 18 Oct 2026 is a Sunday: the Friday (16th) bulletin is used; blank date = today's bulletin
+  assert.deepEqual(outOf(e, 'kur').map(x => [x.tl, x.tlKur, x.tlTarih]), [[41020.5, 41, '2026-10-16'], [8300, 41.5, '2026-10-21']]);
+  assert.equal(outOf(e, 'capraz')[0].yen, Math.round(100 * 48.2 / (27.3 / 100)), 'JPY 100 birim üzerinden yayımlanır');
+  assert.deepEqual(outOf(e, 'tckn').map(x => x.kimlik.gecerli), [true]);
+  assert.equal(Object.values(e.nodes).find(n => n.name === 'tckn').output[1][0].json.kimlik.neden, 'Kontrol haneleri tutmuyor');
+  const iv = outOf(e, 'iban');
+  assert.deepEqual([iv.length, iv[0].iban, iv[0].ibanKontrol.bankaKodu], [1, 'TR33 0006 1005 1978 6457 8413 26', '00061'], 'geçersiz IBAN ikinci çıkışa gitmeli');
+  assert.equal(outOf(e, 'tel')[0].tel, '+905321112233');
+  const d = outOf(e, 'duygu')[0];
+  assert.deepEqual([d.duygu, d.duyguPuan, d.duyguGerekce], ['olumsuz', -0.8, 'sahte']);
+  assert.deepEqual([outOf(e, 'yanit')[0].yanit, outOf(e, 'yanit')[0].yanitKonu], ['Yanıt (samimi): Kargom hâlâ gelmedi, çok kızgınım!', 'Siparişiniz hakkında']);
+  assert.deepEqual(outOf(e, 'etiket')[0].etiket, ['kargo', 'gecikme']);
+  const q = outOf(e, 'qr')[0].qr;
+  assert.equal(q.dosya, 'qr/odeme.png'); assert.equal(q.surum, 3);
+  const png = fs.readFileSync(path.join(DATA, 'dosyalar', 'qr', 'odeme.png'));
+  assert.equal(png.slice(1, 4).toString(), 'PNG'); assert.equal(png.readUInt32BE(16), (29 + 8) * 4, 'genişlik = (modül + 2×4 boşluk) × ölçek');
+  assert.ok(q.dataUrl.startsWith('data:image/png;base64,iVBOR'));
+  const h = outOf(e, 'hava')[0];
+  assert.deepEqual([h.yer, h.simdi.durum, h.gunler.length, h.gunler[1].durum], ['İzmir, Türkiye', 'Hafif yağmur', 3, 'Kapalı']);
+  assert.equal(h.ozet, 'İzmir, Türkiye: Hafif yağmur, 18°C. Bugün 14–21°C, yağış ihtimali %80.');
+  assert.deepEqual(outOf(e, 'gunler').map(x => x.tarih), ['2026-10-21', '2026-10-22']);
+  assert.deepEqual(outOf(e, 'kurlar').map(x => [x.kod, x.dovizSatis, x.tarih]), [['USD', 41.5, '2026-10-21'], ['EUR', 48.2, '2026-10-21']]);
+  const w2 = await api('POST', '/api/workflows', wf('hava-hata', [['manual', {}], ['weather', { place: 'Yokyer', days: 1 }]], [[0, 1]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.match(e2.error, /"Yokyer" adlı yer bulunamadı/);
+});
+
 test('MCP aracı: Claude istemcisi akışı araç olarak listeler ve çağırır', async () => {
   const tok = await api('POST', '/api/credentials', { type: 'httpBearer', name: 'mcp-token', data: { token: 'mcp-gizli' } });
   const w = await api('POST', '/api/workflows', wf('mcp', [
@@ -1260,7 +1437,7 @@ function fakeTelegramApi(req, res) {
 }
 const fakeServer = require('http').createServer((req, res) => {
   if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
-  const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp]];
+  const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp], [/^\/(stripe|shop|woo|trello|jira|hubspot|mc|twilio|netgsm|tcmb|geo|meteo)\//, fakeBizApi]];
   for (const [re, fn] of routes) if (re.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fn(req, res, raw)); }
   if (/^\/(oauth-token|gmail\/|drive\/|upload\/|calendar\/)/.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleOAuth(req, res, raw)); }
   if (req.url === '/token' || req.url.startsWith('/v4/')) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleApi(req, res, raw)); }
@@ -1273,7 +1450,14 @@ const fakeServer = require('http').createServer((req, res) => {
     const schema = body.output_config?.format?.schema;
     if (schema) { // structured output: classify picks the category named in the text, extract fills known fields
       const text = String(last.content); const props = schema.properties; const o = {};
-      if (props.cevap) { // knowledge base answer: quote the passage that mentions the asked word
+      if (props.sonuc) { // Claude metin araçları
+        const t = text.replace(/<\/?metin>/g, '').trim();
+        if (props.puan) Object.assign(o, { sonuc: 'olumsuz', puan: -0.8, gerekce: 'sahte' });
+        else if (props.sonuc.type === 'array') o.sonuc = ['kargo', 'gecikme'];
+        else if (props.kaynakDil) Object.assign(o, { sonuc: `EN: ${t}`, kaynakDil: 'Türkçe' });
+        else if (props.konu) Object.assign(o, { sonuc: `Yanıt (${String(body.system).match(/(samimi|kibar)/)?.[1]}): ${t}`, konu: 'Siparişiniz hakkında' });
+        else o.sonuc = `${String(body.system).includes('Madde') || String(body.system).includes('madde') ? '- ' : ''}${t.slice(0, 20)}`;
+      } else if (props.cevap) { // knowledge base answer: quote the passage that mentions the asked word
         const secs = [...text.matchAll(/<bolum no="(\d+)"[^>]*>\n([\s\S]*?)\n<\/bolum>/g)];
         const low = x => String(x).toLocaleLowerCase('tr'); const hit = secs.find(m => low(m[2]).includes('iade') && low(text.split('<soru>')[1] || '').includes('iade'));
         Object.assign(o, hit ? { cevap: (hit[2].match(/[^.]*14 gün[^.]*\./) || [hit[2]])[0].trim(), kaynaklar: [+hit[1]], bilgiVar: true } : { cevap: 'Bilmiyorum', kaynaklar: [], bilgiVar: false });
@@ -1297,10 +1481,145 @@ const fakeServer = require('http').createServer((req, res) => {
   });
 });
 
+/* fake business APIs: Stripe, Shopify, WooCommerce, Trello, Jira, HubSpot, Mailchimp, Twilio, Netgsm, TCMB, Open-Meteo */
+const fakeBiz = {
+  stripe: { prices: [], links: [], customers: [{ id: 'cus_0', email: 'eski@ornek.com', name: 'Eski Müşteri' }], refunds: [], events: [{ id: 'evt_1', type: 'payment_intent.succeeded', created: 1760000000, data: { object: { id: 'pi_1', object: 'payment_intent', amount_received: 25000, currency: 'try', receipt_email: 'ilk@ornek.com', status: 'succeeded', metadata: {} } } }] },
+  shop: { orders: [{ id: 5001, name: '#1001', email: 'ali@ornek.com', total_price: '450.00', currency: 'TRY', financial_status: 'paid', tags: 'eski', note: null, customer: { first_name: 'Ali', last_name: 'Kaya' }, line_items: [{ title: 'Kupa', quantity: 2, price: '225.00', sku: 'KUP-1' }] }],
+    products: [{ id: 1, title: 'Kupa', status: 'active', variants: [{ id: 11, sku: 'KUP-1', price: '225.00', inventory_quantity: 5, inventory_item_id: 111 }] }], levels: [] },
+  woo: { orders: [{ id: 701, number: '701', status: 'processing', total: '860.00', currency: 'TRY', billing: { first_name: 'Can', last_name: 'Demir', email: 'can@ornek.com', phone: '05321112233', city: 'İzmir' }, shipping: {}, line_items: [{ name: 'Klavye', quantity: 1, sku: 'KLV-1', total: '860.00' }] }],
+    products: [{ id: 41, name: 'Klavye', sku: 'KLV-1', price: '860', stock_quantity: 3, stock_status: 'instock', status: 'publish' }], notes: [] },
+  trello: { cards: [], comments: [] }, jira: { issues: [], comments: [], moved: [] }, hub: { contacts: [{ id: '101', properties: { email: 'var@ornek.com', firstname: 'Eski' } }], deals: [] },
+  mc: { members: {}, tags: [] }, sms: [],
+};
+function fakeBizApi(req, res, raw) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(o === undefined ? '' : JSON.stringify(o)); };
+  const u = new URL(req.url, 'http://x'); const q = Object.fromEntries(u.searchParams); const F = fakeBiz;
+  const auth = req.headers.authorization || ''; const basic = auth.startsWith('Basic ') ? Buffer.from(auth.slice(6), 'base64').toString() : '';
+  const body = () => (req.headers['content-type'] || '').includes('json') ? JSON.parse(raw || '{}') : Object.fromEntries(new URLSearchParams(raw));
+  let m;
+  if ((m = u.pathname.match(/^\/stripe(\/.*)$/))) {
+    if (auth !== 'Bearer sk_test_x') return json({ error: { message: 'Invalid API Key' } }, 401);
+    const p = m[1]; const b = body(); const S = F.stripe;
+    if (p === '/balance') return json({ object: 'balance', livemode: false });
+    if (p === '/prices') { const x = { id: `price_${S.prices.length + 1}`, currency: b.currency, unit_amount: Number(b.unit_amount), name: b['product_data[name]'] }; S.prices.push(x); return json(x); }
+    if (p === '/payment_links') { const x = { id: `plink_${S.links.length + 1}`, url: `https://buy.stripe.com/test_${S.links.length + 1}`, price: b['line_items[0][price]'], quantity: Number(b['line_items[0][quantity]']), metadata: { siparis: b['metadata[siparis]'] } }; S.links.push(x); return json(x); }
+    if (p === '/customers' && req.method === 'POST') { const x = { id: `cus_${S.customers.length}`, email: b.email, name: b.name }; S.customers.push(x); return json(x); }
+    if (p === '/customers') return json({ data: S.customers.filter(x => x.email === q.email).slice(0, 1) });
+    if (p === '/refunds') { if (!b.payment_intent) return json({ error: { message: 'Missing payment_intent' } }, 400); const x = { id: 're_1', status: 'succeeded', amount: Number(b.amount || 25000), payment_intent: b.payment_intent }; S.refunds.push(x); return json(x); }
+    if (p === '/events') return json({ data: S.events.filter(e => e.type === q.type) });
+    return json({ error: { message: 'yok' } }, 404);
+  }
+  if ((m = u.pathname.match(/^\/shop\/admin\/api\/2024-10(\/.*)$/))) {
+    if (req.headers['x-shopify-access-token'] !== 'shpat_x') return json({ errors: '[API] Invalid API key or access token' }, 401);
+    const p = m[1]; const S = F.shop;
+    if (p === '/shop.json') return json({ shop: { name: 'Kupa Dükkânı' } });
+    if (p === '/orders.json') return json({ orders: S.orders });
+    if ((m = p.match(/^\/orders\/(\d+)\.json$/))) { const o = S.orders.find(x => String(x.id) === m[1]); if (!o) return json({ errors: 'Not Found' }, 404); if (req.method === 'PUT') Object.assign(o, { tags: body().order.tags, note: body().order.note }); return json({ order: o }); }
+    if (p === '/products.json') return json({ products: S.products });
+    if (p === '/locations.json') return json({ locations: [{ id: 9, name: 'Ana depo', active: true }] });
+    if (p === '/inventory_levels/set.json') { const b = body(); S.levels.push(b); return json({ inventory_level: { inventory_item_id: b.inventory_item_id, location_id: b.location_id, available: b.available } }); }
+    return json({ errors: 'Not Found' }, 404);
+  }
+  if ((m = u.pathname.match(/^\/woo\/wp-json\/wc\/v3(\/.*)$/))) {
+    if (basic !== 'ck_x:cs_x') return json({ code: 'woocommerce_rest_cannot_view', message: 'Üzgünüz, kaynakları listeleyemezsiniz.' }, 401);
+    const p = m[1]; const W = F.woo;
+    if (p === '/orders' && req.method === 'GET') return json(W.orders.filter(o => !q.status || o.status === q.status));
+    if ((m = p.match(/^\/orders\/(\d+)\/notes$/))) { W.notes.push({ order: Number(m[1]), ...body() }); return json({ id: 77 }, 201); }
+    if ((m = p.match(/^\/orders\/(\d+)$/))) { const o = W.orders.find(x => String(x.id) === m[1]); if (!o) return json({ message: 'Geçersiz kimlik.' }, 404); Object.assign(o, body()); return json(o); }
+    if (p === '/products' && req.method === 'GET') return json(W.products.filter(x => !q.sku || x.sku === q.sku));
+    if ((m = p.match(/^\/products\/(\d+)$/))) { const x = W.products.find(y => String(y.id) === m[1]); Object.assign(x, body()); return json(x); }
+    return json({ message: 'yok' }, 404);
+  }
+  if ((m = u.pathname.match(/^\/trello(\/.*)$/))) {
+    if (q.key !== 'tkey' || q.token !== 'ttok') return json('invalid key', 401);
+    const p = m[1]; const T = F.trello;
+    if (p === '/members/me') return json({ fullName: 'Ayşe Yılmaz', username: 'ayse' });
+    if (p === '/cards' && req.method === 'POST') { const k = { id: `card${T.cards.length + 1}`, name: q.name, desc: q.desc, idList: q.idList, due: q.due || null, shortUrl: `https://trello.com/c/k${T.cards.length + 1}` }; T.cards.push(k); return json(k); }
+    if ((m = p.match(/^\/cards\/(\w+)\/actions\/comments$/))) { T.comments.push({ card: m[1], text: q.text }); return json({ id: 'act1', data: { text: q.text } }); }
+    if ((m = p.match(/^\/cards\/(\w+)$/))) { const k = T.cards.find(x => x.id === m[1]); Object.assign(k, { idList: q.idList }); return json(k); }
+    if ((m = p.match(/^\/lists\/(\w+)\/cards$/))) return json(T.cards.filter(k => k.idList === m[1]));
+    return json('not found', 404);
+  }
+  if ((m = u.pathname.match(/^\/jira\/rest\/api\/3(\/.*)$/))) {
+    if (basic !== 'ayse@ornek.com:jtok') return json({ errorMessages: ['Client must be authenticated'] }, 401);
+    const p = m[1]; const J = F.jira; const self = `http://${req.headers.host}/jira/rest/api/3`;
+    if (p === '/myself') return json({ displayName: 'Ayşe Yılmaz' });
+    if (p === '/issue') { const b = body(); if (!b.fields.project?.key) return json({ errors: { project: 'Proje gerekli' } }, 400); const key = `${b.fields.project.key}-${J.issues.length + 1}`; J.issues.push({ key, id: String(10000 + J.issues.length), self: `${self}/issue/${key}`, fields: { ...b.fields, status: { name: 'To Do' }, created: '2026-10-21T10:00:00.000+0300' } }); return json({ id: J.issues.at(-1).id, key, self: `${self}/issue/${J.issues.at(-1).id}` }, 201); }
+    if (p === '/search/jql') return json({ issues: J.issues.filter(i => !q.jql.includes('status != Done') || i.fields.status.name !== 'Done') });
+    if ((m = p.match(/^\/issue\/([\w-]+)\/comment$/))) { J.comments.push({ key: m[1], body: body().body }); return json({ id: 'c1' }, 201); }
+    if ((m = p.match(/^\/issue\/([\w-]+)\/transitions$/))) {
+      if (req.method === 'GET') return json({ transitions: [{ id: '21', name: 'Başla', to: { name: 'In Progress' } }, { id: '31', name: 'Bitir', to: { name: 'Done' } }] });
+      const i = J.issues.find(x => x.key === m[1]); const t = body().transition.id; i.fields.status.name = t === '31' ? 'Done' : 'In Progress'; J.moved.push([m[1], t]); res.writeHead(204); return res.end();
+    }
+    return json({ errorMessages: ['yok'] }, 404);
+  }
+  if ((m = u.pathname.match(/^\/hubspot(\/.*)$/))) {
+    if (auth !== 'Bearer pat-x') return json({ message: 'Authentication credentials not found.' }, 401);
+    const p = m[1]; const H = F.hub;
+    if (p === '/crm/v3/objects/contacts' && req.method === 'GET') return json({ results: H.contacts.slice(0, 1) });
+    if (p === '/crm/v3/objects/contacts') { const x = { id: String(100 + H.contacts.length + 1), properties: body().properties }; H.contacts.push(x); return json(x, 201); }
+    if (p === '/crm/v3/objects/deals') { const b = body(); const d = { id: `d${H.deals.length + 1}`, ...b }; H.deals.push(d); return json(d, 201); }
+    if ((m = p.match(/^\/crm\/v3\/objects\/contacts\/([^/]+)$/))) {
+      const id = decodeURIComponent(m[1]);
+      const x = q.idProperty === 'email' ? H.contacts.find(c => c.properties.email === id) : H.contacts.find(c => c.id === id);
+      if (!x) return json({ message: 'Object not found' }, 404);
+      if (req.method === 'PATCH') Object.assign(x.properties, body().properties);
+      return json(x);
+    }
+    return json({ message: 'yok' }, 404);
+  }
+  if ((m = u.pathname.match(/^\/mc(\/.*)$/))) {
+    if (basic !== '8n8:abc123-us21') return json({ title: 'API Key Invalid', detail: 'Your API key may be invalid' }, 401);
+    const p = m[1]; const M = F.mc;
+    if (p === '/ping') return json({ health_status: "Everything's Chimpy!" });
+    if (p === '/lists') return json({ lists: [{ id: 'L1', name: 'Bülten', stats: { member_count: Object.keys(M.members).length } }] });
+    if ((m = p.match(/^\/lists\/L1\/members\/([a-f0-9]{32})\/tags$/))) { M.tags.push({ hash: m[1], tags: body().tags.map(t => t.name) }); res.writeHead(204); return res.end(); }
+    if ((m = p.match(/^\/lists\/L1\/members\/([a-f0-9]{32})$/))) {
+      const b = body(); const cur = M.members[m[1]];
+      if (req.method === 'PUT') { M.members[m[1]] = { id: m[1], email: b.email_address, status: cur?.status || b.status_if_new, merge: b.merge_fields }; return json(M.members[m[1]]); }
+      if (!cur) return json({ title: 'Resource Not Found', detail: 'yok' }, 404);
+      cur.status = b.status; return json(cur);
+    }
+    return json({ title: 'Resource Not Found' }, 404);
+  }
+  if ((m = u.pathname.match(/^\/twilio(\/.*)$/))) {
+    if (basic !== 'AC1:ttok') return json({ code: 20003, message: 'Authenticate' }, 401);
+    if (m[1] === '/Accounts/AC1.json') return json({ sid: 'AC1', friendly_name: 'Twilio hesabım' });
+    if (m[1] === '/Accounts/AC1/Messages.json') { const b = body(); F.sms.push({ via: 'twilio', to: b.To, from: b.From, text: b.Body }); return json({ sid: `SM${F.sms.length}`, status: 'queued' }, 201); }
+    return json({ message: 'yok' }, 404);
+  }
+  if ((m = u.pathname.match(/^\/netgsm(\/.*)$/))) {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    if (q.usercode !== '8501112233' || q.password !== 'npass') return res.end('30');
+    if (m[1] === '/sms/header') return res.end('FIRMAM<br>DIGER');
+    if (m[1] === '/sms/send/get') { if (q.msgheader !== 'FIRMAM') return res.end('40'); F.sms.push({ via: 'netgsm', to: q.gsmno, text: q.message, dil: q.dil }); return res.end('00 1234567890'); }
+    return res.end('70');
+  }
+  if ((m = u.pathname.match(/^\/tcmb\/(today\.xml|\d{6}\/(\d{8})\.xml)$/))) {
+    const day = m[2] ? `${m[2].slice(0, 2)}.${m[2].slice(2, 4)}.${m[2].slice(4)}` : '21.10.2026';
+    if (m[2] && !['16102026', '20102026'].includes(m[2])) { res.writeHead(404, { 'Content-Type': 'text/html' }); return res.end('<html>Bulunamadı</html>'); }
+    const usd = m[2] === '16102026' ? '41.0000' : '41.5000';
+    const cur = (k, name, unit, fb, fs, bb, bs) => `<Currency CrossOrder="0" Kod="${k}" CurrencyCode="${k}"><Unit>${unit}</Unit><Isim>${name}</Isim><CurrencyName>X</CurrencyName><ForexBuying>${fb}</ForexBuying><ForexSelling>${fs}</ForexSelling><BanknoteBuying>${bb}</BanknoteBuying><BanknoteSelling>${bs}</BanknoteSelling><CrossRateUSD/><CrossRateOther/></Currency>`;
+    res.writeHead(200, { 'Content-Type': 'text/xml; charset=UTF-8' });
+    return res.end(`<?xml version="1.0" encoding="UTF-8"?><?xml-stylesheet type="text/xsl" href="isokur.xsl"?><Tarih_Date Tarih="${day}" Date="x" Bulten_No="2026/200">${cur('USD', 'ABD DOLARI', 1, '41.4000', usd, '41.3700', '41.5600')}${cur('EUR', 'EURO', 1, '48.0000', '48.2000', '47.9600', '48.2700')}${cur('JPY', 'JAPON YENİ', 100, '27.1000', '27.3000', '', '')}</Tarih_Date>`);
+  }
+  if (u.pathname === '/geo/v1/search') {
+    if (q.name !== 'İzmir') return json({ generationtime_ms: 0.1 });
+    return json({ results: [{ name: 'İzmir', latitude: 38.42, longitude: 27.14, country: 'Türkiye', admin1: 'İzmir' }] });
+  }
+  if (u.pathname === '/meteo/v1/forecast') {
+    if (!q.latitude || !q.current?.includes('weather_code')) return json({ error: true, reason: 'eksik' }, 400);
+    const n = Number(q.forecast_days); const days = Array.from({ length: n }, (_, i) => `2026-10-${21 + i}`);
+    return json({ latitude: Number(q.latitude), current: { temperature_2m: 18.4, apparent_temperature: 17.9, relative_humidity_2m: 70, precipitation: 0.2, weather_code: 61, wind_speed_10m: 12 },
+      daily: { time: days, weather_code: days.map((_, i) => [61, 3, 0][i % 3]), temperature_2m_max: days.map(() => 21), temperature_2m_min: days.map(() => 14), precipitation_sum: days.map(() => 1.5), precipitation_probability_max: days.map(() => 80), wind_speed_10m_max: days.map(() => 20), sunrise: days.map(d => `${d}T07:30`), sunset: days.map(d => `${d}T18:30`) } });
+  }
+  return json({ message: 'sahte iş API\'sinde yol yok' }, 404);
+}
+
 (async () => {
   await new Promise(r => fakeServer.listen(0, '127.0.0.1', r)); fakeClaude.port = fakeServer.address().port;
   await new Promise(r => imapServer.listen(0, '127.0.0.1', r)); fakeIMAP.port = imapServer.address().port;
-  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa` }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0;
