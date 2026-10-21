@@ -1100,6 +1100,205 @@ test('Araçlar: TCMB döviz, hava durumu, QR kod, doğrulama ve Claude metin ara
   assert.match(e2.error, /"Yokyer" adlı yer bulunamadı/);
 });
 
+test('PDF oluştur (tablo, QR resmi, Türkçe), ZIP, takvim daveti ve e-postaya ek', async () => {
+  let got = '';
+  const smtp = net.createServer(s => {
+    let data = false; s.write('220 test\r\n');
+    s.on('data', d => {
+      const t = d.toString('latin1');
+      if (data) { got += t; if (got.includes('\r\n.\r\n')) { data = false; s.write('250 tamam\r\n'); } return; }
+      for (const line of t.split('\r\n').filter(Boolean)) {
+        if (/^EHLO/.test(line)) s.write('250-test\r\n250 AUTH PLAIN\r\n'); else if (/^AUTH/.test(line)) s.write('235 ok\r\n');
+        else if (/^DATA/.test(line)) { data = true; s.write('354 git\r\n'); } else if (/^QUIT/.test(line)) s.end('221 bye\r\n'); else s.write('250 ok\r\n');
+      }
+    });
+  });
+  await new Promise(r => smtp.listen(0, '127.0.0.1', r));
+  const sc = await api('POST', '/api/credentials', { type: 'smtp', name: 'smtp-ek', data: { host: '127.0.0.1', port: String(smtp.address().port), secure: 'false', user: 'u', password: 'p' } });
+  const orders = [{ no: 'T-1', musteri: 'Şule Işık', eposta: 'sule@ornek.com', tarih: '2026-11-03 14:30', urunler: [{ ad: 'Çay bardağı', adet: 6, fiyat: 45.5 }, { ad: 'Ğ-test ürünü', adet: 1, fiyat: 1200 }], toplam: 1473 }, { no: 'T-2', musteri: 'Ali', eposta: 'ali@ornek.com', tarih: '2026-11-04T09:00:00+03:00', urunler: [], toplam: 0 }];
+  const w = await api('POST', '/api/workflows', wf('pdf', [
+    ['manual', { data: JSON.stringify(orders) }],
+    ['qrcode', { text: 'https://odeme/{{ $json.no }}', format: 'png', level: 'M', scale: 3, file: 'qr/{{ $json.no }}.png' }],
+    ['pdfCreate', { mode: 'each', title: 'Teklif {{ $json.no }} - {{ $json.musteri }}', content: '# Merhaba {{ $json.musteri }}\n\nTeklifimiz aşağıdadır.\n\n- KDV dahildir\n- 15 gün geçerlidir\n---\n**Ödeme bilgisi**', tableField: '{{ $json.urunler }}', columns: 'ad:Ürün, adet:Adet, fiyat:Birim fiyat', total: 'Toplam: {{ $json.toplam }} TL', image: '{{ $json.qr.dosya }}', imageWidth: 90, footer: '8n8 A.Ş.', file: 'teklifler/{{ $json.no }}' }, { name: 'pdf' }],
+    ['ics', { title: 'Teslimat: {{ $json.no }}', start: '{{ $json.tarih }}', duration: 45, location: 'Kadıköy, İstanbul', description: 'Satır 1\nSatır 2; virgül, nokta', attendees: '{{ $json.eposta }}', organizer: 'ben@ornek.com', reminder: 15 }, { name: 'ics' }],
+    ['limit', { max: 1 }],
+    ['email', { credential: sc.id, from: 'ben@ornek.com', to: '{{ $json.eposta }}', subject: 'Teklif', format: 'text', body: 'Ekte.', attach: '{{ $json.pdf.dosya }}, {{ $json.takvim.dosya }}' }, { name: 'mail' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  smtp.close();
+  assert.equal(e.status, 'success', e.error);
+  const p = outOf(e, 'pdf');
+  assert.deepEqual(p.map(x => x.pdf.dosya), ['teklifler/T-1.pdf', 'teklifler/T-2.pdf']);
+  const buf = fs.readFileSync(path.join(DATA, 'dosyalar', 'teklifler', 'T-1.pdf'));
+  assert.equal(buf.slice(0, 5).toString(), '%PDF-');
+  const text = require('../lib/pdf').pdfText(buf);
+  for (const s of ['Teklif T-1 - Şule Işık', 'Merhaba Şule Işık', '• KDV dahildir', 'Çay bardağı', 'Ğ-test ürünü', '1.200', 'Toplam: 1473 TL', 'Ödeme bilgisi', '8n8 A.Ş. 1 / 1']) assert.ok(text.includes(s), `PDF metninde "${s}" yok:\n${text}`);
+  assert.match(buf.toString('latin1'), /\/Subtype \/Image \/Width (\d+) \/Height \1 /, 'QR resmi gömülmeli');
+  const ics = fs.readFileSync(path.join(DATA, 'dosyalar', outOf(e, 'ics')[0].takvim.dosya), 'utf8');
+  assert.match(ics, /DTSTART:20261103T\d{6}Z\r\nDTEND:20261103T\d{6}Z/);
+  assert.match(ics, /SUMMARY:Teslimat: T-1\r\n/); assert.ok(ics.includes('DESCRIPTION:Satır 1\\nSatır 2\\; virgül\\, nokta\r\n'), ics);
+  assert.match(ics, /ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE:mailto:sule@ornek.com/); assert.match(ics, /TRIGGER:-PT15M/);
+  assert.equal(outOf(e, 'ics')[1].takvim.baslangic, '2026-11-04T06:00:00.000Z');
+  const mail = require('../lib/mime').parseMail(Buffer.from(got.replace(/\r\n\.\r\n$/, ''), 'latin1'));
+  assert.deepEqual(mail.ekler.map(x => [x.ad, x.tur]), [['T-1.pdf', 'application/pdf'], [path.basename(outOf(e, 'ics')[0].takvim.dosya), 'text/calendar']]);
+  assert.equal(mail.metin, 'Ekte.');
+  // zip and unzip
+  const w2 = await api('POST', '/api/workflows', wf('zip', [
+    ['manual', { data: '[{"d":"teklifler/T-1.pdf"},{"d":"teklifler/T-2.pdf, qr/T-1.png"}]' }],
+    ['compression', { op: 'zip', files: '{{ $json.d }}', output: 'arsiv/teklifler' }, { name: 'zip' }],
+    ['compression', { op: 'unzip', file: '{{ $json.dosya }}', folder: 'acilan' }, { name: 'ac' }],
+  ], [[0, 1], [1, 2]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e2.status, 'success', e2.error);
+  assert.deepEqual([outOf(e2, 'zip')[0].dosya, outOf(e2, 'zip')[0].adet], ['arsiv/teklifler.zip', 3]);
+  assert.deepEqual(outOf(e2, 'ac').map(x => x.dosya).sort(), ['acilan/T-1.pdf', 'acilan/T-1.png', 'acilan/T-2.pdf']);
+  assert.ok(fs.readFileSync(path.join(DATA, 'dosyalar', 'acilan', 'T-1.pdf')).equals(buf));
+});
+
+test('S3 (imzalı), FTP, Redis ve komut çalıştır (sahte sunucular)', async () => {
+  const B0 = `http://127.0.0.1:${fakeClaude.port}`;
+  const s3 = await api('POST', '/api/credentials', { type: 's3Api', name: 's3', data: { accessKey: 'AKTEST', secretKey: 'gizli-s3', region: 'auto', endpoint: `${B0}/s3`, pathStyle: 'true' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 's3Api', id: s3.id, data: { accessKey: 'AKTEST', region: 'auto', endpoint: `${B0}/s3`, pathStyle: 'true' } })).message, /kovalar: kova/);
+  const bad = await api('POST', '/api/credentials/test', { type: 's3Api', data: { accessKey: 'AKTEST', secretKey: 'yanlis', region: 'auto', endpoint: `${B0}/s3` } });
+  assert.equal(bad.ok, false); assert.match(bad.message, /SignatureDoesNotMatch/);
+  fs.mkdirSync(path.join(DATA, 'dosyalar', 'yedek'), { recursive: true });
+  const bin = Buffer.from([0, 255, 1, 2, 200, 13, 10]); fs.writeFileSync(path.join(DATA, 'dosyalar', 'yedek', 'veri.bin'), bin);
+  const w = await api('POST', '/api/workflows', wf('s3', [
+    ['manual', { data: '[{"dosya":"yedek/veri.bin"}]' }],
+    ['s3', { credential: s3.id, op: 'upload', bucket: 'kova', key: 'yedek/2026 Ekim/{{ $json.dosya }}', source: 'file', file: '{{ $json.dosya }}' }, { name: 'yukle' }],
+    ['s3', { credential: s3.id, op: 'upload', bucket: 'kova', key: 'notlar/ş+ç (1).txt', source: 'text', content: 'Merhaba S3' }, { name: 'metin' }],
+    ['s3', { credential: s3.id, op: 'list', bucket: 'kova', prefix: '', max: 10 }, { name: 'liste' }],
+    ['limit', { max: 1 }],
+    ['s3', { credential: s3.id, op: 'download', bucket: 'kova', key: '{{ $json.anahtar }}', target: 'indirilen/n.txt' }, { name: 'indir' }],
+    ['s3', { credential: s3.id, op: 'link', bucket: 'kova', key: 'notlar/ş+ç (1).txt', expires: 2 }, { name: 'link' }],
+    ['s3', { credential: s3.id, op: 'delete', bucket: 'kova', key: 'notlar/ş+ç (1).txt' }, { name: 'sil' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.ok(fakeS3.objects.get('yedek/2026 Ekim/yedek/veri.bin').data.equals(bin), 'ikili dosya bozulmadan yüklenmeli');
+  assert.deepEqual(outOf(e, 'liste').map(x => [x.anahtar, x.boyut]), [['notlar/ş+ç (1).txt', 10], ['yedek/2026 Ekim/yedek/veri.bin', 7]]);
+  assert.equal(fs.readFileSync(path.join(DATA, 'dosyalar', 'indirilen', 'n.txt'), 'utf8'), 'Merhaba S3');
+  assert.match(outOf(e, 'link')[0].baglanti, /\/s3\/kova\/notlar\/%C5%9F%2B%C3%A7%20%281%29\.txt\?X-Amz-Algorithm=AWS4-HMAC-SHA256&.*X-Amz-Expires=7200&X-Amz-Signature=[0-9a-f]{64}/);
+  assert.ok(!fakeS3.objects.has('notlar/ş+ç (1).txt'));
+  // FTP
+  const fc = { host: '127.0.0.1', port: String(fakeFTP.port), user: 'ftpci', secure: 'false' };
+  const ftp = await api('POST', '/api/credentials', { type: 'ftpServer', name: 'ftp', data: { ...fc, password: 'ftp-sifre' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'ftpServer', id: ftp.id, data: fc })).message, /ana klasörde 1 öğe/);
+  const fb = await api('POST', '/api/credentials/test', { type: 'ftpServer', data: { ...fc, password: 'x' } });
+  assert.match(fb.message, /FTP girişi başarısız: Login incorrect/);
+  const w2 = await api('POST', '/api/workflows', wf('ftp', [
+    ['manual', {}],
+    ['ftp', { credential: ftp.id, op: 'upload', path: '/giden/2026/veri.bin', file: 'yedek/veri.bin', mkdirs: true }, { name: 'yukle' }],
+    ['ftp', { credential: ftp.id, op: 'list', path: '/gelen' }, { name: 'liste' }],
+    ['ftp', { credential: ftp.id, op: 'download', path: '{{ $json.yol }}', target: 'ftp/{{ $json.ad }}' }, { name: 'indir' }],
+    ['ftp', { credential: ftp.id, op: 'rename', path: '/gelen/merhaba.txt', to: '/giden/merhaba.txt' }, { name: 'tasi' }],
+    ['ftp', { credential: ftp.id, op: 'delete', path: '/giden/merhaba.txt' }, { name: 'sil' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e2.status, 'success', e2.error);
+  assert.ok(fakeFTP.files.get('/giden/2026/veri.bin').equals(bin)); assert.ok(fakeFTP.dirs.has('/giden/2026'));
+  assert.deepEqual(outOf(e2, 'liste').map(x => [x.ad, x.tur, x.boyut, x.yol]), [['merhaba.txt', 'dosya', 11, '/gelen/merhaba.txt']]);
+  assert.equal(fs.readFileSync(path.join(DATA, 'dosyalar', 'ftp', 'merhaba.txt'), 'utf8'), 'FTP içerik');
+  assert.deepEqual([...fakeFTP.files.keys()], ['/giden/2026/veri.bin']);
+  // Redis
+  const rc = { host: '127.0.0.1', port: String(fakeRedis.port), db: '2', secure: 'false' };
+  const rd = await api('POST', '/api/credentials', { type: 'redisServer', name: 'redis', data: { ...rc, password: 'redis-sifre' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'redisServer', id: rd.id, data: rc })).message, /PONG, Redis 7.2.0/);
+  assert.match((await api('POST', '/api/credentials/test', { type: 'redisServer', data: { ...rc, password: 'x' } })).message, /Redis girişi başarısız: WRONGPASS/);
+  const w3 = await api('POST', '/api/workflows', wf('redis', [
+    ['manual', { data: '[{"id":7,"ad":"Ayşe"},{"id":8,"ad":"Can"}]' }],
+    ['redis', { credential: rd.id, op: 'set', key: 'musteri:{{ $json.id }}', value: '{{ JSON.stringify($json) }}', ttl: 60, output: 'yazildi' }, { name: 'yaz' }],
+    ['redis', { credential: rd.id, op: 'get', key: 'musteri:{{ $json.id }}', parse: true, output: 'kayit' }, { name: 'oku' }],
+    ['redis', { credential: rd.id, op: 'incr', key: 'sayac', by: 5, output: 'sayac' }, { name: 'say' }],
+    ['redis', { credential: rd.id, op: 'push', key: 'kuyruk', value: '{{ $json.ad }}', end: 'right' }, { name: 'ekle' }],
+    ['redis', { credential: rd.id, op: 'command', command: 'HSET kisi:{{ $json.id }} ad "{{ $json.ad }} Yılmaz" yas 30', parse: true }],
+    ['redis', { credential: rd.id, op: 'command', command: 'HGETALL kisi:{{ $json.id }}', parse: true, output: 'kisi' }, { name: 'hget' }],
+    ['limit', { max: 1 }],
+    ['redis', { credential: rd.id, op: 'pop', key: 'kuyruk', end: 'left', parse: true, output: 'ilk' }, { name: 'al' }],
+    ['redis', { credential: rd.id, op: 'publish', channel: 'olaylar', value: 'bitti' }],
+    ['redis', { credential: rd.id, op: 'command', command: 'FLUSHALL' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 9], [9, 10]]));
+  const e3 = await waitExec((await api('POST', `/api/workflows/${w3.id}/run`, {})).executionId);
+  assert.equal(e3.status, 'error'); assert.match(e3.error, /FLUSHALL komutu bu node'dan çalıştırılamaz/);
+  assert.deepEqual(outOf(e3, 'yaz').map(x => x.yazildi), ['OK', 'OK']); assert.equal(fakeRedis.data.get('ttl:musteri:7'), '60');
+  assert.deepEqual(outOf(e3, 'oku')[1].kayit, { id: 8, ad: 'Can' });
+  assert.deepEqual(outOf(e3, 'say').map(x => x.sayac), [5, 10]);
+  assert.deepEqual(outOf(e3, 'hget')[0].kisi, { ad: 'Ayşe Yılmaz', yas: 30 });
+  assert.equal(outOf(e3, 'al')[0].ilk, 'Ayşe'); assert.deepEqual(fakeRedis.published, [['olaylar', 'bitti']]);
+  // command (enabled in tests with N8N8_ALLOW_COMMANDS=1)
+  const w4 = await api('POST', '/api/workflows', wf('komut', [
+    ['manual', { data: '[{"ad":"Deniz"}]' }],
+    ['command', { command: `"${process.execPath}" -e "console.log('Merhaba ' + process.argv[1] + ' ' + process.cwd().endsWith('dosyalar'))" "{{ $json.ad }}"`, timeout: 20 }, { name: 'calis' }],
+    ['command', { command: `"${process.execPath}" -e "console.error('olmadı'); process.exit(3)"`, failOnError: false }, { name: 'kod' }],
+    ['command', { command: `"${process.execPath}" -e "process.exit(2)"` }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  const e4 = await waitExec((await api('POST', `/api/workflows/${w4.id}/run`, {})).executionId);
+  assert.deepEqual([outOf(e4, 'calis')[0].cikti, outOf(e4, 'calis')[0].kod], ['Merhaba Deniz true', 0]);
+  assert.deepEqual([outOf(e4, 'kod')[0].kod, outOf(e4, 'kod')[0].hata], [3, 'olmadı']);
+  assert.equal(e4.status, 'error'); assert.match(e4.error, /Komut 2 koduyla bitti/);
+});
+
+test('Web sayfası oku, GraphQL, anlık bildirim, iyzico ve iş günü hesabı (sahte API)', async () => {
+  const B0 = `http://127.0.0.1:${fakeClaude.port}`;
+  const gq = await api('POST', '/api/credentials', { type: 'httpBearer', name: 'gql', data: { token: 'gql-tok' } });
+  const po = await api('POST', '/api/credentials', { type: 'pushoverApi', name: 'po', data: { token: 'po-tok', user: 'u1' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'pushoverApi', id: po.id, data: { user: 'u1' } })).message, /telefon/);
+  const nt = await api('POST', '/api/credentials', { type: 'ntfyApi', name: 'nt', data: { server: `${B0}/ntfy`, token: 'tk_ntfy' } });
+  const iy = await api('POST', '/api/credentials', { type: 'iyzicoApi', name: 'iy', data: { apiKey: 'iyz-api', secretKey: 'iyz-gizli', sandbox: 'true' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'iyzicoApi', id: iy.id, data: { apiKey: 'iyz-api', sandbox: 'true' } })).message, /deneme ortamı/);
+  const ib = await api('POST', '/api/credentials/test', { type: 'iyzicoApi', data: { apiKey: 'iyz-api', secretKey: 'yanlis', sandbox: 'true' } });
+  assert.equal(ib.ok, false); assert.match(ib.message, /api bilgileri bulunamadı/);
+  const w = await api('POST', '/api/workflows', wf('web', [
+    ['manual', { data: `[{"link":"${B0}/urun.html","id":"42","no":"S-9","tutar":"1.250,50","musteri":"Ayşe"}]` }],
+    ['webPage', { url: '{{ $json.link }}', links: true, contains: 'stokta VAR', maxChars: 0 }, { name: 'sayfa' }],
+    ['graphql', { url: `${B0}/graphql`, credential: gq.id, query: 'query ($id: ID!) { user(id: $id) { id name } }', variables: '{ "id": "{{ $json.id }}" }' }, { name: 'gql' }],
+    ['graphql', { url: `${B0}/graphql`, credential: gq.id, query: '{ user { repos { nodes { ad } } } }', variables: '{ "id": "1" }', split: 'user.repos.nodes' }, { name: 'gql2' }],
+    ['limit', { max: 1 }],
+    ['push', { service: 'pushover', credential: po.id, title: 'Sipariş', message: 'Yeni sipariş', priority: '4', url: 'https://x.com' }, { name: 'po' }],
+    ['push', { service: 'ntfy', ntfyCred: nt.id, topic: 'magaza-x7k2', title: 'Sipariş', message: 'Kupa satıldı', priority: '5', tags: 'tada, package' }, { name: 'nt' }],
+    ['set', { fields: [{ key: 'no', value: 'S-9' }, { key: 'tutar', value: '1.250,50' }, { key: 'paymentId', value: '1234' }], keep: false }],
+    ['iyzico', { credential: iy.id, op: 'link', name: 'Sipariş {{ $json.no }}', description: 'Kupa', price: '{{ $json.tutar }}', soldLimit: 1, installment: true }, { name: 'iyz' }],
+    ['iyzico', { credential: iy.id, op: 'payment', paymentId: '{{ $json.paymentId }}' }, { name: 'odeme' }],
+    ['iyzico', { credential: iy.id, op: 'links' }, { name: 'linkler' }],
+  ], [[0, 1], [1, 2], [0, 3], [2, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 9], [9, 10]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const s = outOf(e, 'sayfa')[0];
+  assert.deepEqual([s.baslik, s.aciklama, s.resim, s.iceriyor], ['Kırmızı Kupa & Tabak', 'El yapımı seramik kupa', 'https://x.com/k.jpg', true]);
+  assert.match(s.metin, /^Kırmızı Kupa\nFiyat: 225 TL\nDurum: Stokta var – hızlı kargo/); assert.ok(!s.metin.includes('Menü') && !s.metin.includes('©'), 'menü ve alt bilgi atılmalı');
+  assert.deepEqual(s.baglantilar.map(x => x.adres), [`${B0}/`, `${B0}/sepet?u=1`, 'https://baska.com/x']);
+  assert.deepEqual([outOf(e, 'gql')[0].user.id, outOf(e, 'gql')[0].user.name], ['42', 'Kişi 42']);
+  assert.deepEqual(outOf(e, 'gql2').map(x => x.ad), ['a', 'b']);
+  assert.deepEqual(fakeMisc.pushes.map(x => [x.via, x.title, String(x.priority)]), [['pushover', 'Sipariş', '1'], ['ntfy', 'Sipariş', '5']]);
+  assert.deepEqual(fakeMisc.pushes[1].tags, ['tada', 'package']);
+  const body = fakeMisc.iyzi[0];
+  assert.deepEqual([body.price, body.currencyCode, body.name, body.soldLimit, body.installmentRequested, body.locale], ['1250.50', 'TRY', 'Sipariş S-9', 1, true, 'tr']);
+  assert.equal(outOf(e, 'iyz')[0].odemeBaglantisi, 'https://sandbox.iyzi.link/AAA1');
+  assert.deepEqual(outOf(e, 'odeme')[0].odeme, { durum: 'SUCCESS', tutar: 1250.5, taksit: 1, kart: '**** 0008', kartAilesi: 'Bonus' });
+  assert.deepEqual(outOf(e, 'linkler').map(x => [x.ad, x.tutar]), [['Sipariş S-9', 1250.5]]);
+  const g = await api('POST', '/api/workflows', wf('gql-hata', [['manual', {}], ['graphql', { url: `${B0}/graphql`, credential: gq.id, query: 'syntaxError', variables: '' }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${g.id}/run`, {})).executionId)).error, /GraphQL: Syntax Error/);
+  // business days: Ramazan Bayramı 2026 is 20-22 March (Fri-Sun), arife 19 March; Kurban 27-30 May
+  const w2 = await api('POST', '/api/workflows', wf('isgunu', [
+    ['manual', { data: '[{"t":"2026-03-18","b":"2026-03-25"},{"t":"26.05.2026","b":"2026-06-01"},{"t":"2026-10-28","b":"2026-10-30"}]' }],
+    ['businessDay', { op: 'check', date: '{{ $json.t }}', output: 'ig' }, { name: 'mi' }],
+    ['businessDay', { op: 'add', date: '{{ $json.t }}', days: 2, output: 'sonra' }, { name: 'ekle' }],
+    ['businessDay', { op: 'add', date: '{{ $json.t }}', days: 2, halfDays: true, extra: '2026-03-23', output: 'sonra2' }, { name: 'ekle2' }],
+    ['businessDay', { op: 'between', date: '{{ $json.t }}', date2: '{{ $json.b }}', output: 'ara' }, { name: 'ara' }],
+    ['businessDay', { op: 'list', year: '2026' }, { name: 'liste' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e2.status, 'success', e2.error);
+  assert.deepEqual(outOf(e2, 'mi').map(x => x.ig), [true, true, true], 'arife yarım gün: iş günü sayılır');
+  assert.deepEqual(outOf(e2, 'mi')[1].igTatil, ['Kurban Bayramı arifesi']);
+  assert.deepEqual(outOf(e2, 'ekle').map(x => x.sonra), ['2026-03-23', '2026-06-02', '2026-11-02']);
+  assert.deepEqual(outOf(e2, 'ekle2').map(x => x.sonra2), ['2026-03-25', '2026-06-02', '2026-11-02']);
+  assert.deepEqual(outOf(e2, 'ara').map(x => x.ara), [4, 1, 1]);
+  const l = outOf(e2, 'liste');
+  assert.deepEqual(l.filter(x => x.tur === 'tam').map(x => x.tarih), ['2026-01-01', '2026-03-20', '2026-03-21', '2026-03-22', '2026-04-23', '2026-05-01', '2026-05-19', '2026-05-27', '2026-05-28', '2026-05-29', '2026-05-30', '2026-07-15', '2026-08-30', '2026-10-29']);
+  assert.equal(l.find(x => x.tarih === '2026-03-20').gun, 'Cuma');
+});
+
 test('MCP aracı: Claude istemcisi akışı araç olarak listeler ve çağırır', async () => {
   const tok = await api('POST', '/api/credentials', { type: 'httpBearer', name: 'mcp-token', data: { token: 'mcp-gizli' } });
   const w = await api('POST', '/api/workflows', wf('mcp', [
@@ -1437,7 +1636,8 @@ function fakeTelegramApi(req, res) {
 }
 const fakeServer = require('http').createServer((req, res) => {
   if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
-  const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp], [/^\/(stripe|shop|woo|trello|jira|hubspot|mc|twilio|netgsm|tcmb|geo|meteo)\//, fakeBizApi]];
+  const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp], [/^\/(stripe|shop|woo|trello|jira|hubspot|mc|twilio|netgsm|tcmb|geo|meteo)\//, fakeBizApi], [/^\/(pushover\/|ntfy|iyzico\/|graphql|urun\.html)/, fakeMiscApi]];
+  if (req.url.startsWith('/s3/')) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeS3Api(req, res, Buffer.concat(ch))); }
   for (const [re, fn] of routes) if (re.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fn(req, res, raw)); }
   if (/^\/(oauth-token|gmail\/|drive\/|upload\/|calendar\/)/.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleOAuth(req, res, raw)); }
   if (req.url === '/token' || req.url.startsWith('/v4/')) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleApi(req, res, raw)); }
@@ -1616,17 +1816,147 @@ function fakeBizApi(req, res, raw) {
   return json({ message: 'sahte iş API\'sinde yol yok' }, 404);
 }
 
+/* fake S3 (path style, checks the SigV4 signature), FTP and Redis servers */
+const fakeS3 = { objects: new Map(), puts: 0 };
+function fakeS3Api(req, res, raw) {
+  const S3 = require('../lib/s3'); const xml = (st, x) => { res.writeHead(st, { 'Content-Type': 'application/xml' }); res.end(`<?xml version="1.0" encoding="UTF-8"?>${x}`); };
+  const u = new URL(req.url, 'http://x'); const p = decodeURIComponent(u.pathname);
+  const auth = req.headers.authorization || ''; const m = auth.match(/Credential=([^/]+)\/(\d{8})\/([^/]+)\/s3\/aws4_request, SignedHeaders=([^,]+), Signature=(\w+)/);
+  if (!m || m[1] !== 'AKTEST') return xml(403, '<Error><Code>InvalidAccessKeyId</Code></Error>');
+  if (S3.sha(raw) !== req.headers['x-amz-content-sha256']) return xml(400, '<Error><Code>XAmzContentSHA256Mismatch</Code></Error>');
+  const hs = Object.fromEntries(m[4].split(';').filter(n => !['host', 'x-amz-date', 'x-amz-content-sha256'].includes(n)).map(n => [n, req.headers[n]]));
+  const want = S3.sign({ method: req.method, host: req.headers.host, path: p, query: Object.fromEntries(u.searchParams), headers: hs, body: raw, accessKey: 'AKTEST', secretKey: 'gizli-s3', region: m[3], date: new Date(req.headers['x-amz-date'].replace(/^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)Z$/, '$1-$2-$3T$4:$5:$6Z')) });
+  if (want.authorization !== auth) return xml(403, '<Error><Code>SignatureDoesNotMatch</Code><Message>imza tutmuyor</Message></Error>');
+  const mm = p.match(/^\/s3\/([^/]*)(?:\/(.*))?$/); const bucket = mm[1], key = mm[2] || '';
+  if (!bucket) return xml(200, '<ListAllMyBucketsResult><Buckets><Bucket><Name>kova</Name></Bucket></Buckets></ListAllMyBucketsResult>');
+  if (bucket !== 'kova') return xml(404, '<Error><Code>NoSuchBucket</Code></Error>');
+  if (!key && req.method === 'GET') {
+    const pre = u.searchParams.get('prefix') || ''; const all = [...fakeS3.objects.keys()].filter(k => k.startsWith(pre)).sort();
+    const max = Number(u.searchParams.get('max-keys')) || 1000; const start = Number(u.searchParams.get('continuation-token') || 0); const page = all.slice(start, start + max);
+    return xml(200, `<ListBucketResult><IsTruncated>${start + max < all.length}</IsTruncated>${start + max < all.length ? `<NextContinuationToken>${start + max}</NextContinuationToken>` : ''}${page.map(k => `<Contents><Key>${k.replace(/&/g, '&amp;')}</Key><LastModified>2026-10-21T10:00:00.000Z</LastModified><ETag>&quot;e${fakeS3.objects.get(k).data.length}&quot;</ETag><Size>${fakeS3.objects.get(k).data.length}</Size></Contents>`).join('')}</ListBucketResult>`);
+  }
+  if (req.method === 'PUT') { fakeS3.objects.set(key, { data: raw, type: req.headers['content-type'] }); fakeS3.puts++; res.writeHead(200, { ETag: `"e${raw.length}"` }); return res.end(); }
+  const o = fakeS3.objects.get(key);
+  if (req.method === 'DELETE') { fakeS3.objects.delete(key); res.writeHead(204); return res.end(); }
+  if (!o) return xml(404, '<Error><Code>NoSuchKey</Code></Error>');
+  res.writeHead(200, { 'Content-Type': o.type || 'application/octet-stream' }); res.end(o.data);
+}
+
+const fakeFTP = { port: 0, files: new Map([['/gelen/merhaba.txt', Buffer.from('FTP içerik')]]), dirs: new Set(['/', '/gelen']) };
+const ftpServer = net.createServer(sock => {
+  let user = '', authed = false, pasv = null, rnfr = '';
+  const say = l => sock.write(`${l}\r\n`);
+  const abs = p => (p === '.' ? '/' : (p.startsWith('/') ? p : `/${p}`).replace(/\/+$/, '') || '/');
+  say('220 sahte FTP');
+  let buf = '';
+  sock.on('data', async d => {
+    buf += d.toString('utf8'); let i;
+    while ((i = buf.indexOf('\r\n')) >= 0) {
+      const line = buf.slice(0, i); buf = buf.slice(i + 2);
+      const [cmd, ...rest] = line.split(' '); const arg = rest.join(' ');
+      const C = cmd.toUpperCase();
+      if (C === 'USER') { user = arg; say('331 şifre'); continue; }
+      if (C === 'PASS') { if (user === 'ftpci' && arg === 'ftp-sifre') { authed = true; say('230 hoş geldin'); } else say('530 Login incorrect.'); continue; }
+      if (!authed && C !== 'QUIT') { say('530 giriş yapın'); continue; }
+      if (C === 'TYPE') say('200 tamam');
+      else if (C === 'FEAT') sock.write('211-Features:\r\n MLST type*;size*;modify*;\r\n EPSV\r\n211 End\r\n');
+      else if (C === 'EPSV') {
+        const srv = net.createServer(); let got; pasv = new Promise(r => { got = r; });
+        srv.on('connection', ds => { got(ds); srv.close(); });
+        await new Promise(r => srv.listen(0, '127.0.0.1', r)); say(`229 Entering Extended Passive Mode (|||${srv.address().port}|)`);
+      } else if (C === 'MLSD' || C === 'RETR' || C === 'STOR') {
+        const ds = await pasv; const p = abs(arg || '/');
+        if (C === 'RETR' && !fakeFTP.files.has(p)) { ds.destroy(); say('550 Dosya yok'); continue; }
+        say('150 veri bağlantısı açık');
+        if (C === 'STOR') { const ch = []; ds.on('data', x => ch.push(x)); await new Promise(r => ds.on('close', r)); fakeFTP.files.set(p, Buffer.concat(ch)); say('226 yüklendi'); continue; }
+        if (C === 'RETR') ds.end(fakeFTP.files.get(p));
+        else {
+          const dir = p === '/' ? '/' : `${p}/`;
+          const ents = [...[...fakeFTP.dirs].filter(x => x !== p && x.startsWith(dir) && !x.slice(dir.length).includes('/')).map(x => `type=dir;modify=20261021100000; ${x.slice(dir.length)}`),
+            ...[...fakeFTP.files].filter(([k]) => k.startsWith(dir) && !k.slice(dir.length).includes('/')).map(([k, v]) => `type=file;size=${v.length};modify=20261021100000; ${k.slice(dir.length)}`)];
+          ds.end(ents.map(x => `${x}\r\n`).join(''));
+        }
+        await new Promise(r => ds.on('close', r)); say('226 bitti');
+      } else if (C === 'DELE') { if (fakeFTP.files.delete(abs(arg))) say('250 silindi'); else say('550 yok'); }
+      else if (C === 'MKD') { const p = abs(arg); if (fakeFTP.dirs.has(p)) say('550 var'); else { fakeFTP.dirs.add(p); say(`257 "${p}" oluşturuldu`); } }
+      else if (C === 'RNFR') { rnfr = abs(arg); if (fakeFTP.files.has(rnfr)) say('350 hazır'); else say('550 yok'); }
+      else if (C === 'RNTO') { fakeFTP.files.set(abs(arg), fakeFTP.files.get(rnfr)); fakeFTP.files.delete(rnfr); say('250 taşındı'); }
+      else if (C === 'QUIT') { say('221 hoşça kal'); sock.end(); }
+      else say('502 bilinmeyen komut');
+    }
+  });
+  sock.on('error', () => {});
+});
+
+const fakeRedis = { port: 0, data: new Map(), published: [] };
+const redisServer = net.createServer(sock => {
+  const R = require('../lib/redis'); let buf = Buffer.alloc(0); let authed = false;
+  const bulk = v => (v == null ? '$-1\r\n' : `$${Buffer.byteLength(String(v))}\r\n${v}\r\n`);
+  sock.on('data', d => {
+    buf = Buffer.concat([buf, d]);
+    for (;;) {
+      const r = R.parse(buf); if (!r) break; buf = buf.slice(r[1]); const [c0, ...a] = r[0]; const C = String(c0).toUpperCase(); const D = fakeRedis.data;
+      if (C === 'AUTH') { authed = a.at(-1) === 'redis-sifre'; sock.write(authed ? '+OK\r\n' : '-WRONGPASS invalid username-password pair or user is disabled.\r\n'); continue; }
+      if (!authed) { sock.write('-NOAUTH Authentication required.\r\n'); continue; }
+      if (C === 'PING') sock.write('+PONG\r\n');
+      else if (C === 'SELECT' || C === 'EXPIRE') sock.write(C === 'SELECT' ? '+OK\r\n' : ':1\r\n');
+      else if (C === 'INFO') sock.write(bulk('# Server\r\nredis_version:7.2.0\r\n'));
+      else if (C === 'GET') sock.write(bulk(D.get(a[0])));
+      else if (C === 'SET') { D.set(a[0], a[1]); if (a[2] === 'EX') D.set(`ttl:${a[0]}`, a[3]); sock.write('+OK\r\n'); }
+      else if (C === 'DEL') { const n = a.filter(k => D.delete(k)).length; sock.write(`:${n}\r\n`); }
+      else if (C === 'INCRBY') { const v = Number(D.get(a[0]) || 0) + Number(a[1]); D.set(a[0], String(v)); sock.write(`:${v}\r\n`); }
+      else if (C === 'RPUSH' || C === 'LPUSH') { const l = D.get(a[0]) || []; C === 'RPUSH' ? l.push(...a.slice(1)) : l.unshift(...a.slice(1)); D.set(a[0], l); sock.write(`:${l.length}\r\n`); }
+      else if (C === 'RPOP' || C === 'LPOP') { const l = D.get(a[0]) || []; sock.write(bulk(C === 'RPOP' ? l.pop() : l.shift())); }
+      else if (C === 'PUBLISH') { fakeRedis.published.push(a); sock.write(':0\r\n'); }
+      else if (C === 'HSET') { const hh = D.get(a[0]) || {}; for (let k = 1; k < a.length; k += 2) hh[a[k]] = a[k + 1]; D.set(a[0], hh); sock.write(`:${(a.length - 1) / 2}\r\n`); }
+      else if (C === 'HGETALL') { const hh = D.get(a[0]) || {}; const flat = Object.entries(hh).flat(); sock.write(`*${flat.length}\r\n${flat.map(bulk).join('')}`); }
+      else if (C === 'QUIT') { sock.write('+OK\r\n'); sock.end(); }
+      else sock.write(`-ERR unknown command '${c0}'\r\n`);
+    }
+  });
+  sock.on('error', () => {});
+});
+
+/* pushover, ntfy, iyzico (checks the IYZWSv2 signature), GraphQL and a product page */
+const fakeMisc = { pushes: [], iyzi: [] };
+function fakeMiscApi(req, res, raw) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  const u = new URL(req.url, 'http://x'); const body = (req.headers['content-type'] || '').includes('json') ? JSON.parse(raw || '{}') : Object.fromEntries(new URLSearchParams(raw));
+  if (u.pathname === '/pushover/1/users/validate.json') return body.token === 'po-tok' ? json({ status: 1, devices: ['telefon'] }) : json({ status: 0, errors: ['application token is invalid'] }, 400);
+  if (u.pathname === '/pushover/1/messages.json') { if (body.token !== 'po-tok') return json({ status: 0, errors: ['application token is invalid'] }, 400); fakeMisc.pushes.push({ via: 'pushover', ...body }); return json({ status: 1, request: 'req1' }); }
+  if (u.pathname === '/ntfy') { if (req.headers.authorization !== 'Bearer tk_ntfy') return json({ code: 40101, error: 'unauthorized' }, 401); fakeMisc.pushes.push({ via: 'ntfy', ...body }); return json({ id: 'nt1', event: 'message', topic: body.topic }); }
+  if (u.pathname.startsWith('/iyzico/')) {
+    const uri = u.pathname.replace(/^\/iyzico/, ''); const m = String(req.headers.authorization || '').match(/^IYZWSv2 (.+)$/);
+    const a = m ? Object.fromEntries(Buffer.from(m[1], 'base64').toString().split('&').map(x => x.split(':'))) : {};
+    const sig = require('crypto').createHmac('sha256', 'iyz-gizli').update(String(a.randomKey) + uri + (raw || '')).digest('hex');
+    if (a.apiKey !== 'iyz-api' || a.signature !== sig || req.headers['x-iyzi-rnd'] !== a.randomKey) return json({ status: 'failure', errorCode: '1001', errorMessage: 'api bilgileri bulunamadı' }, 401);
+    if (uri === '/v2/iyzilink/products' && req.method === 'POST') { fakeMisc.iyzi.push(body); return json({ status: 'success', data: { token: 'AAA1', url: 'https://sandbox.iyzi.link/AAA1', imageUrl: 'x' } }); }
+    if (uri === '/v2/iyzilink/products') return json({ status: 'success', data: { items: fakeMisc.iyzi.map((x, i) => ({ token: `AAA${i + 1}`, name: x.name, price: Number(x.price), currencyCode: 'TRY', url: `https://sandbox.iyzi.link/AAA${i + 1}`, productStatus: 'ACTIVE' })) } });
+    if (uri === '/payment/detail') return body.paymentId === '1234' ? json({ status: 'success', paymentStatus: 'SUCCESS', paidPrice: 1250.5, installment: 1, lastFourDigits: '0008', cardFamily: 'Bonus' }) : json({ status: 'failure', errorMessage: 'Ödeme bulunamadı' });
+    return json({ status: 'failure', errorMessage: 'yok' }, 404);
+  }
+  if (u.pathname === '/graphql') {
+    if (req.headers.authorization !== 'Bearer gql-tok') return json({ errors: [{ message: 'Yetkisiz' }] }, 401);
+    if (/syntaxError/.test(body.query)) return json({ errors: [{ message: 'Syntax Error: Unexpected Name' }] }, 400);
+    return json({ data: { user: { id: body.variables.id, name: `Kişi ${body.variables.id}`, repos: { nodes: [{ ad: 'a' }, { ad: 'b' }] } } } });
+  }
+  if (u.pathname === '/urun.html') { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<!doctype html><html><head><title>Kırmızı Kupa &amp; Tabak</title><meta name="description" content="El yapımı seramik kupa"><meta property="og:image" content="https://x.com/k.jpg"></head><body><nav><a href="/">Ana sayfa</a> Menü</nav><main><h1>Kırmızı Kupa</h1><p>Fiyat: 225 TL</p><p>Durum: Stokta&nbsp;var &#8211; hızlı kargo</p><a href="/sepet?u=1">Sepete ekle</a><a href="https://baska.com/x">Dış</a></main><footer>© Mağaza</footer></body></html>'); }
+  return json({ error: 'yok' }, 404);
+}
+
 (async () => {
   await new Promise(r => fakeServer.listen(0, '127.0.0.1', r)); fakeClaude.port = fakeServer.address().port;
   await new Promise(r => imapServer.listen(0, '127.0.0.1', r)); fakeIMAP.port = imapServer.address().port;
-  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  await new Promise(r => ftpServer.listen(0, '127.0.0.1', r)); fakeFTP.port = ftpServer.address().port;
+  await new Promise(r => redisServer.listen(0, '127.0.0.1', r)); fakeRedis.port = redisServer.address().port;
+  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0;
   for (const [name, fn] of tests) {
     try { await fn(); console.log(`  ✓ ${name}`); } catch (e) { fail++; console.log(`  ✗ ${name}\n    ${e.message}`); }
   }
-  srv.kill(); fakeServer.close(); imapServer.close();
+  srv.kill(); fakeServer.close(); imapServer.close(); ftpServer.close(); redisServer.close();
   fs.rmSync(DATA, { recursive: true, force: true });
   console.log(fail ? `\n${fail} test başarısız` : `\nTüm ${tests.length} test geçti`);
   process.exit(fail ? 1 : 0);

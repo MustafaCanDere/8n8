@@ -42,16 +42,18 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 
 **Tetikleyiciler:** Manuel, Zamanlayıcı (aralık ya da cron ifadesi), Webhook (`/webhook/<yol>`, isteğe bağlı başlık / Bearer / Basic kimlik doğrulaması), Form (`/form/<yol>` adresinde hazır web formu), Sohbet (`/sohbet/<yol>` adresinde hazır sohbet sayfası), RSS yeni yazı, Telegram mesajı gelince, WhatsApp mesajı gelince, E-posta gelince (IMAP: her sağlayıcı), Gmail'e e-posta gelince, Outlook'a e-posta gelince, Slack'e mesaj gelince, Discord'a mesaj gelince, GitHub'da yeni konu / PR / sürüm / commit, Stripe olayı (ödeme, müşteri, iade, abonelik), Shopify'da yeni sipariş, WooCommerce'te yeni sipariş, MCP aracı (Claude çağırınca), Klasör izleyici, Hata tetikleyici, Alt akış girişi
 
-**Node'lar (88 tür)**
-- **Eylemler:** HTTP isteği, Webhook'a yanıt ver, Başka akışı çalıştır, RSS oku
+**Node'lar (100 tür)**
+- **Eylemler:** HTTP isteği, GraphQL, Web sayfası oku (başlık, okunabilir metin, bağlantılar), Webhook'a yanıt ver, Başka akışı çalıştır, RSS oku
 - **Yapay zekâ:** Claude, Claude ajanı (araç kullanan, hafızalı ajan), Claude ile sınıflandır (her kategori ayrı çıkış), Claude ile bilgi çıkar (serbest metinden düzgün alanlar), Bilgi tabanı (belgelerinize göre cevap), Claude metin araçları (özetle, çevir, duygu analizi, yanıt taslağı, üslup değiştir, anahtar kelime, yazım düzelt)
 - **Uygulamalar:** Gmail, Google Drive, Google Takvim, Google E-Tablolar, Outlook (Microsoft 365), Slack, Discord, Notion, Airtable, GitHub, Veritabanı (PostgreSQL, MySQL / MariaDB, SQLite), Telegram, WhatsApp Business, Slack / Discord webhook, E-posta (SMTP)
 - **Ödeme ve e-ticaret:** Stripe (ödeme bağlantısı, müşteri, ödemeler, iade), Shopify (siparişler, not/etiket, ürünler, stok), WooCommerce (siparişler, durum, not, ürünler, stok)
 - **İş takibi, CRM ve pazarlama:** Trello, Jira Cloud, HubSpot, Mailchimp
-- **SMS:** Netgsm (Türkiye, Türkçe karakterli) ve Twilio
-- **Veri:** Veri tablosu, Alanları ayarla, Alanları yeniden adlandır, Filtrele, Sırala, Sınırla, Tekrarları kaldır, Yeni öğeleri bul, Listeyi ayır, Topla, Özetle, Veri setlerini karşılaştır, Tarih ve saat, Şifreleme / hash, Dosya oku, Dosyaya yaz (JSON, CSV, metin), Döviz kuru (TCMB), Hava durumu, QR kod oluştur
+- **SMS ve bildirim:** Netgsm (Türkiye, Türkçe karakterli) ve Twilio SMS; ntfy ve Pushover ile telefona anlık bildirim
+- **Ödeme (Türkiye):** iyzico ödeme bağlantısı (iyzilink), bağlantı listesi, ödeme sorgulama
+- **Depolama ve sunucular:** S3 (Amazon S3, Cloudflare R2, MinIO, Wasabi): yükle, indir, listele, sil, süreli paylaşım bağlantısı; FTP / FTPS; Redis
+- **Veri:** Veri tablosu, Alanları ayarla, Alanları yeniden adlandır, Filtrele, Sırala, Sınırla, Tekrarları kaldır, Yeni öğeleri bul, Listeyi ayır, Topla, Özetle, Veri setlerini karşılaştır, Tarih ve saat, Şifreleme / hash, Dosya oku, Dosyaya yaz (JSON, CSV, metin), Döviz kuru (TCMB), Hava durumu, QR kod oluştur, PDF oluştur (başlık, metin, tablo, resim, sayfa numarası), ZIP sıkıştır / aç, Takvim daveti (.ics), İş günü ve resmî tatiller
 - **Dönüştürme:** HTML'den veri çıkar (CSS seçici), XML ⇄ JSON, Markdown ⇄ HTML, Metin işlemleri
-- **Mantık ve akış:** Doğrula (T.C. kimlik no, vergi no, IBAN, telefon, e-posta, kart numarası; geçerli/geçersiz çıkışları), Onay bekle, Döngü (parça parça işle), Eğer, Yönlendir (switch), Birleştir, Kod (JavaScript), Bekle, Hiçbir şey yapma, Hata ver
+- **Mantık ve akış:** Doğrula (T.C. kimlik no, vergi no, IBAN, telefon, e-posta, kart numarası; geçerli/geçersiz çıkışları), Onay bekle, Döngü (parça parça işle), Eğer, Yönlendir (switch), Birleştir, Kod (JavaScript), Bekle, Hiçbir şey yapma, Hata ver, Komut çalıştır (isteğe bağlı açılır)
 - **Tuval:** Not
 
 **Döngü:** Döngü node'u öğeleri parça parça işler. "Döngü" çıkışından işlenecek adımlara gidin, son adımı yeniden Döngü node'una bağlayın; bütün parçalar bitince "Bitti" çıkışı devam eder. Geriye dönen bağlantılar yalnızca Döngü node'una girebilir.
@@ -106,13 +108,23 @@ Aynı yolla "OAuth2 (başka servisler)" türüyle Spotify gibi servislere bağla
 
 **Döviz, hava durumu, QR, doğrulama:** Döviz kuru node'u TCMB'nin günlük kurlarıyla tutarı çevirir; geçmiş bir tarih verilirse o günün, hafta sonu ya da tatilse önceki iş gününün kuru kullanılır. Hava durumu node'u Open-Meteo'dan şu anki durumu ve 16 güne kadar tahmini Türkçe açıklamayla getirir. İkisi de anahtar istemez. QR kod node'u PNG ya da SVG üretip dosya klasörüne kaydeder; e-postaya ek olarak ya da `data:` adresiyle HTML'e gömülebilir. Doğrula node'u internete bağlanmadan kontrol hanelerini hesaplar ve değeri düzgün biçime çevirir (IBAN'ı dörderli gruplar, telefonu +90 ile); kart numarasının yalnız son 4 hanesini çıkışa verir.
 
+**PDF oluştur:** Başlık, içerik ve isteğe bağlı tablo ve resimden PDF üretir. İçerikte `# başlık`, `## alt başlık`, `- madde`, `---` (çizgi), `[sayfa]` (yeni sayfa) ve `**kalın paragraf**` kullanılabilir. Tablo, öğedeki bir listeden (`{{ $json.urunler }}`) ya da "Bütün öğeler tek PDF" seçilince gelen öğelerin hepsinden oluşur; sayı sütunları sağa yaslanır, uzun tablolar başlığı tekrarlayarak sonraki sayfaya geçer. QR kod ya da logo için PNG/JPEG eklenebilir. Türkçe harfler gömülü yazı tipi gerektirmeden yerleşik Helvetica ile yazılır; bu yazı tipinde olmayan harfler (ör. Arapça, Kiril) "?" olarak çıkar.
+
+**E-posta ekleri:** E-posta (SMTP) node'unun "Ekler" alanına dosya klasöründeki dosyaları virgülle yazın, örneğin `{{ $json.pdf.dosya }}, {{ $json.takvim.dosya }}`.
+
+**S3, FTP, Redis:** S3 kimlik bilgisinde Amazon S3 için uç noktayı boş bırakın; Cloudflare R2, MinIO gibi servislerde uç nokta adresini girin. FTP node'u düz FTP'yi ve şifreli FTPS'i (AUTH TLS) destekler; SFTP (SSH) desteklenmez. Redis node'u akışlar arasında paylaşılan sayaç, kuyruk ve önbellek için kullanılabilir; FLUSHALL gibi tehlikeli komutlar engellidir.
+
+**Komut çalıştır:** Güvenlik için kapalı gelir. Açmak için programı `N8N8_ALLOW_COMMANDS=1` ile başlatın. Komutlar dosya klasöründe çalışır. Dışarıdan gelen veriyi (form, webhook) komutun içine koymayın; kötü niyetli biri bilgisayarınızda komut çalıştırabilir.
+
+**İş günü ve tatiller:** Türkiye resmî tatilleri, Ramazan ve Kurban bayramları ve arifeler (yarım gün) hesaba katılır. Bayram tarihleri Ümmü'l-Kurâ takviminden hesaplanır; 2024–2026 için Diyanet'in ilan ettiği tarihlerle aynıdır, sonraki yıllarda bir gün fark olabilir. Köprü izinleri ve şirket tatilleri "Ek tatil günleri" alanına yazılabilir.
+
 **MCP aracı (akışlarınızı Claude'a araç olarak verin):** Akışa "MCP aracı" tetikleyicisi koyun, araç adını, açıklamasını ve girdilerini yazıp akışı etkinleştirin. Araç `http://localhost:5678/mcp/<adres>` adresinde yayınlanır; aynı adresteki bütün etkin araçlar tek sunucuda görünür. Claude Code'a eklemek için `claude mcp add --transport http 8n8 http://localhost:5678/mcp/araclar` yazın; uzak (http) MCP sunucusu destekleyen diğer istemcilere de aynı adresi verin. Claude aracı çağırınca akış çalışır ve son node'un çıktısı sonuç olarak döner. Program başka bilgisayarlardan erişilebiliyorsa tetikleyicide kimlik doğrulamayı açın.
 
 **Aynı anda çalışma sınırı:** Akış ayarlarında "Aynı anda en fazla çalıştırma"yı örneğin 1 yaparsanız webhook, zamanlayıcı, form ve diğer otomatik tetiklemeler sıraya girer ve birbirini beklemeden üst üste çalışmaz. Bekleme süresi zaman aşımına sayılmaz.
 
 **Onay bekle:** Akış bu node'da durur ve bir onay sayfası açılır. Sayfanın adresini önceki bir node'da `{{ $execution.onayAdresi }}` ile e-posta ya da Telegram mesajına koyun; kişi "Onayla" ya da "Reddet"e basınca akış ilgili çıkıştan devam eder. Bekleme süresi akış zaman aşımına sayılmaz. Program kapanırsa bekleyen onaylar iptal olur.
 
-**Bağlantıyı dene:** Kimlik bilgisi penceresindeki düğme Claude, Telegram, Slack, Discord, Notion, Airtable, GitHub, Stripe, Shopify, WooCommerce, Trello, Jira, HubSpot, Mailchimp, Netgsm, Twilio, IMAP, WhatsApp, SMTP, veritabanı ve Google hizmet hesabı bilgilerinin çalışıp çalışmadığını kaydetmeden önce gösterir.
+**Bağlantıyı dene:** Kimlik bilgisi penceresindeki düğme Claude, Telegram, Slack, Discord, Notion, Airtable, GitHub, Stripe, Shopify, WooCommerce, Trello, Jira, HubSpot, Mailchimp, Netgsm, Twilio, iyzico, Pushover, S3, FTP, Redis, IMAP, WhatsApp, SMTP, veritabanı ve Google hizmet hesabı bilgilerinin çalışıp çalışmadığını kaydetmeden önce gösterir.
 
 **Çalıştırma ayarları**
 - Node başına: hata olursa yeniden dene (deneme sayısı, bekleme süresi), hataya rağmen devam et, not
@@ -149,6 +161,7 @@ Aynı yolla "OAuth2 (başka servisler)" türüyle Spotify gibi servislere bağla
 | `N8N8_ALLOWED_HOSTS` | yok | Editöre `localhost` dışında bir adla (ör. `benimpc.local`) erişiyorsanız, virgülle o adlar |
 | `N8N8_UPLOAD_MB` | `50` | Form ve webhook ile yüklenebilecek en büyük istek boyutu (MB) |
 | `N8N8_CODE_MEMORY_MB` | `256` | Kod node'unun kullanabileceği en fazla bellek |
+| `N8N8_ALLOW_COMMANDS` | kapalı | `1` yapılırsa "Komut çalıştır" node'u bilgisayarda komut çalıştırabilir |
 | `N8N8_CODE_SANDBOX` | açık | `0` yapılırsa Kod node'u kısıtlı süreç yerine programın içinde çalışır (daha hızlı ama korumasız) |
 
 Örnek (macOS / Linux): `PORT=8080 N8N8_PASSWORD=gizli npm start`
@@ -195,6 +208,7 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 - IMAP tetikleyicisi, WhatsApp node'ları ve Claude'a dosya gönderme gerçek hesaplarla değil, sahte sunucularla test edildi.
 - Notion, Slack, Outlook, GitHub, Airtable ve Discord node'ları ve Microsoft girişi gerçek hesaplarla değil, resmî API belgelerine göre yazılmış sahte sunucularla test edildi.
 - Stripe, Shopify, WooCommerce, Trello, Jira, HubSpot, Mailchimp, Netgsm ve Twilio node'ları, Claude metin araçları, TCMB döviz kuru ve hava durumu node'ları da gerçek hesaplarla ya da gerçek servislerle değil, belgelere göre yazılmış sahte sunucularla test edildi. QR kodlar bağımsız bir okuyucuyla (zxing) okunarak doğrulandı.
+- iyzico, Pushover, ntfy, GraphQL, S3, FTP ve Redis node'ları da gerçek servislerle değil sahte sunucularla test edildi. S3 imzası AWS'nin yayımladığı örnek değerlerle birebir doğrulandı. Oluşturulan PDF'ler poppler (pdftotext, pdftoppm) ile açılıp kontrol edildi.
 - Özet sayfası saklanan çalıştırma kayıtlarından hesaplanır (`N8N8_MAX_EXECUTIONS`, varsayılan son 1000).
 - Tek kullanıcı içindir; ekip hesabı ve yetki yönetimi yoktur.
 
@@ -204,4 +218,4 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 npm test
 ```
 
-Testler (52 adet) geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, döngü, veri tabloları, sohbet ve Claude ajanı, Claude ile akış oluşturma, n8n içe aktarma, RSS ve klasör izleyici, Kod node'unun kısıtlı süreci, SQLite, Google E-Tablolar, Telegram tetikleyicisi, Google OAuth girişi ve token yenileme, Gmail, Drive, Takvim, Notion, Slack ve Slack tetikleyicisi, Microsoft girişi ve Outlook, GitHub, Airtable, Discord ve tetikleyicileri, yedekleme ve geri yükleme, Claude ile sınıflandırma ve bilgi çıkarma, bilgi tabanı (.docx ve PDF dahil belge yükleme, web sayfası, arama, belgelere dayalı cevap), Excel okuma/yazma ve tablo içe/dışa aktarma, form ve webhook ile dosya yükleme, IMAP e-posta tetikleyicisi, WhatsApp, Claude'a PDF ve resim gönderme, hata bildirimleri, çöp kutusu, şablonlar, MCP sunucusu, aynı anda çalışma sınırı, editörde hata ayıklama, Özet istatistikleri, onay bekleme, Stripe, Shopify, WooCommerce ve tetikleyicileri, Trello, Jira, HubSpot, Mailchimp, Netgsm ve Twilio SMS, TCMB döviz kuru, hava durumu, QR kod, doğrulama, Claude metin araçları ve bozuk isteklere dayanıklılık denenir. Claude, Google, Microsoft, Notion, Slack, GitHub, Airtable, Discord, Telegram, WhatsApp, IMAP, SMTP, RSS, Stripe, Shopify, WooCommerce, Trello, Jira, HubSpot, Mailchimp, Netgsm, Twilio, TCMB ve Open-Meteo için sahte yerel sunucular kullanılır; internet ve API anahtarı gerekmez.
+Testler (55 adet) geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, döngü, veri tabloları, sohbet ve Claude ajanı, Claude ile akış oluşturma, n8n içe aktarma, RSS ve klasör izleyici, Kod node'unun kısıtlı süreci, SQLite, Google E-Tablolar, Telegram tetikleyicisi, Google OAuth girişi ve token yenileme, Gmail, Drive, Takvim, Notion, Slack ve Slack tetikleyicisi, Microsoft girişi ve Outlook, GitHub, Airtable, Discord ve tetikleyicileri, yedekleme ve geri yükleme, Claude ile sınıflandırma ve bilgi çıkarma, bilgi tabanı (.docx ve PDF dahil belge yükleme, web sayfası, arama, belgelere dayalı cevap), Excel okuma/yazma ve tablo içe/dışa aktarma, form ve webhook ile dosya yükleme, IMAP e-posta tetikleyicisi, WhatsApp, Claude'a PDF ve resim gönderme, hata bildirimleri, çöp kutusu, şablonlar, MCP sunucusu, aynı anda çalışma sınırı, editörde hata ayıklama, Özet istatistikleri, onay bekleme, Stripe, Shopify, WooCommerce ve tetikleyicileri, Trello, Jira, HubSpot, Mailchimp, Netgsm ve Twilio SMS, TCMB döviz kuru, hava durumu, QR kod, doğrulama, Claude metin araçları, PDF oluşturma, ZIP, takvim daveti, e-posta ekleri, S3 imzası, FTP, Redis, komut çalıştırma, web sayfası okuma, GraphQL, ntfy, Pushover, iyzico, iş günü hesabı ve bozuk isteklere dayanıklılık denenir. Claude, Google, Microsoft, Notion, Slack, GitHub, Airtable, Discord, Telegram, WhatsApp, IMAP, SMTP, RSS, Stripe, Shopify, WooCommerce, Trello, Jira, HubSpot, Mailchimp, Netgsm, Twilio, TCMB, Open-Meteo, S3, FTP, Redis, iyzico, ntfy ve Pushover için sahte yerel sunucular kullanılır; internet ve API anahtarı gerekmez.
