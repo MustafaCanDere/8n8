@@ -13,6 +13,7 @@ const { AI, NODES, describe, defaults, CREDENTIAL_TYPES, testCredential } = requ
 const backup = require('./lib/backup');
 const kb = require('./lib/kb');
 const notify = require('./lib/notify');
+const multipart = require('./lib/multipart');
 const crypto = require('crypto');
 const oauth = require('./lib/oauth');
 const { nextRun } = require('./lib/cron');
@@ -26,6 +27,7 @@ const HOST = process.env.N8N8_HOST || '127.0.0.1';
 const PASSWORD = process.env.N8N8_PASSWORD || '';
 const PUBLIC_URL = (process.env.N8N8_URL || `http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`).replace(/\/$/, '');
 const MAX_BODY = 16 * 1024 * 1024;
+const UPLOAD_MAX = Number(process.env.N8N8_UPLOAD_MB || 50) * 1024 * 1024; // webhook and form uploads
 
 /* ---------------- helpers ---------------- */
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
@@ -35,13 +37,15 @@ function send(res, status, body, headers = {}) {
   res.writeHead(status, { 'Content-Type': isStr ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
   res.end(isStr ? body : JSON.stringify(body));
 }
-function readBody(req, max = MAX_BODY) {
+function readBody(req, max = MAX_BODY, files = false) {
   return new Promise((resolve, reject) => {
     const chunks = []; let size = 0;
     req.on('data', c => { size += c.length; if (size > max) { reject(new HttpError(413, `İstek gövdesi çok büyük (${Math.round(max / 1048576)} MB sınırı)`)); req.destroy(); } else chunks.push(c); });
     req.on('end', () => {
-      const raw = Buffer.concat(chunks).toString('utf8');
+      const buf = Buffer.concat(chunks);
       const ct = req.headers['content-type'] || '';
+      if (ct.includes('multipart/form-data')) { if (!files) return reject(new HttpError(415, 'Burada dosya yüklenemez')); try { return resolve(multipart.save(multipart.parse(buf, ct))); } catch (e) { return reject(e.status ? e : new HttpError(400, `Yüklenen dosyalar okunamadı: ${e.message}`)); } }
+      const raw = buf.toString('utf8');
       if (!raw) return resolve({});
       if (ct.includes('application/json')) { try { return resolve(JSON.parse(raw)); } catch { return reject(new HttpError(400, 'Geçersiz JSON gövde')); } }
       if (ct.includes('application/x-www-form-urlencoded')) return resolve(Object.fromEntries(new URLSearchParams(raw)));
@@ -151,7 +155,7 @@ async function handleWebhook(req, res, p, test) {
   }
   const denied = credAuthError(req, hit.params);
   if (denied) return send(res, denied.status, { hata: denied.message }, denied.headers);
-  const body = req.method === 'GET' || req.method === 'HEAD' ? {} : await readBody(req);
+  const body = req.method === 'GET' || req.method === 'HEAD' ? {} : await readBody(req, UPLOAD_MAX, true);
   const url = new URL(req.url, PUBLIC_URL);
   const request = { method: req.method, yol: p, headers: { ...req.headers }, query: Object.fromEntries(url.searchParams), body, ip: req.socket.remoteAddress };
   let responded = false;
@@ -179,7 +183,7 @@ function formPage(params, { message, error, test } = {}) {
   const fields = (params.fields || []).map(f => {
     const req = f.required ? ' required' : '';
     const id = `f_${esc(f.name)}`;
-    const input = f.type === 'textarea' ? `<textarea id="${id}" name="${esc(f.name)}" rows="5"${req}></textarea>` : `<input id="${id}" name="${esc(f.name)}" type="${['email', 'number', 'date', 'tel'].includes(f.type) ? f.type : 'text'}"${req}>`;
+    const input = f.type === 'textarea' ? `<textarea id="${id}" name="${esc(f.name)}" rows="5"${req}></textarea>` : f.type === 'file' ? `<input id="${id}" name="${esc(f.name)}" type="file"${req}>` : `<input id="${id}" name="${esc(f.name)}" type="${['email', 'number', 'date', 'tel'].includes(f.type) ? f.type : 'text'}"${req}>`;
     return `<label for="${id}">${esc(f.label)}${f.required ? ' <span>*</span>' : ''}</label>${input}`;
   }).join('');
   return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(params.title)}</title>
@@ -189,7 +193,7 @@ form,.done{background:var(--card);border:1px solid var(--line);border-radius:14p
 h1{margin:0 0 4px;font-size:22px}p{margin:0 0 12px;color:var(--muted)}label{font-weight:600;font-size:13px;margin-top:8px}label span{color:#c62828}
 input,textarea{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px}input:focus,textarea:focus{outline:2px solid var(--accent);border-color:transparent}
 button{margin-top:16px;font:inherit;font-weight:600;background:var(--accent);color:#fff;border:0;border-radius:8px;padding:11px;cursor:pointer}.err{color:#c62828}.test{font-size:12px;color:var(--muted);text-align:center}</style></head><body>
-${message ? `<div class="done"><h1>${esc(message)}</h1></div>` : `<form method="post"><h1>${esc(params.title)}</h1>${params.description ? `<p>${esc(params.description)}</p>` : ''}${error ? `<p class="err">${esc(error)}</p>` : ''}${fields}<button type="submit">Gönder</button>${test ? '<div class="test">Test formu: akış kapalıyken de çalışır.</div>' : ''}</form>`}
+${message ? `<div class="done"><h1>${esc(message)}</h1></div>` : `<form method="post"${(params.fields || []).some(f => f.type === 'file') ? ' enctype="multipart/form-data"' : ''}><h1>${esc(params.title)}</h1>${params.description ? `<p>${esc(params.description)}</p>` : ''}${error ? `<p class="err">${esc(error)}</p>` : ''}${fields}<button type="submit">Gönder</button>${test ? '<div class="test">Test formu: akış kapalıyken de çalışır.</div>' : ''}</form>`}
 </body></html>`;
 }
 async function handleForm(req, res, p, test) {
@@ -197,11 +201,12 @@ async function handleForm(req, res, p, test) {
   if (!hit) return send(res, 404, formPage({ title: 'Form bulunamadı' }, { message: 'Bu form bulunamadı ya da şu an kapalı.' }), { 'Content-Type': 'text/html; charset=utf-8' });
   if (req.method === 'GET') return send(res, 200, formPage(hit.params, { test }), { 'Content-Type': 'text/html; charset=utf-8' });
   if (req.method !== 'POST') return send(res, 405, 'Yalnızca GET ve POST');
-  const body = await readBody(req);
+  const body = await readBody(req, UPLOAD_MAX, (hit.params.fields || []).some(f => f.type === 'file'));
   const values = {};
   for (const f of hit.params.fields || []) {
     let v = typeof body === 'object' ? body[f.name] ?? '' : '';
     if (f.type === 'number' && v !== '') v = Number(v);
+    if (f.type === 'file' && typeof v !== 'object') v = '';
     if (f.required && (v === '' || v == null)) return send(res, 400, formPage(hit.params, { error: `"${f.label}" alanı zorunlu.`, test }), { 'Content-Type': 'text/html; charset=utf-8' });
     values[f.name] = v;
   }
@@ -485,6 +490,17 @@ route('POST', '/api/tables/:id/rows', ({ params, body }) => {
   const rows = Array.isArray(body.rows) ? body.rows : [body.row || {}];
   return { added: store.insertRows(params.id, rows.filter(r => r && typeof r === 'object')).length };
 });
+route('POST', '/api/tables/:id/import', ({ params, body }) => {
+  const X = require('./lib/xlsx');
+  const sheets = X.readWorkbook(Buffer.from(String(body.icerik || ''), 'base64'));
+  const rows = X.toItems(X.pickSheet(sheets, body.sayfa || '').rows).map(r => Object.fromEntries(Object.entries(r).filter(([k]) => !k.startsWith('_'))));
+  return { added: store.insertRows(params.id, rows).length, sayfa: X.pickSheet(sheets, body.sayfa || '').name };
+});
+route('GET', '/api/tables/:id/xlsx', ({ params }) => {
+  const t = store.getTable(params.id);
+  const rows = t.rows.map(r => Object.fromEntries(t.columns.map(c => [c, r[c] ?? null])));
+  return { ad: `${t.name}.xlsx`, icerik: require('./lib/xlsx').write(rows.length ? rows : [Object.fromEntries(t.columns.map(c => [c, null]))], { sheet: t.name }).toString('base64') };
+});
 route('PUT', '/api/tables/:id/rows/:rowId', ({ params, body }) => {
   const changed = store.updateRows(params.id, r => String(r._id) === params.rowId, body.data || {});
   if (!changed.length) throw new HttpError(404, 'Satır bulunamadı'); return changed[0];
@@ -498,6 +514,7 @@ route('GET', '/api/kb/:id', ({ params }) => kb.getKb(params.id));
 route('PUT', '/api/kb/:id', ({ params, body }) => kb.rename(params.id, body.name));
 route('DELETE', '/api/kb/:id', ({ params }) => { kb.remove(params.id); return { ok: true }; });
 route('POST', '/api/kb/:id/docs', ({ params, body }) => {
+  if (body.url) return kb.addUrl(params.id, body.url, body.ad);
   if (body.icerik != null) return kb.addDoc(params.id, body.ad, Buffer.from(String(body.icerik), 'base64'));
   return kb.addDoc(params.id, body.ad || 'metin.txt', String(body.metin ?? ''));
 });
@@ -685,7 +702,7 @@ const server = http.createServer(async (req, res) => {
       for (const r of routes) {
         if (r.method !== req.method) continue;
         const mm = p.match(r.re); if (!mm) continue;
-        const body = ['POST', 'PUT'].includes(req.method) ? await readBody(req, p === '/api/restore' ? 256 * 1024 * 1024 : /^\/api\/kb\/[^/]+\/docs$/.test(p) ? 40 * 1024 * 1024 : MAX_BODY) : {};
+        const body = ['POST', 'PUT'].includes(req.method) ? await readBody(req, p === '/api/restore' ? 256 * 1024 * 1024 : /^\/api\/(kb\/[^/]+\/docs|tables\/[^/]+\/import)$/.test(p) ? 40 * 1024 * 1024 : MAX_BODY) : {};
         const out = await r.fn({ params: mm.groups || {}, query: Object.fromEntries(url.searchParams), body: typeof body === 'object' ? body : {} });
         return send(res, 200, out);
       }

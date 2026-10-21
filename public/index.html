@@ -1302,7 +1302,7 @@ function fieldHTML(n, f) {
     case 'formfields': return `<div class="field"><span class="flabel">${esc(f.label)}</span><div class="rows">${(v || []).map((r, i) => `
       <div class="row ff"><input class="inp" aria-label="Etiket" placeholder="Etiket" data-k="${f.key}" data-i="${i}" data-sub="label" value="${esc(r.label)}">
       <input class="inp mono" aria-label="Alan adı" placeholder="alan_adi" data-k="${f.key}" data-i="${i}" data-sub="name" value="${esc(r.name)}">${rm(f.key, i, 'Alanı')}
-      <select class="inp" aria-label="Tür" data-k="${f.key}" data-i="${i}" data-sub="type">${[['text', 'Metin'], ['email', 'E-posta'], ['number', 'Sayı'], ['tel', 'Telefon'], ['date', 'Tarih'], ['textarea', 'Uzun metin']].map(([k, l]) => `<option value="${k}"${k === r.type ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      <select class="inp" aria-label="Tür" data-k="${f.key}" data-i="${i}" data-sub="type">${[['text', 'Metin'], ['email', 'E-posta'], ['number', 'Sayı'], ['tel', 'Telefon'], ['date', 'Tarih'], ['textarea', 'Uzun metin'], ['file', 'Dosya']].map(([k, l]) => `<option value="${k}"${k === r.type ? ' selected' : ''}>${l}</option>`).join('')}</select>
       <label class="switch"><input type="checkbox" data-k="${f.key}" data-i="${i}" data-sub="required" data-bool${r.required ? ' checked' : ''}><span class="track"></span><span>Zorunlu</span></label></div>`).join('')}</div>
       <button class="btn sm addrow" data-addrow="${f.key}">+ Alan ekle</button></div>`;
   }
@@ -1770,12 +1770,13 @@ async function pageKb(sel) {
   const size = b => b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
   view.innerHTML = `<div class="page"><div class="page-in">
     <div class="page-head"><h1>Bilgi tabanı</h1><button class="btn primary" id="kb-new">${icon('plus')}Yeni bilgi tabanı</button></div>
-    <p class="lead">SSS, ürün bilgileri, fiyat listeleri ya da iç dokümanlarınızı yükleyin; "Bilgi tabanı" node'u ve Claude ajanı sorulara bu belgelere dayanarak cevap verir. Arama bilgisayarınızda yapılır, yalnızca ilgili bölümler Claude'a gönderilir. Desteklenen dosyalar: .txt, .md, .csv, .json, .html, .docx, .odt, .pptx.</p>
+    <p class="lead">SSS, ürün bilgileri, fiyat listeleri ya da iç dokümanlarınızı yükleyin; "Bilgi tabanı" node'u ve Claude ajanı sorulara bu belgelere dayanarak cevap verir. Arama bilgisayarınızda yapılır, yalnızca ilgili bölümler Claude'a gönderilir. Desteklenen dosyalar: .pdf, .docx, .xlsx, .pptx, .odt, .txt, .md, .csv, .json, .html; web sayfalarını adresiyle de ekleyebilirsiniz.</p>
     ${list.length ? `<div class="wf-filters tagbar" style="margin-bottom:12px">${list.map(k => `<a class="btn sm${k.id === sel ? ' primary' : ''}" href="#/bilgi/${k.id}">${esc(k.name)} <span style="opacity:.7">${k.docs}</span></a>`).join('')}</div>` : ''}
     ${kbd ? `<div class="card" style="margin-bottom:14px;padding:16px">
       <div class="page-head" style="margin:0 0 10px"><h2 id="kb-name" title="Adı değiştirmek için tıklayın" style="cursor:text;margin:0;font-size:18px">${esc(kbd.name)}</h2>
         <span class="help">${kbd.docs} belge · ${kbd.passages} bölüm · ${size(kbd.size)}</span>
         <button class="btn" id="kb-up">${icon('upload')}<span class="lbl">Dosya yükle</span></button>
+        <button class="btn" id="kb-url">${icon('globe')}<span class="lbl">Web sayfası</span></button>
         <button class="btn" id="kb-text">${icon('pen')}<span class="lbl">Metin ekle</span></button>
         <button class="btn sm danger" id="kb-del" aria-label="Bilgi tabanını sil">${icon('trash')}</button></div>
       <div id="kb-drop" class="list">${kbd.belgeler.length ? kbd.belgeler.map(d => `<div class="lrow"><span class="ttl">${icon('file')} ${esc(d.ad)}</span>
@@ -1810,13 +1811,18 @@ async function pageKb(sel) {
     if (done.length) toast(`${done.length} belge eklendi`);
   };
   $('#kb-up').addEventListener('click', () => {
-    const inp = document.createElement('input'); inp.type = 'file'; inp.multiple = true; inp.accept = '.txt,.md,.csv,.json,.html,.htm,.docx,.odt,.pptx';
+    const inp = document.createElement('input'); inp.type = 'file'; inp.multiple = true; inp.accept = '.pdf,.docx,.xlsx,.pptx,.odt,.txt,.md,.csv,.json,.html,.htm';
     inp.onchange = () => inp.files.length && upload([...inp.files]); inp.click();
   });
   const drop = $('#kb-drop');
   drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.outline = '2px dashed var(--accent,#7a5cff)'; });
   drop.addEventListener('dragleave', () => { drop.style.outline = ''; });
   drop.addEventListener('drop', e => { e.preventDefault(); drop.style.outline = ''; if (e.dataTransfer.files.length) upload([...e.dataTransfer.files]); });
+  $('#kb-url').addEventListener('click', async () => {
+    const url = prompt('Eklenecek sayfanın adresi (https://…):'); if (!url?.trim()) return;
+    msg('Sayfa alınıyor…');
+    try { const r = await api('POST', `/api/kb/${sel}/docs`, { url: url.trim() }); await pageKb(sel); msg(`Eklendi: ${esc(r.ad)} (${r.parca} bölüm).`); toast('Sayfa eklendi'); } catch (e) { msg(`<div style="color:var(--danger,#c33)">${esc(e.message)}</div>`); }
+  });
   $('#kb-text').addEventListener('click', async () => {
     const ad = prompt('Belgenin adı (örneğin "iade-politikasi"):'); if (!ad?.trim()) return;
     const metin = prompt('Metni yapıştırın:'); if (!metin?.trim()) return;
@@ -1873,8 +1879,9 @@ async function pageTable(id) {
       <div class="page-head"><a class="btn icon" href="#/tablolar" aria-label="Tablolara dön">${icon('back')}</a><h1 id="tb-name" title="Adı değiştirmek için tıklayın" style="cursor:text">${esc(data.name)}</h1>
         <input class="inp" id="tb-q" placeholder="Ara…" value="${esc(st.q)}" style="width:180px" aria-label="Satırlarda ara">
         <button class="btn" id="tb-col">${icon('plus')}<span class="lbl">Sütun</span></button>
-        <button class="btn" id="tb-imp">${icon('upload')}<span class="lbl">CSV yükle</span></button>
+        <button class="btn" id="tb-imp">${icon('upload')}<span class="lbl">CSV / Excel yükle</span></button>
         <button class="btn" id="tb-exp">${icon('download')}<span class="lbl">CSV indir</span></button>
+        <button class="btn" id="tb-xlsx">${icon('download')}<span class="lbl">Excel indir</span></button>
         <button class="btn primary" id="tb-add">${icon('plus')}Satır</button></div>
       <p class="lead">${data.rowCount} satır${st.q ? ` · aramaya uyan ${data.total}` : ''}. Hücreye tıklayıp düzenleyin; Enter ile kaydedilir. Sayılar ve true/false otomatik tanınır.</p>
       ${cols.length ? `<div class="tablewrap" style="max-height:none"><table class="dt" id="tb"><thead><tr><th class="ix">#</th>${cols.map(c => `<th>${esc(c)} <button class="icon-btn" data-dropcol="${esc(c)}" title="Sütunu kaldır" aria-label="${esc(c)} sütununu kaldır" style="width:18px;height:18px">${icon('x')}</button></th>`).join('')}<th></th></tr></thead>
@@ -1895,9 +1902,19 @@ async function pageTable(id) {
       const csv = [data.columns.join(','), ...all.rows.map(r => data.columns.map(c => q(r[c])).join(','))].join('\n');
       const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' })); a.download = `${data.name}.csv`; a.click();
     });
+    $('#tb-xlsx').addEventListener('click', async () => {
+      const r = await api('GET', `/api/tables/${id}/xlsx`); const bin = Uint8Array.from(atob(r.icerik), ch => ch.charCodeAt(0));
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bin], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })); a.download = r.ad; a.click();
+    });
     $('#tb-imp').addEventListener('click', () => {
-      const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.csv,text/csv';
-      inp.onchange = async () => { const f = inp.files[0]; if (!f) return; const rows = parseCSVText(await f.text()); if (!rows.length) { toast('CSV boş görünüyor', true); return; } const r = await api('POST', `/api/tables/${id}/rows`, { rows }); toast(`${r.added} satır eklendi`); load(); };
+      const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.csv,text/csv,.xlsx';
+      inp.onchange = async () => {
+        const f = inp.files[0]; if (!f) return;
+        if (/\.xlsx$/i.test(f.name)) {
+          try { const icerik = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1] || ''); r.onerror = () => no(r.error); r.readAsDataURL(f); }); const r = await api('POST', `/api/tables/${id}/import`, { ad: f.name, icerik }); toast(`"${r.sayfa}" sayfasından ${r.added} satır eklendi`); load(); } catch (e) { toast(e.message, true); }
+          return;
+        }
+        const rows = parseCSVText(await f.text()); if (!rows.length) { toast('CSV boş görünüyor', true); return; } const r = await api('POST', `/api/tables/${id}/rows`, { rows }); toast(`${r.added} satır eklendi`); load(); };
       inp.click();
     });
     $('#tb-clear').addEventListener('click', async () => { if (!confirm(`"${data.name}" tablosundaki ${data.rowCount} satırın hepsi silinsin mi?`)) return; await api('POST', `/api/tables/${id}/clear`, {}); load(); });

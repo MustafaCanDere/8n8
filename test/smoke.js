@@ -768,6 +768,80 @@ test('Çöp kutusu: silinen akış sürümleriyle geri alınır, kalıcı silini
   await assert.rejects(api('POST', `/api/trash/${w.id}/restore`, {}), /yok/);
 });
 
+/* hand-made PDF: one Helvetica (WinAnsi) line and one line in a font whose ToUnicode CMap maps codes 1-6 to Turkish letters */
+function makePdf() {
+  const zlib = require('zlib');
+  const content = zlib.deflateSync(Buffer.from('BT /F1 12 Tf 72 750 Td (Garanti suresi 2 yil.) Tj 0 -16 Td [(Kargo) -250 (ucretsiz.)] TJ ET\nBT /F2 12 Tf 72 700 Td <0102030405> Tj ( TL) Tj ET', 'latin1'));
+  const cmap = '/CIDInit /ProcSet findresource begin 12 dict begin begincmap 1 begincodespacerange <00> <FF> endcodespacerange 2 beginbfchar <01> <015F> <02> <0131> <03> <011F> endbfchar 1 beginbfrange <04> <05> <00FC> endbfrange endcmap end end';
+  const objs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 7 0 R >>'];
+  const parts = [Buffer.from('%PDF-1.4\n')];
+  objs.forEach((o, i) => parts.push(Buffer.from(`${i + 1} 0 obj\n${o}\nendobj\n`)));
+  parts.push(Buffer.from(`6 0 obj\n<< /Length ${content.length} /Filter /FlateDecode >>\nstream\n`), content, Buffer.from('\nendstream\nendobj\n'));
+  parts.push(Buffer.from(`7 0 obj\n<< /Length ${cmap.length} >>\nstream\n${cmap}\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n`));
+  return Buffer.concat(parts);
+}
+
+test('PDF ve Excel: bilgi tabanına PDF, web sayfası; Excel yaz/oku; tabloya Excel içe/dışa aktarma', async () => {
+  const k = await api('POST', '/api/kb', { name: 'Belgeler' });
+  const p = await api('POST', `/api/kb/${k.id}/docs`, { ad: 'garanti.pdf', icerik: makePdf().toString('base64') });
+  assert.ok(p.parca >= 1);
+  const hit = (await api('GET', `/api/kb/${k.id}/search?q=garanti`))[0];
+  assert.equal(hit.metin, 'Garanti suresi 2 yil.\nKargo ucretsiz.\n\nşığüý TL');
+  const u = await api('POST', `/api/kb/${k.id}/docs`, { url: `http://127.0.0.1:${fakeClaude.port}/sayfa.html` });
+  assert.equal(u.ad, `127.0.0.1_sayfa.html`);
+  assert.equal((await api('GET', `/api/kb/${k.id}/search?q=${encodeURIComponent('teslimat')}`))[0].belge, u.ad);
+  // Excel round trip through the file nodes
+  const w = await api('POST', '/api/workflows', wf('excel', [
+    ['manual', { data: '[{"ad":"Ayşe","tutar":12.5,"odendi":true},{"ad":"Can","tutar":7}]' }],
+    ['writeFile', { path: 'rapor.xlsx', format: 'xlsx', sheet: 'Satışlar' }, { name: 'yaz' }],
+    ['readFile', { path: 'rapor.xlsx', format: 'auto' }, { name: 'oku' }],
+  ], [[0, 1], [1, 2]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(outOf(e, 'oku'), [{ ad: 'Ayşe', tutar: 12.5, odendi: true }, { ad: 'Can', tutar: 7, odendi: null }]);
+  fs.writeFileSync(path.join(DATA, 'dosyalar', 'garanti.pdf'), makePdf());
+  const w2 = await api('POST', '/api/workflows', wf('pdf-oku', [['manual', {}], ['readFile', { path: 'garanti.pdf' }, { name: 'oku' }]], [[0, 1]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.match(outOf(e2, 'oku')[0].icerik, /^Garanti suresi/);
+  // tables: import the Excel file, export it again
+  const t = await api('POST', '/api/tables', { name: 'Excelden' });
+  const imp = await api('POST', `/api/tables/${t.id}/import`, { ad: 'rapor.xlsx', icerik: fs.readFileSync(path.join(DATA, 'dosyalar', 'rapor.xlsx')).toString('base64') });
+  assert.deepEqual([imp.added, imp.sayfa], [2, 'Satışlar']);
+  const ex = await api('GET', `/api/tables/${t.id}/xlsx`);
+  const X = require('../lib/xlsx');
+  assert.deepEqual(X.toItems(X.readWorkbook(Buffer.from(ex.icerik, 'base64'))[0].rows)[0], { ad: 'Ayşe', tutar: 12.5, odendi: true });
+});
+
+test('Form ve webhook ile dosya yükleme', async () => {
+  const w = await api('POST', '/api/workflows', wf('basvuru', [
+    ['form', { path: 'cv', title: 'Başvuru', fields: [{ label: 'Ad', name: 'ad', type: 'text', required: true }, { label: 'Özgeçmiş', name: 'cv', type: 'file', required: true }] }],
+    ['readFile', { path: '{{ $json.cv.dosya }}', format: 'text' }, { name: 'oku' }],
+  ], [[0, 1]]));
+  const page = await (await fetch(`${B}/form-test/cv`)).text();
+  assert.ok(page.includes('enctype="multipart/form-data"') && page.includes('type="file"'));
+  const fd = new FormData(); fd.append('ad', 'Selin'); fd.append('cv', new Blob(['Deneyim: 5 yıl']), 'özgeçmiş.txt');
+  const r = await fetch(`${B}/form-test/cv`, { method: 'POST', body: fd });
+  assert.equal(r.status, 200);
+  await sleep(300);
+  const e = await waitExec((await api('GET', `/api/executions?workflowId=${w.id}`)).items[0].id);
+  assert.equal(e.status, 'success', e.error);
+  assert.equal(outOf(e, 'oku')[0].icerik, 'Deneyim: 5 yıl');
+  const fd2 = new FormData(); fd2.append('ad', 'Boş');
+  assert.equal((await fetch(`${B}/form-test/cv`, { method: 'POST', body: fd2 })).status, 400, 'zorunlu dosya');
+  const w2 = await api('POST', '/api/workflows', wf('yukle', [['webhook', { method: 'POST', path: 'yukle', respond: 'lastNode' }]], []));
+  const fd3 = new FormData(); fd3.append('not', 'fatura'); fd3.append('dosya', new Blob([Buffer.from([1, 2, 3])], { type: 'application/pdf' }), 'f.pdf'); fd3.append('dosya', new Blob(['x']), 'b.txt');
+  const out = await (await fetch(`${B}/webhook-test/yukle`, { method: 'POST', body: fd3 })).json();
+  assert.equal(out.body.not, 'fatura');
+  assert.deepEqual(out.body.dosya.map(d => [d.ad, d.tur, d.boyut]), [['f.pdf', 'application/pdf', 3], ['b.txt', 'application/octet-stream', 1]]);
+  assert.ok(fs.existsSync(path.join(DATA, 'dosyalar', out.body.dosya[0].dosya)));
+  // other public endpoints do not accept uploads
+  const fd4 = new FormData(); fd4.append('x', new Blob(['y']), 'a.txt');
+  assert.equal((await fetch(`${B}/sohbet-test/asistan`, { method: 'POST', body: fd4 })).status, 415);
+});
+
 test('Bütün şablonlar açılır; "Metinden bilgi çıkar" şablonu çalışır (sahte API)', async () => {
   const list = await api('GET', '/api/templates');
   assert.ok(list.length >= 12);
@@ -1084,6 +1158,7 @@ const fakeServer = require('http').createServer((req, res) => {
   for (const [re, fn] of routes) if (re.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fn(req, res, raw)); }
   if (/^\/(oauth-token|gmail\/|drive\/|upload\/|calendar\/)/.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleOAuth(req, res, raw)); }
   if (req.url === '/token' || req.url.startsWith('/v4/')) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleApi(req, res, raw)); }
+  if (req.url === '/sayfa.html') { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<html><head><title>SSS</title><script>var x=1</script></head><body><h1>Teslimat</h1><p>Teslimat süresi 3 iş günüdür.</p></body></html>'); }
   if (req.url === '/rss.xml') { res.writeHead(200, { 'Content-Type': 'application/rss+xml' }); return res.end('<?xml version="1.0"?><rss><channel><title>T</title><item><title>İlk yazı</title><link>https://x.com/1</link><guid>1</guid></item></channel></rss>'); }
   let raw = ''; req.on('data', d => { raw += d; }); req.on('end', () => {
     const body = JSON.parse(raw || '{}'); fakeClaude.calls.push({ headers: req.headers, body });
