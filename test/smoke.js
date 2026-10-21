@@ -842,6 +842,69 @@ test('Form ve webhook ile dosya yükleme', async () => {
   assert.equal((await fetch(`${B}/sohbet-test/asistan`, { method: 'POST', body: fd4 })).status, 415);
 });
 
+test('E-posta gelince (IMAP): yeni e-postayı Türkçe konu ve ekiyle alır, okundu işaretler (sahte sunucu)', async () => {
+  const M = require('../lib/mime');
+  assert.equal(M.decodeWords('=?ISO-8859-9?Q?=DEcret_fatura?= =?UTF-8?B?w7xjcmV0?='), 'Şcret faturaücret');
+  const bad = { type: 'imap', name: 'imap-yanlis', data: { host: '127.0.0.1', port: String(fakeIMAP.port), secure: 'false', user: 'kutu@ornek.com', password: 'yanlis' } };
+  const t0 = await api('POST', '/api/credentials/test', bad); assert.equal(t0.ok, false); assert.match(t0.message, /girişi başarısız.*Invalid credentials/);
+  const cred = await api('POST', '/api/credentials', { ...bad, name: 'imap', data: { ...bad.data, password: 'dogru-sifre' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'imap', id: cred.id, data: bad.data && { ...bad.data, password: '' } })).message, /2 e-posta/);
+  const w = await api('POST', '/api/workflows', wf('posta', [['emailTrigger', { credential: cred.id, every: 5, unit: 's', markSeen: true, attachments: true }, { name: 'posta' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${w.id}`, { ...w, active: true });
+  await sleep(600); // first check only remembers
+  const pdf = Buffer.from('%PDF-1.4 sahte').toString('base64');
+  fakeIMAP.msgs.push({ uid: 3, flags: [], raw: ['From: =?UTF-8?B?QXnFn2UgWcSxbG1heg==?= <ayse@ornek.com>', 'To: kutu@ornek.com', 'Subject: =?ISO-8859-9?Q?Sipari=FE_faturas=FD?=', 'Date: Tue, 20 Oct 2026 10:00:00 +0300', 'Message-ID: <abc@ornek.com>', 'MIME-Version: 1.0', 'Content-Type: multipart/mixed; boundary="SINIR"', '', '--SINIR', 'Content-Type: text/plain; charset=iso-8859-9', 'Content-Transfer-Encoding: quoted-printable', '', 'Merhaba, fatura ekte. Te=FEekk=FCrler.', '--SINIR', 'Content-Type: application/pdf; name="fatura.pdf"', 'Content-Disposition: attachment; filename="fatura.pdf"', 'Content-Transfer-Encoding: base64', '', pdf, '--SINIR--', ''].join('\r\n') });
+  fakeIMAP.uidNext = 4;
+  let e;
+  for (let k = 0; k < 80 && !e; k++) { await sleep(150); const l = await api('GET', `/api/executions?workflowId=${w.id}`); if (l.items[0]) e = await waitExec(l.items[0].id); }
+  assert.ok(e, 'yeni e-posta akışı başlatmalı');
+  const m = outOf(e, 'son')[0];
+  assert.deepEqual([m.id, m.kimden, m.konu, m.metin, m.tarih], [3, 'Ayşe Yılmaz <ayse@ornek.com>', 'Sipariş faturası', 'Merhaba, fatura ekte. Teşekkürler.', '2026-10-20T07:00:00.000Z']);
+  assert.deepEqual([m.ekler[0].ad, m.ekler[0].tur], ['fatura.pdf', 'application/pdf']);
+  assert.equal(fs.readFileSync(path.join(DATA, 'dosyalar', m.ekler[0].dosya), 'utf8'), '%PDF-1.4 sahte');
+  assert.ok(fakeIMAP.msgs[2].flags.includes('\\Seen'));
+  assert.equal((await api('GET', `/api/executions?workflowId=${w.id}`)).items.length, 1, 'eski e-postalar akışı başlatmaz');
+  await api('PUT', `/api/workflows/${w.id}`, { ...w, active: false });
+});
+
+test('WhatsApp: doğrulama, imzalı gelen mesaj, yanıt ve 24 saat kuralı hatası (sahte API)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'whatsappApi', name: 'wa', data: { token: 'wa-token', phoneNumberId: '1234', verifyToken: 'gizli-soz', appSecret: 'app-sir' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'whatsappApi', id: cred.id, data: { phoneNumberId: '1234' } })).message, /Mağaza/);
+  const w = await api('POST', '/api/workflows', wf('wa', [
+    ['whatsappTrigger', { credential: cred.id, path: 'magaza' }],
+    ['whatsapp', { credential: cred.id, op: 'text', to: '{{ $json.kimden }}', text: 'Merhaba {{ $json.ad }}, mesajınız: {{ $json.mesaj }}', replyTo: '{{ $json.mesajId }}' }, { name: 'yanit' }],
+  ], [[0, 1]]));
+  await api('PUT', `/api/workflows/${w.id}`, { ...w, active: true });
+  assert.equal(await (await fetch(`${B}/whatsapp/magaza?hub.mode=subscribe&hub.verify_token=gizli-soz&hub.challenge=4242`)).text(), '4242');
+  assert.equal((await fetch(`${B}/whatsapp/magaza?hub.mode=subscribe&hub.verify_token=yanlis&hub.challenge=1`)).status, 403);
+  const body = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'x', changes: [{ field: 'messages', value: { messaging_product: 'whatsapp', metadata: { display_phone_number: '902120000000', phone_number_id: '1234' }, contacts: [{ profile: { name: 'Ayşe' }, wa_id: '905321234567' }], messages: [{ from: '905321234567', id: 'wamid.gelen', timestamp: '1760000000', type: 'text', text: { body: 'Kargom nerede?' } }] } }] }] });
+  const sig = 'sha256=' + require('crypto').createHmac('sha256', 'app-sir').update(body).digest('hex');
+  assert.equal((await fetch(`${B}/whatsapp/magaza`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': 'sha256=00' }, body })).status, 401);
+  const before = fakeWA.sent.length;
+  assert.equal((await fetch(`${B}/whatsapp/magaza`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': sig }, body })).status, 200);
+  for (let k = 0; k < 40 && fakeWA.sent.length === before; k++) await sleep(100);
+  assert.deepEqual(fakeWA.sent.at(-1), { messaging_product: 'whatsapp', to: '905321234567', type: 'text', text: { body: 'Merhaba Ayşe, mesajınız: Kargom nerede?', preview_url: true }, context: { message_id: 'wamid.gelen' } });
+  await api('PUT', `/api/workflows/${w.id}`, { ...w, active: false });
+  const w2 = await api('POST', '/api/workflows', wf('wa2', [['manual', { data: '[{"tel":"0555 000 00 00"}]' }], ['whatsapp', { credential: cred.id, op: 'text', to: '{{ $json.tel }}', text: 'Selam' }]], [[0, 1]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.match(e2.error, /24 saatte/);
+  assert.equal(fakeWA.sent.at(-1).to, '905550000000');
+});
+
+test('Claude ile bilgi çıkar: PDF ve resim dosyası Claude\'a belge olarak gider (sahte API)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'anthropicApi', name: 'c-dosya', data: { apiKey: 'sk-test' } });
+  fs.writeFileSync(path.join(DATA, 'dosyalar', 'tarama.pdf'), '%PDF-1.4 resim');
+  fs.writeFileSync(path.join(DATA, 'dosyalar', 'fis.jpg'), Buffer.from([0xff, 0xd8, 0xff]));
+  const w = await api('POST', '/api/workflows', wf('dosyadan', [['manual', { data: '[{"f":"tarama.pdf"},{"f":"fis.jpg"}]' }], ['extract', { credential: cred.id, source: 'file', file: '{{ $json.f }}', fields: [{ key: 'tutar:sayı', value: '' }] }, { name: 'cikar' }]], [[0, 1]]));
+  const n0 = fakeClaude.calls.length;
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.equal(outOf(e, 'cikar')[0].tutar, 1250.5);
+  const [a, b] = fakeClaude.calls.slice(n0).map(c => c.body.messages[0].content);
+  assert.deepEqual([a[0].type, a[0].source.media_type, b[0].type, b[0].source.media_type], ['document', 'application/pdf', 'image', 'image/jpeg']);
+  assert.equal(Buffer.from(a[0].source.data, 'base64').toString(), '%PDF-1.4 resim');
+});
+
 test('Bütün şablonlar açılır; "Metinden bilgi çıkar" şablonu çalışır (sahte API)', async () => {
   const list = await api('GET', '/api/templates');
   assert.ok(list.length >= 12);
@@ -942,6 +1005,49 @@ test('JSON olmayan API isteği reddedilir', async () => {
 
 
 /* fake Anthropic API (the SDK honours ANTHROPIC_BASE_URL) that also serves a test RSS feed */
+
+/* fake IMAP server (plain TCP): enough of IMAP4rev1 for the e-mail trigger */
+const fakeIMAP = { port: 0, uidNext: 3, msgs: [{ uid: 1, flags: [], raw: 'Subject: eski\r\n\r\neski' }, { uid: 2, flags: ['\\Seen'], raw: 'Subject: eski2\r\n\r\neski2' }], logins: 0 };
+const imapServer = net.createServer(sock => {
+  sock.write('* OK fake IMAP ready\r\n');
+  let buf = '';
+  sock.on('data', d => {
+    buf += d.toString('latin1'); let i;
+    while ((i = buf.indexOf('\r\n')) >= 0) {
+      const line = buf.slice(0, i); buf = buf.slice(i + 2);
+      const [tag, ...rest] = line.split(' '); const cmd = rest.join(' '); const up = cmd.toUpperCase();
+      const ok = (t = 'done') => sock.write(`${tag} OK ${t}\r\n`);
+      if (up.startsWith('CAPABILITY')) { sock.write('* CAPABILITY IMAP4rev1 AUTH=PLAIN\r\n'); ok(); }
+      else if (up.startsWith('LOGIN')) { if (cmd.includes('"kutu@ornek.com" "dogru-sifre"')) { fakeIMAP.logins++; ok(); } else sock.write(`${tag} NO [AUTHENTICATIONFAILED] Invalid credentials\r\n`); }
+      else if (up.startsWith('SELECT')) { sock.write(`* ${fakeIMAP.msgs.length} EXISTS\r\n* OK [UIDVALIDITY 7] ok\r\n* OK [UIDNEXT ${fakeIMAP.uidNext}] ok\r\n`); ok('[READ-WRITE] SELECT completed'); }
+      else if (up.startsWith('UID SEARCH')) {
+        const m = cmd.match(/UID (\d+):\*/); let hits = fakeIMAP.msgs.map(x => x.uid);
+        if (m) { hits = hits.filter(u => u >= Number(m[1])); if (!hits.length) hits = [fakeIMAP.msgs.at(-1).uid]; } // like real servers: n:* always matches the last message
+        sock.write(`* SEARCH ${hits.join(' ')}\r\n`); ok();
+      } else if (up.startsWith('UID FETCH')) {
+        const want = cmd.split(' ')[2].split(',').map(Number);
+        fakeIMAP.msgs.filter(x => want.includes(x.uid)).forEach((x, k) => { const raw = Buffer.from(x.raw, 'latin1'); sock.write(`* ${k + 1} FETCH (UID ${x.uid} FLAGS (${x.flags.join(' ')}) BODY[] {${raw.length}}\r\n`); sock.write(raw); sock.write(')\r\n'); });
+        ok();
+      } else if (up.startsWith('UID STORE')) { const want = cmd.split(' ')[2].split(',').map(Number); for (const x of fakeIMAP.msgs) if (want.includes(x.uid)) x.flags.push('\\Seen'); ok(); }
+      else if (up.startsWith('LOGOUT')) { sock.write('* BYE\r\n'); ok(); sock.end(); }
+      else sock.write(`${tag} BAD unknown\r\n`);
+    }
+  });
+  sock.on('error', () => {});
+});
+const fakeWA = { sent: [] };
+function fakeWhatsapp(req, res, raw) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  if (req.headers.authorization !== 'Bearer wa-token') return json({ error: { message: 'Invalid OAuth access token', code: 190 } }, 401);
+  const u = new URL(req.url, 'http://x');
+  if (req.method === 'GET' && u.pathname === '/wa/1234') return json({ display_phone_number: '+90 212 000 00 00', verified_name: 'Mağaza', id: '1234' });
+  if (req.method === 'POST' && u.pathname === '/wa/1234/messages') {
+    const b = JSON.parse(raw); fakeWA.sent.push(b);
+    if (b.type === 'text' && b.to === '905550000000') return json({ error: { message: 'Re-engagement message', code: 131047 } }, 400);
+    return json({ messaging_product: 'whatsapp', contacts: [{ input: b.to, wa_id: b.to }], messages: [{ id: `wamid.${fakeWA.sent.length}` }] });
+  }
+  return json({ error: { message: 'Unknown path' } }, 404);
+}
 const fakeClaude = { calls: [], port: 0 };
 const fakeGoogle = { auth: [], tabs: {} };
 const fakeTelegram = { webhook: true, served: false };
@@ -1154,7 +1260,7 @@ function fakeTelegramApi(req, res) {
 }
 const fakeServer = require('http').createServer((req, res) => {
   if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
-  const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord]];
+  const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp]];
   for (const [re, fn] of routes) if (re.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fn(req, res, raw)); }
   if (/^\/(oauth-token|gmail\/|drive\/|upload\/|calendar\/)/.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleOAuth(req, res, raw)); }
   if (req.url === '/token' || req.url.startsWith('/v4/')) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleApi(req, res, raw)); }
@@ -1193,14 +1299,15 @@ const fakeServer = require('http').createServer((req, res) => {
 
 (async () => {
   await new Promise(r => fakeServer.listen(0, '127.0.0.1', r)); fakeClaude.port = fakeServer.address().port;
-  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc` }, stdio: ['ignore', 'pipe', 'inherit'] });
+  await new Promise(r => imapServer.listen(0, '127.0.0.1', r)); fakeIMAP.port = imapServer.address().port;
+  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa` }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0;
   for (const [name, fn] of tests) {
     try { await fn(); console.log(`  ✓ ${name}`); } catch (e) { fail++; console.log(`  ✗ ${name}\n    ${e.message}`); }
   }
-  srv.kill(); fakeServer.close();
+  srv.kill(); fakeServer.close(); imapServer.close();
   fs.rmSync(DATA, { recursive: true, force: true });
   console.log(fail ? `\n${fail} test başarısız` : `\nTüm ${tests.length} test geçti`);
   process.exit(fail ? 1 : 0);

@@ -9,7 +9,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const store = require('./lib/store');
 const engine = require('./lib/engine');
-const { AI, NODES, describe, defaults, CREDENTIAL_TYPES, testCredential } = require('./lib/nodes');
+const { AI, MAIL, NODES, describe, defaults, CREDENTIAL_TYPES, testCredential } = require('./lib/nodes');
 const backup = require('./lib/backup');
 const kb = require('./lib/kb');
 const notify = require('./lib/notify');
@@ -214,6 +214,33 @@ async function handleForm(req, res, p, test) {
   send(res, 200, formPage(hit.params, { message: hit.params.thanks || 'Teşekkürler!' }), { 'Content-Type': 'text/html; charset=utf-8' });
 }
 
+/* ---------------- WhatsApp webhook ---------------- */
+function readRaw(req, max = MAX_BODY) {
+  return new Promise((resolve, reject) => {
+    const chunks = []; let size = 0;
+    req.on('data', c => { size += c.length; if (size > max) { reject(new HttpError(413, 'İstek gövdesi çok büyük')); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => resolve(Buffer.concat(chunks))); req.on('error', reject);
+  });
+}
+async function handleWhatsapp(req, res, p, url) {
+  const hit = findTriggerNode('whatsappTrigger', p, req.method, false);
+  if (!hit) return send(res, 404, { hata: `/whatsapp/${p} için etkin bir WhatsApp tetikleyicisi yok` });
+  const cred = hit.params.credential ? store.getCredentialData(hit.params.credential) : null;
+  if (!cred) return send(res, 500, { hata: 'WhatsApp hesabı seçilmemiş' });
+  if (req.method === 'GET') { // Meta's subscription check
+    const q = url.searchParams;
+    if (q.get('hub.mode') === 'subscribe' && cred.data.verifyToken && safeEqual(q.get('hub.verify_token') || '', cred.data.verifyToken)) return send(res, 200, q.get('hub.challenge') || '', { 'Content-Type': 'text/plain' });
+    return send(res, 403, 'Doğrulama sözcüğü uyuşmuyor');
+  }
+  if (req.method !== 'POST') return send(res, 405, 'Yalnızca GET ve POST');
+  const raw = await readRaw(req);
+  if (!MAIL.verifySignature(raw, req.headers['x-hub-signature-256'], cred.data.appSecret)) return send(res, 401, 'İmza geçersiz');
+  let body; try { body = JSON.parse(raw.toString('utf8')); } catch { return send(res, 400, 'Geçersiz JSON'); }
+  send(res, 200, { durum: 'alındı' }); // Meta wants a quick 200; the workflow runs afterwards
+  for (const item of MAIL.whatsappItems(body, { statuses: !!hit.params.statuses }))
+    try { engine.start(hit.wf, { triggerId: hit.node.id, triggerData: { items: [item] }, mode: 'whatsapp' }); } catch (e) { console.error('WhatsApp:', e.message); }
+}
+
 /* ---------------- hosted chat ---------------- */
 function chatPage(params, { test, p }) {
   return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(params.title)}</title>
@@ -289,7 +316,8 @@ function validateActivation(wf) {
           throw new HttpError(409, `"${tool}" aracı /mcp/${p} adresinde "${other.name}" akışında zaten var`);
       }
     }
-    if (['webhook', 'form', 'chatTrigger'].includes(n.type) && !n.disabled) {
+    if (n.type === 'whatsappTrigger' && !n.disabled && !n.params?.credential) throw new HttpError(400, `"${n.name}": WhatsApp hesabı seçilmemiş`);
+    if (['webhook', 'form', 'chatTrigger', 'whatsappTrigger'].includes(n.type) && !n.disabled) {
       const p = cleanPath(n.params?.path);
       if (!p || !/^[A-Za-z0-9._~\-/]+$/.test(p)) throw new HttpError(400, `"${n.name}": yol yalnızca harf, rakam, - ve / içerebilir`);
       for (const other of store.listWorkflows()) {
@@ -682,6 +710,7 @@ const server = http.createServer(async (req, res) => {
     // public by design: an unguessable token ties each to a sign-in or an approval this program started
     if (p === '/oauth/callback') return await oauthCallback(res, url);
     if ((m = p.match(/^\/mcp\/(.+)$/))) return await handleMcp(req, res, cleanPath(m[1]));
+    if ((m = p.match(/^\/whatsapp\/(.+)$/))) return await handleWhatsapp(req, res, cleanPath(m[1]), url);
     if ((m = p.match(/^\/onay\/([A-Za-z0-9_-]{10,64})$/))) return await handleApproval(req, res, m[1]);
     if (!hostAllowed(req)) return send(res, 403, 'Bu adresten erişime izin verilmiyor. Başka bir adres kullanıyorsanız N8N8_ALLOWED_HOSTS ile ekleyin.');
     if (!authorized(req)) return UNAUTH(res);

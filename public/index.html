@@ -1325,6 +1325,13 @@ function triggerInfo(n) {
       <span class="help">Uzak MCP sunucusu (http) destekleyen istemcilerin ayarı:</span><pre class="code-snip">${esc(cfg)}</pre>
       <span class="help">Claude aracı çağırınca girdiler bu node'un çıktısında öğenin alanları olarak gelir; son node'un çıktısı Claude'a sonuç olarak döner.</span></div>`;
   }
+  if (n.type === 'whatsappTrigger') {
+    const url = `${G.info?.url || base}/whatsapp/${encodeURI(String(n.params.path || '').replace(/^\/+|\/+$/g, ''))}`;
+    return `<div class="info-box"><b>WhatsApp webhook adresi</b>
+      <div class="urlrow"><code>${esc(url)}</code><button class="btn sm" type="button" data-copy="${esc(url)}">Kopyala</button></div>
+      ${ED.wf.active ? '<span class="pill active">dinleniyor</span>' : '<span class="pill idle">akış kapalı</span> Meta adresi doğrulayabilsin diye önce akışı etkinleştirin.'}
+      <span class="help">Meta for Developers → uygulamanız → WhatsApp → Configuration → Webhook: "Callback URL" kutusuna bu adresi, "Verify token" kutusuna kimlik bilgisindeki doğrulama sözcüğünü yazın, sonra <b>messages</b> alanına abone olun. Adres internetten erişilebilir olmalı (tünel ve <code>N8N8_URL</code>).</span></div>`;
+  }
   if (n.type === 'webhook') {
     const p = encodeURI(n.params.path || ''); const m = n.params.method === 'ANY' ? 'POST' : n.params.method;
     return `<div class="info-box"><b>Webhook adresleri</b>
