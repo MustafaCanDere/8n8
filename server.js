@@ -9,8 +9,9 @@ const path = require('path');
 const { spawn } = require('child_process');
 const store = require('./lib/store');
 const engine = require('./lib/engine');
-const { NODES, describe, defaults, CREDENTIAL_TYPES, testCredential } = require('./lib/nodes');
+const { AI, NODES, describe, defaults, CREDENTIAL_TYPES, testCredential } = require('./lib/nodes');
 const backup = require('./lib/backup');
+const crypto = require('crypto');
 const oauth = require('./lib/oauth');
 const { nextRun } = require('./lib/cron');
 const templates = require('./lib/templates');
@@ -127,22 +128,27 @@ function findTriggerNode(type, p, method, includeInactive) {
   }
   return null;
 }
+/* the "Kimlik doğrulama" option of webhook and MCP triggers; returns null when the request may pass */
+const safeEqual = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
+function credAuthError(req, params) {
+  if (!params.auth || params.auth === 'none') return null;
+  const cred = params.credential ? store.getCredentialData(params.credential) : null;
+  if (!cred) return { status: 500, message: 'Kimlik doğrulaması açık ama kimlik bilgisi seçilmemiş' };
+  const h = req.headers;
+  const ok = cred.type === 'httpBasic'
+    ? (() => { const a = String(h.authorization || ''); if (!a.startsWith('Basic ')) return false; const [u, ...rest] = Buffer.from(a.slice(6), 'base64').toString().split(':'); return safeEqual(u, cred.data.user) && safeEqual(rest.join(':'), cred.data.password); })()
+    : cred.type === 'httpHeader' ? safeEqual(h[String(cred.data.name || '').toLowerCase()] || '', cred.data.value || '')
+    : cred.type === 'httpBearer' ? safeEqual(h.authorization || '', `Bearer ${cred.data.token}`) : false;
+  return ok ? null : { status: 401, message: 'Yetkisiz', headers: cred.type === 'httpBasic' ? { 'WWW-Authenticate': 'Basic realm="8n8"' } : {} };
+}
 async function handleWebhook(req, res, p, test) {
   const hit = findTriggerNode('webhook', p, req.method, test);
   if (!hit) {
     const other = findTriggerNode('webhook', p, req.method, true);
     return send(res, 404, { hata: other ? `"${other.wf.name}" akışı etkin değil. Etkinleştirin ya da /webhook-test/${p} adresini kullanın.` : `/${test ? 'webhook-test' : 'webhook'}/${p} için ${req.method} kabul eden bir webhook yok` });
   }
-  if (hit.params.auth && hit.params.auth !== 'none') {
-    const cred = hit.params.credential ? store.getCredentialData(hit.params.credential) : null;
-    if (!cred) return send(res, 500, { hata: 'Webhook kimlik doğrulaması açık ama kimlik bilgisi seçilmemiş' });
-    const h = req.headers;
-    const ok = cred.type === 'httpBasic'
-      ? (() => { const a = String(h.authorization || ''); if (!a.startsWith('Basic ')) return false; const [u, ...rest] = Buffer.from(a.slice(6), 'base64').toString().split(':'); return u === cred.data.user && rest.join(':') === cred.data.password; })()
-      : cred.type === 'httpHeader' ? String(h[String(cred.data.name || '').toLowerCase()] || '') === String(cred.data.value || '')
-      : cred.type === 'httpBearer' ? String(h.authorization || '') === `Bearer ${cred.data.token}` : false;
-    if (!ok) return send(res, 401, { hata: 'Yetkisiz' }, cred.type === 'httpBasic' ? { 'WWW-Authenticate': 'Basic realm="webhook"' } : {});
-  }
+  const denied = credAuthError(req, hit.params);
+  if (denied) return send(res, denied.status, { hata: denied.message }, denied.headers);
   const body = req.method === 'GET' || req.method === 'HEAD' ? {} : await readBody(req);
   const url = new URL(req.url, PUBLIC_URL);
   const request = { method: req.method, yol: p, headers: { ...req.headers }, query: Object.fromEntries(url.searchParams), body, ip: req.socket.remoteAddress };
@@ -264,6 +270,18 @@ function validateActivation(wf) {
   for (const n of wf.nodes) if (NODES[n.type]?.poll && !n.disabled && NODES[n.type].params.some(f => f.key === 'credential') && !n.params?.credential) throw new HttpError(400, `"${n.name}": ${NODES[n.type].params.find(f => f.key === 'credential').label} seçin`);
   for (const n of wf.nodes) {
     if (n.type === 'schedule' && n.params?.mode === 'cron') { try { nextRun(n.params.cron); } catch (e) { throw new HttpError(400, `"${n.name}": ${e.message}`); } }
+    if (n.type === 'mcpTrigger' && !n.disabled) {
+      const params = { ...defaults('mcpTrigger'), ...n.params };
+      const p = cleanPath(params.path), tool = String(params.tool || '').trim();
+      if (!p || !/^[A-Za-z0-9._~\-/]+$/.test(p)) throw new HttpError(400, `"${n.name}": sunucu adresi yalnızca harf, rakam, - ve / içerebilir`);
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(tool)) throw new HttpError(400, `"${n.name}": araç adı yalnızca İngilizce harf, rakam, _ ve - içerebilir`);
+      try { AI.toolOf(params); } catch (e) { throw new HttpError(400, `"${n.name}": ${e.message}`); }
+      for (const other of store.listWorkflows()) {
+        if (other.id === wf.id || !other.active) continue;
+        if (other.nodes.some(o => o.type === 'mcpTrigger' && !o.disabled && cleanPath(o.params?.path ?? 'araclar') === p && String(o.params?.tool ?? '').trim() === tool))
+          throw new HttpError(409, `"${tool}" aracı /mcp/${p} adresinde "${other.name}" akışında zaten var`);
+      }
+    }
     if (['webhook', 'form', 'chatTrigger'].includes(n.type) && !n.disabled) {
       const p = cleanPath(n.params?.path);
       if (!p || !/^[A-Za-z0-9._~\-/]+$/.test(p)) throw new HttpError(400, `"${n.name}": yol yalnızca harf, rakam, - ve / içerebilir`);
@@ -381,6 +399,18 @@ route('GET', '/api/stats', ({ query }) => {
   };
 });
 route('GET', '/api/executions/:id', ({ params }) => { const e = store.getExecution(params.id); if (!e) throw new HttpError(404, 'Çalıştırma bulunamadı'); return e; });
+/* "Editörde hata ayıkla": pin the trigger output of a past run so editor runs replay it */
+route('POST', '/api/executions/:id/debug', ({ params }) => {
+  const e = store.getExecution(params.id); if (!e) throw new HttpError(404, 'Çalıştırma bulunamadı');
+  const wf = store.getWorkflow(e.workflowId); if (!wf) throw new HttpError(404, 'Akış silinmiş');
+  const node = wf.nodes.find(n => n.id === e.triggerId);
+  if (!node) throw new HttpError(409, `"${e.trigger}" tetikleyicisi artık akışta yok`);
+  const out = e.nodes?.[e.triggerId]?.output?.[0];
+  if (!Array.isArray(out) || !out.length) throw new HttpError(409, 'Bu çalıştırmada tetikleyicinin çıktısı kayıtlı değil');
+  const saved = store.saveWorkflow({ ...wf, nodes: wf.nodes.map(n => (n.id === node.id ? { ...n, pinData: out.filter(i => !i.json?._kesildi).map(i => i.json) } : n)) });
+  arm(saved);
+  return { workflowId: wf.id, node: node.name, items: out.length };
+});
 route('DELETE', '/api/executions/:id', ({ params }) => { store.deleteExecution(params.id); return { ok: true }; });
 route('POST', '/api/executions/:id/stop', ({ params }) => ({ stopped: engine.stop(params.id) }));
 route('POST', '/api/executions/:id/retry', ({ params, body }) => {
@@ -534,6 +564,62 @@ async function oauthCallback(res, url) {
   try { const r = await oauth.finish(url.searchParams.get('state'), url.searchParams.get('code')); return page(true, `"${r.name}"${r.account ? ` (${r.account})` : ''} artık kullanılabilir.`); }
   catch (e) { return page(false, e.message); }
 }
+/* MCP server (Streamable HTTP, JSON responses): every active workflow with an "MCP aracı" trigger on this
+   address is one tool. Claude Code: claude mcp add --transport http 8n8 <url> */
+const MCP_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
+async function handleMcp(req, res, p) {
+  const o = req.headers.origin; // browsers send Origin: a web page must not drive local tools (DNS rebinding)
+  if (o) { let hn = ''; try { hn = new URL(o).hostname.toLowerCase(); } catch {} if (!ALLOWED_HOSTS.has(hn) && !ALLOWED_HOSTS.has(`[${hn}]`)) return send(res, 403, { hata: 'Bu kaynaktan erişime izin verilmiyor' }); }
+  if (req.method !== 'POST') return send(res, 405, { hata: 'MCP istekleri POST ile gönderilir' }, { Allow: 'POST' });
+  const tools = [];
+  for (const wf of store.listWorkflows()) if (wf.active) for (const n of wf.nodes) {
+    if (n.type !== 'mcpTrigger' || n.disabled) continue;
+    const params = { ...defaults('mcpTrigger'), ...n.params };
+    if (cleanPath(params.path) !== p) continue;
+    let tool; try { tool = AI.toolOf(params); } catch { continue; }
+    if (!tools.some(t => t.tool.name === tool.name)) tools.push({ wf, node: n, params, tool });
+  }
+  if (!tools.length) return send(res, 404, { hata: `/mcp/${p} adresinde etkin araç yok. Akışta "MCP aracı" tetikleyicisi olduğundan ve akışın etkin olduğundan emin olun.` });
+  const visible = tools.filter(t => !credAuthError(req, t.params));
+  if (!visible.length) { const e = credAuthError(req, tools[0].params); return send(res, e.status, { hata: e.message }, e.headers); }
+  const body = await readBody(req);
+  const rpcErr = (id, code, message) => ({ jsonrpc: '2.0', id: id ?? null, error: { code, message } });
+  const handle = async m => {
+    if (!m || typeof m !== 'object' || m.jsonrpc !== '2.0' || typeof m.method !== 'string') return rpcErr(m?.id, -32600, 'Geçersiz istek');
+    const isNote = !('id' in m);
+    if (isNote) return null; // notifications/initialized, cancelled, …
+    const ok = result => ({ jsonrpc: '2.0', id: m.id, result });
+    if (m.method === 'initialize') {
+      const want = m.params?.protocolVersion;
+      return ok({ protocolVersion: MCP_VERSIONS.includes(want) ? want : MCP_VERSIONS[0], capabilities: { tools: { listChanged: false } }, serverInfo: { name: '8n8', title: `8n8 · ${p}`, version: pkg.version }, instructions: '8n8 iş akışlarını araç olarak çalıştırır. Her araç bir akışı başlatır ve sonucunu döndürür.' });
+    }
+    if (m.method === 'ping') return ok({});
+    if (m.method === 'tools/list') return ok({ tools: visible.map(t => t.tool) });
+    if (m.method === 'tools/call') {
+      const t = visible.find(x => x.tool.name === m.params?.name);
+      if (!t) return rpcErr(m.id, -32602, `Bilinmeyen araç: ${m.params?.name}`);
+      const args = m.params?.arguments ?? {};
+      if (typeof args !== 'object' || Array.isArray(args)) return rpcErr(m.id, -32602, 'arguments bir nesne olmalı');
+      const missing = t.tool.inputSchema.required.filter(k => args[k] === undefined || args[k] === null || args[k] === '');
+      if (missing.length) return ok({ content: [{ type: 'text', text: `Eksik girdi: ${missing.join(', ')}` }], isError: true });
+      const cur = store.getWorkflow(t.wf.id);
+      const { done } = engine.start(cur, { triggerId: t.node.id, triggerData: { items: [args] }, mode: 'mcp' });
+      const fin = await done;
+      if (fin.status !== 'success') return ok({ content: [{ type: 'text', text: `Akış hata verdi: ${fin.error || fin.status}` }], isError: true });
+      const items = (fin.lastOutput || []).map(i => i.json);
+      const text = t.params.result === 'first' ? JSON.stringify(items[0] ?? null, null, 2)
+        : t.params.result === 'field' ? (v => (typeof v === 'string' ? v : JSON.stringify(v ?? null, null, 2)))(items[0]?.[t.params.field || 'yanit'])
+        : JSON.stringify(items, null, 2);
+      return ok({ content: [{ type: 'text', text }] });
+    }
+    return rpcErr(m.id, -32601, `Desteklenmeyen yöntem: ${m.method}`);
+  };
+  if (typeof body !== 'object' || body === null) return send(res, 400, rpcErr(null, -32700, 'Geçersiz JSON'));
+  if (Array.isArray(body)) { const out = (await Promise.all(body.map(handle))).filter(Boolean); return out.length ? send(res, 200, out) : (res.writeHead(202), res.end()); }
+  const out = await handle(body);
+  if (!out) { res.writeHead(202); return res.end(); }
+  return send(res, 200, out);
+}
 const UNAUTH = res => send(res, 401, 'Giriş gerekli', { 'WWW-Authenticate': 'Basic realm="8n8"' });
 
 const server = http.createServer(async (req, res) => {
@@ -550,6 +636,7 @@ const server = http.createServer(async (req, res) => {
     }
     // public by design: an unguessable token ties each to a sign-in or an approval this program started
     if (p === '/oauth/callback') return await oauthCallback(res, url);
+    if ((m = p.match(/^\/mcp\/(.+)$/))) return await handleMcp(req, res, cleanPath(m[1]));
     if ((m = p.match(/^\/onay\/([A-Za-z0-9_-]{10,64})$/))) return await handleApproval(req, res, m[1]);
     if (!hostAllowed(req)) return send(res, 403, 'Bu adresten erişime izin verilmiyor. Başka bir adres kullanıyorsanız N8N8_ALLOWED_HOSTS ile ekleyin.');
     if (!authorized(req)) return UNAUTH(res);

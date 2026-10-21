@@ -78,6 +78,7 @@ svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-widt
 .lrow .meta { color: var(--muted); font-size: 12.5px; display: flex; gap: 6px 12px; flex-wrap: wrap; align-items: center; }
 .lrow .acts { display: flex; gap: 6px; align-items: center; grid-row: 1 / 3; grid-column: 2; flex-wrap: wrap; justify-content: flex-end; }
 .empty { padding: 40px 16px; text-align: center; color: var(--muted); display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.code-snip { font: 12px/1.45 var(--mono); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 2px 0 0; overflow-x: auto; white-space: pre; }
 .wf-filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
 .tagbar { display: flex; gap: 6px; flex-wrap: wrap; }
 button.tag { cursor: pointer; } button.tag:hover { border-color: var(--accent); color: var(--accent); }
@@ -1202,12 +1203,14 @@ function openWfSettings() {
       <div class="field"><label for="s-err">Hata akışı</label><select class="inp" id="s-err"><option value="">Yok</option>${others.map(w => `<option value="${w.id}"${w.id === s.errorWorkflow ? ' selected' : ''}>${esc(w.name)}${w.triggers.includes('errorTrigger') ? '' : ' (Hata tetikleyicisi yok)'}</option>`).join('')}</select>
         <span class="help">Bu akış hata verirse seçilen akış "Hata tetikleyici" ile çalışır.</span></div>
       <div class="field"><label for="s-to">Zaman aşımı (saniye, 0 = sınırsız)</label><input class="inp" type="number" id="s-to" min="0" value="${esc(s.timeout ?? 300)}"></div>
+      <div class="field"><label for="s-conc">Aynı anda en fazla çalıştırma (0 = sınırsız)</label><input class="inp" type="number" id="s-conc" min="0" value="${esc(s.maxConcurrent ?? 0)}">
+        <span class="help">Webhook, zamanlayıcı, form gibi otomatik tetiklemeler sınırı aşınca sıraya girer ve sırayla çalışır. Örneğin 1 yaparsanız aynı tabloya aynı anda iki çalıştırma yazmaz. Editörden yapılan çalıştırmalar beklemez.</span></div>
       <div class="field"><label for="s-tags">Etiketler (virgülle)</label><input class="inp" id="s-tags" value="${esc((ED.wf.tags || []).join(', '))}"></div>
       <div class="field"><span class="flabel">Akış hafızası</span><span class="help">Görülmüş öğeler, sohbet geçmişleri ve RSS/Telegram/klasör kontrol noktaları burada tutulur.</span><button class="btn sm" id="s-mem" style="align-self:flex-start">Hafızayı temizle</button></div>
     </div><div class="mfoot"><button class="btn" data-close>Vazgeç</button><button class="btn primary" id="s-save">Kaydet</button></div>`);
   $('#s-mem').addEventListener('click', async () => { if (!confirm('Akışın hafızası silinsin mi? Yeni öğe takibi ve sohbet geçmişleri sıfırlanır.')) return; await api('DELETE', `/api/workflows/${ED.wf.id}/memory`); toast('Hafıza temizlendi'); });
   $('#s-save').addEventListener('click', () => {
-    ED.wf.settings = { ...s, errorWorkflow: $('#s-err').value, timeout: Number($('#s-to').value) || 0 };
+    ED.wf.settings = { ...s, errorWorkflow: $('#s-err').value, timeout: Number($('#s-to').value) || 0, maxConcurrent: Math.max(0, Math.floor(Number($('#s-conc').value) || 0)) };
     ED.wf.tags = $('#s-tags').value.split(',').map(t => t.trim()).filter(Boolean);
     closeModal(); markDirty(); toast('Ayarlar kaydedildi');
   });
@@ -1285,6 +1288,16 @@ function triggerInfo(n) {
     const w = (G.approvals || []).filter(a => a.node === n.name && a.workflow === ED.wf.name);
     return `<div class="info-box">${w.length ? w.map(a => `<b>Onay bekleniyor</b> · ${new Date(a.since).toLocaleTimeString('tr-TR')}<div class="urlrow"><code>${esc(a.url)}</code><a class="btn sm" href="${esc(a.url)}" target="_blank" rel="noopener">Onay sayfasını aç</a></div>`).join('')
       : 'Çalıştığında akış burada durur ve onay sayfasının adresi oluşur. Adresi kişiye ulaştırmak için bu node\'dan <b>önce</b> bir E-posta, Gmail ya da Telegram node\'u koyup metne <code>{{ $execution.onayAdresi }}</code> yazın.'}</div>`;
+  }
+  if (n.type === 'mcpTrigger') {
+    const url = `${G.info?.url || base}/mcp/${String(n.params.path || '').replace(/^\/+|\/+$/g, '')}`;
+    const cfg = JSON.stringify({ mcpServers: { '8n8': { type: 'http', url } } }, null, 2);
+    return `<div class="info-box"><b>MCP sunucusu</b>
+      <div class="urlrow"><code>${esc(url)}</code><button class="btn sm" type="button" data-copy="${esc(url)}">Kopyala</button></div>
+      ${ED.wf.active ? '' : '<span class="pill idle">akış kapalı</span> Araç yalnızca akış etkinken listelenir.'}
+      <span class="help">Claude Code'a eklemek için: <code>claude mcp add --transport http 8n8 ${esc(url)}</code></span>
+      <span class="help">Uzak MCP sunucusu (http) destekleyen istemcilerin ayarı:</span><pre class="code-snip">${esc(cfg)}</pre>
+      <span class="help">Claude aracı çağırınca girdiler bu node'un çıktısında öğenin alanları olarak gelir; son node'un çıktısı Claude'a sonuç olarak döner.</span></div>`;
   }
   if (n.type === 'webhook') {
     const p = encodeURI(n.params.path || ''); const m = n.params.method === 'ANY' ? 'POST' : n.params.method;
@@ -1568,6 +1581,7 @@ async function pageExecution(id) {
     view.innerHTML = `<div class="page"><div class="page-in">
       <div class="page-head"><h1>${esc(ex.workflowName)}</h1><span class="pill ${ex.status}">${statusLabel(ex.status)}</span>
         <a class="btn" href="#/akis/${ex.workflowId}">Editörde aç</a>
+        <button class="btn" id="xd-debug" title="Bu çalıştırmanın tetikleyici verisini editörde sabitler; akışı aynı veriyle adım adım deneyebilirsiniz">Editörde hata ayıkla</button>
         <button class="btn" id="xd-retry">Yeniden dene</button><button class="btn danger" id="xd-del">${icon('trash')}Sil</button></div>
       <p class="lead">${new Date(ex.startedAt).toLocaleString('tr-TR')} · ${esc(ex.mode)} · ${esc(ex.trigger)} · ${fmtMs(ex.duration)}${ex.retryOf ? ` · <a href="#/calistirma/${ex.retryOf}">önceki denemenin</a> tekrarı` : ''}</p>
       ${ex.error ? `<div class="err-box">${esc(ex.error)}</div>` : ''}
@@ -1580,6 +1594,7 @@ async function pageExecution(id) {
     view.querySelector('.xd .card').addEventListener('click', e => { const b = e.target.closest('[data-tl]'); if (b) { st.sel = b.dataset.tl; DV.port = 0; draw(); } });
     $('#xd-data').addEventListener('click', e => { const b = e.target.closest('[data-xtab]'); if (b) { st.tab = b.dataset.xtab; DV.port = 0; draw(); } });
     bindDataView($('#xd-data'), draw);
+    $('#xd-debug').addEventListener('click', async () => { try { const r = await api('POST', `/api/executions/${id}/debug`, {}); toast(`"${r.node}" node'una ${r.items} öğe sabitlendi`); location.hash = `#/akis/${r.workflowId}`; } catch (e) { toast(e.message, true); } });
     $('#xd-retry').addEventListener('click', async () => { try { const r = await api('POST', `/api/executions/${id}/retry`, {}); toast('Yeniden çalıştırılıyor…'); setTimeout(() => { location.hash = `#/calistirma/${r.executionId}`; }, 600); } catch (e) { toast(e.message, true); } });
     $('#xd-del').addEventListener('click', async () => { await api('DELETE', `/api/executions/${id}`); location.hash = '#/calistirmalar'; });
   };

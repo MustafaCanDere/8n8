@@ -652,6 +652,77 @@ test('Yedekle ve geri yükle: akış, tablo, değişken, şifreli kimlik bilgisi
   await api('PUT', `/api/workflows/${w.id}`, { active: false });
 });
 
+test('Claude ile sınıflandır ve bilgi çıkar (sahte API, yapılandırılmış çıktı)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'anthropicApi', name: 'c-yapisal', data: { apiKey: 'sk-test' } });
+  const w = await api('POST', '/api/workflows', wf('ai', [
+    ['manual', { data: '[{"mesaj":"Kargom gelmedi, bu bir şikâyet"},{"mesaj":"Fiyat sorusu: kaç para?"},{"mesaj":"Merhaba"}]' }],
+    ['classify', { credential: cred.id, categories: [{ key: 'Şikâyet', value: '' }, { key: 'Soru', value: '' }], other: true }, { name: 'sinif' }],
+    ['noop', {}, { name: 'sikayet' }], ['noop', {}, { name: 'soru' }], ['noop', {}, { name: 'diger' }],
+    ['extract', { credential: cred.id, text: '{{ $json.mesaj }}', fields: [{ key: 'ad', value: 'adı' }, { key: 'tutar:sayı', value: '' }, { key: 'acil:evet-hayır', value: '' }, { key: 'urunler:liste', value: '' }, { key: 'teslim:tarih', value: '' }, { key: 'not', value: '' }] }, { name: 'cikar' }],
+  ], [[0, 1], [1, 2, 0], [1, 3, 1], [1, 4, 2], [2, 5]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual([outOf(e, 'sikayet').length, outOf(e, 'soru').length, outOf(e, 'diger').length], [1, 1, 1]);
+  assert.equal(outOf(e, 'soru')[0].kategori, 'Soru');
+  const x = outOf(e, 'cikar')[0];
+  assert.deepEqual([x.ad, x.tutar, x.acil, x.urunler, x.teslim, x.not], ['Ayşe Yılmaz', 1250.5, true, ['kalem', 'defter'], '2026-11-03', null]);
+  const req = fakeClaude.calls.filter(c => c.body.output_config?.format).at(-1).body;
+  assert.deepEqual(req.output_config.format.schema.properties.tutar, { type: ['number', 'null'] });
+  assert.equal(req.output_config.format.schema.additionalProperties, false);
+  const bad = await api('POST', '/api/workflows', wf('ai-bad', [['manual', { data: '[{"metin":"a"}]' }], ['extract', { credential: cred.id, fields: [{ key: 'x:renk', value: '' }] }]], [[0, 1]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${bad.id}/run`, {})).executionId);
+  assert.match(e2.error, /bilinmeyen tür "renk"/);
+});
+
+test('MCP aracı: Claude istemcisi akışı araç olarak listeler ve çağırır', async () => {
+  const tok = await api('POST', '/api/credentials', { type: 'httpBearer', name: 'mcp-token', data: { token: 'mcp-gizli' } });
+  const w = await api('POST', '/api/workflows', wf('mcp', [
+    ['mcpTrigger', { path: 'araclar', tool: 'musteri_bul', description: 'Müşteri bulur', inputs: [{ key: 'eposta', value: 'e-posta' }, { key: 'adet:tamsayı', value: '' }], optional: 'adet', result: 'first', auth: 'cred', credential: tok.id }],
+    ['set', { fields: [{ key: 'bulunan', value: '{{ $json.eposta }}' }, { key: 'kac', value: '{{ ($json.adet || 0) + 1 }}' }], keep: false }],
+  ], [[0, 1]]));
+  await api('PUT', `/api/workflows/${w.id}`, { active: true });
+  const rpc = async (body, auth = 'Bearer mcp-gizli', extra = {}) => {
+    const r = await fetch(`${B}/mcp/araclar`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...(auth ? { Authorization: auth } : {}), ...extra }, body: JSON.stringify(body) });
+    const t = await r.text(); return { status: r.status, body: t ? JSON.parse(t) : null };
+  };
+  assert.equal((await rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, null)).status, 401);
+  assert.equal((await rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, 'Bearer mcp-gizli', { Origin: 'https://kotu.site' })).status, 403);
+  const init = await rpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
+  assert.equal(init.body.result.protocolVersion, '2025-06-18'); assert.ok(init.body.result.capabilities.tools);
+  assert.equal((await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' })).status, 202);
+  const list = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+  assert.deepEqual(list.body.result.tools.map(t => [t.name, t.inputSchema.required]), [['musteri_bul', ['eposta']]]);
+  assert.equal(list.body.result.tools[0].inputSchema.properties.adet.type, 'integer');
+  const call = await rpc({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'musteri_bul', arguments: { eposta: 'a@x.com', adet: 2 } } });
+  assert.deepEqual(JSON.parse(call.body.result.content[0].text), { bulunan: 'a@x.com', kac: 3 });
+  const missing = await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'musteri_bul', arguments: {} } });
+  assert.equal(missing.body.result.isError, true);
+  assert.equal((await rpc({ jsonrpc: '2.0', id: 5, method: 'yok' })).body.error.code, -32601);
+  const { items } = await api('GET', `/api/executions?workflowId=${w.id}`);
+  assert.ok(items.some(x => x.mode === 'mcp'));
+  const dup = await api('POST', '/api/workflows', wf('mcp2', [['mcpTrigger', { path: 'araclar', tool: 'musteri_bul' }]], []));
+  await assert.rejects(api('PUT', `/api/workflows/${dup.id}`, { active: true }), /zaten var/);
+  await api('PUT', `/api/workflows/${w.id}`, { active: false });
+  assert.equal((await rpc({ jsonrpc: '2.0', id: 6, method: 'tools/list' })).status, 404);
+});
+
+test('Aynı anda çalışma sınırı ve geçmiş çalıştırmayı editörde hata ayıklama', async () => {
+  const w = await api('POST', '/api/workflows', wf('sira', [['webhook', { path: 'sira', method: 'POST', respond: 'immediately' }], ['wait', { amount: 400, unit: 'ms' }]], [[0, 1]], { settings: { timeout: 30, maxConcurrent: 1 } }));
+  await api('PUT', `/api/workflows/${w.id}`, { active: true });
+  const t0 = Date.now();
+  await Promise.all([1, 2, 3].map(i => fetch(`${B}/webhook/sira`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ i }) })));
+  let items;
+  for (let k = 0; k < 50; k++) { ({ items } = await api('GET', `/api/executions?workflowId=${w.id}`)); if (items.length === 3 && items.every(x => x.status !== 'running')) break; await sleep(100); }
+  assert.ok(Date.now() - t0 >= 1150, `sırayla çalışmalı (${Date.now() - t0} ms)`);
+  const runs = await Promise.all(items.map(x => api('GET', `/api/executions/${x.id}`)));
+  runs.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  for (let k = 1; k < runs.length; k++) assert.ok(runs[k].startedAt >= runs[k - 1].stoppedAt, 'çalıştırmalar üst üste binmemeli');
+  await api('PUT', `/api/workflows/${w.id}`, { active: false });
+  const d = await api('POST', `/api/executions/${runs[2].id}/debug`, {});
+  const pinned = (await api('GET', `/api/workflows/${w.id}`)).nodes.find(n => n.type === 'webhook').pinData;
+  assert.equal(d.items, 1); assert.deepEqual(pinned[0].body, runs[2].triggerData.request.body);
+});
+
 test('Özet: çalıştırma sayıları, başarı oranı ve sık hatalar', async () => {
   const st = await api('GET', '/api/stats?days=7');
   assert.ok(st.toplam > 10 && st.basarili > 0 && st.hatali > 0, JSON.stringify(st).slice(0, 200));
@@ -905,6 +976,19 @@ const fakeServer = require('http').createServer((req, res) => {
     const body = JSON.parse(raw || '{}'); fakeClaude.calls.push({ headers: req.headers, body });
     const last = body.messages.at(-1);
     let content, stop = 'end_turn';
+    const schema = body.output_config?.format?.schema;
+    if (schema) { // structured output: classify picks the category named in the text, extract fills known fields
+      const text = String(last.content); const props = schema.properties; const o = {};
+      if (props.kategori || props.kategoriler) {
+        const en = (props.kategori || props.kategoriler.items).enum;
+        const hits = en.filter(c => text.toLocaleLowerCase('tr').includes(c.toLocaleLowerCase('tr')));
+        if (props.kategori) o.kategori = hits[0] || 'Diğer'; else o.kategoriler = hits;
+        o.gerekce = 'sahte';
+      } else for (const [k, p] of Object.entries(props)) o[k] = { ad: 'Ayşe Yılmaz', tutar: 1250.5, acil: true, urunler: ['kalem', 'defter'], teslim: '2026-11-03' }[k] ?? null;
+      fakeClaude.structured = (fakeClaude.structured || 0) + 1;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ id: 'msg_s', type: 'message', role: 'assistant', model: body.model, content: [{ type: 'text', text: JSON.stringify(o) }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 10, output_tokens: 5 } }));
+    }
     if (String(body.system || '').includes('NODE TÜRLERİ')) content = [{ type: 'text', text: '```json\n{"name":"Hava","nodes":[{"key":"a","type":"schedule","name":"Her sabah","params":{"mode":"cron","cron":"0 8 * * *"}},{"key":"b","type":"http","name":"Hava durumu","params":{"url":"https://api.open-meteo.com"}}],"edges":[["a",0,"b",0]],"notes":"Hazır"}\n```' }];
     else if (typeof last.content === 'string' && last.content.includes('kaç')) { content = [{ type: 'tool_use', id: 'tu_1', name: 'hesap_makinesi', input: { ifade: '6*7' } }]; stop = 'tool_use'; }
     else if (Array.isArray(last.content) && last.content[0]?.type === 'tool_result') content = [{ type: 'text', text: `Sonuç: ${JSON.parse(last.content[0].content).sonuc}` }];
