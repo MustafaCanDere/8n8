@@ -1,6 +1,6 @@
 {
   "name": "8n8",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "Bilgisayarınızda çalışan görsel iş akışı otomasyon programı",
   "main": "server.js",
   "bin": {
@@ -16,7 +16,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
     "mysql2": "^3.11.0",
-    "pg": "^8.13.0"
+    "pg": "^8.13.0",
+    "ssh2": "^1.17.0"
   },
   "license": "MIT"
 }

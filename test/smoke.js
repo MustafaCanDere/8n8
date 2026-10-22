@@ -1800,6 +1800,195 @@ test('Facebook sayfası ve Instagram: paylaş, fotoğraf, Instagram gönderisi, 
   assert.match(JSON.stringify(outOf(e, 'http')), /https ile başlamalı/);
 });
 
+test('SSH komutu (şifre ve anahtarla, stdin, çıkış kodu, zaman aşımı, parmak izi) ve SFTP (yükle, listele, indir, taşı, sil, klasör) (sahte sunucu)', async () => {
+  const base = { host: '127.0.0.1', port: String(fakeSsh.port), user: 'ali', fingerprint: '' };
+  const sc = await api('POST', '/api/credentials', { type: 'sshServer', name: 'ssh', data: { ...base, password: 'sifre' } });
+  const ok = await api('POST', '/api/credentials/test', { type: 'sshServer', id: sc.id, data: base });
+  assert.match(ok.message, /^Bağlanıldı: Linux sunucu1 · parmak izi SHA256:[A-Za-z0-9+/]{43}$/);
+  const fp = ok.message.split('parmak izi ')[1];
+  assert.match((await api('POST', '/api/credentials/test', { type: 'sshServer', data: { ...base, password: 'yanlis' } })).message, /SSH girişi başarısız/);
+  assert.match((await api('POST', '/api/credentials/test', { type: 'sshServer', id: sc.id, data: { ...base, fingerprint: 'SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' } })).message, /parmak izi kayıtlı olanla aynı değil/);
+  const kc = await api('POST', '/api/credentials', { type: 'sshServer', name: 'ssh-anahtar', data: { ...base, password: '', privateKey: sshKeys.client, fingerprint: fp } });
+  const w = await api('POST', '/api/workflows', wf('ssh', [
+    ['manual', { data: '[{"ad":"yedek"},{"ad":"log"}]' }],
+    ['ssh', { credential: kc.id, command: 'tar czf /srv/yedek/{{ $json.ad }}.tgz /var/www', timeout: 10, failOnCode: true, perItem: true }, { name: 'komut' }],
+    ['ssh', { credential: sc.id, command: 'cat', input: 'merhaba dünya', timeout: 10, failOnCode: true, perItem: false }, { name: 'girdi' }],
+    ['ssh', { credential: sc.id, command: 'exit 3', timeout: 10, failOnCode: false }, { name: 'kod' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(outOf(e, 'komut').map(x => [x.ad, x.cikti, x.kod]), [['yedek', 'çalıştı: tar czf /srv/yedek/yedek.tgz /var/www', 0], ['log', 'çalıştı: tar czf /srv/yedek/log.tgz /var/www', 0]]);
+  assert.deepEqual(outOf(e, 'girdi'), [{ cikti: 'MERHABA DÜNYA', hata: '', kod: 0 }]);
+  assert.deepEqual(outOf(e, 'kod'), [{ cikti: '', hata: 'disk dolu', kod: 3 }]);
+  const w2 = await api('POST', '/api/workflows', wf('ssh-hata', [['manual', {}], ['ssh', { credential: sc.id, command: 'exit 2', timeout: 10, failOnCode: true }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId)).error, /Komut 2 koduyla bitti: disk dolu/);
+  const w3 = await api('POST', '/api/workflows', wf('ssh-uzun', [['manual', {}], ['ssh', { credential: sc.id, command: 'sleep 100', timeout: 1, failOnCode: true }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${w3.id}/run`, {})).executionId)).error, /1 saniyede bitmedi/);
+
+  fs.mkdirSync(path.join(DATA, 'dosyalar'), { recursive: true }); const big = Buffer.alloc(300000, 'ş'); fs.writeFileSync(path.join(DATA, 'dosyalar', 'yedek.sql'), big);
+  const w4 = await api('POST', '/api/workflows', wf('sftp', [
+    ['manual', { data: '[{"dosya":"yedek.sql"}]' }],
+    ['sftp', { credential: kc.id, op: 'mkdir', remote: '/srv/gunluk' }, { name: 'klasor' }],
+    ['sftp', { credential: kc.id, op: 'upload', file: '{{ $json.dosya }}', remote: '/srv/gunluk/{{ $json.dosya }}' }, { name: 'yukle' }],
+    ['sftp', { credential: kc.id, op: 'list', dir: '/srv' }, { name: 'liste' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  const e4 = await waitExec((await api('POST', `/api/workflows/${w4.id}/run`, {})).executionId);
+  assert.equal(e4.status, 'success', e4.error);
+  assert.ok(fakeSsh.files.get('/srv/gunluk/yedek.sql').equals(big), 'dosya bozulmadan yüklenmeli');
+  assert.deepEqual(outOf(e4, 'yukle')[0].sftp, { yuklendi: '/srv/gunluk/yedek.sql', boyut: big.length });
+  assert.deepEqual(outOf(e4, 'liste').map(x => [x.ad, x.tur]), [['gunluk', 'klasor'], ['rapor.txt', 'dosya'], ['yedek', 'klasor']]);
+  const w5 = await api('POST', '/api/workflows', wf('sftp2', [
+    ['manual', {}],
+    ['sftp', { credential: kc.id, op: 'download', remote: '/srv/gunluk/yedek.sql', target: 'indirilen/yedek.sql' }, { name: 'indir' }],
+    ['sftp', { credential: kc.id, op: 'rename', remote: '/srv/rapor.txt', to: '/srv/yedek/rapor-eski.txt' }, { name: 'tasi' }],
+    ['sftp', { credential: kc.id, op: 'delete', remote: '/srv/gunluk/yedek.sql' }, { name: 'sil' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  const e5 = await waitExec((await api('POST', `/api/workflows/${w5.id}/run`, {})).executionId);
+  assert.equal(e5.status, 'success', e5.error);
+  assert.ok(fs.readFileSync(path.join(DATA, 'dosyalar', 'indirilen', 'yedek.sql')).equals(big));
+  assert.equal(outOf(e5, 'indir')[0].dosya, 'indirilen/yedek.sql');
+  assert.ok(fakeSsh.files.has('/srv/yedek/rapor-eski.txt') && !fakeSsh.files.has('/srv/gunluk/yedek.sql'));
+  const w6 = await api('POST', '/api/workflows', wf('sftp-yok', [['manual', {}], ['sftp', { credential: kc.id, op: 'download', remote: '/srv/yok.txt' }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${w6.id}/run`, {})).executionId)).error, /SFTP: "\/srv\/yok.txt" bulunamadı/);
+  // template: nightly backup over SSH, download with SFTP, report to Teams
+  const tm = await api('POST', '/api/credentials', { type: 'teamsWebhook', name: 'tm-yedek', data: { url: `http://127.0.0.1:${fakeClaude.port}/teams/hook1` } });
+  const tw = await api('POST', '/api/templates/sunucuYedek', {});
+  for (const n of tw.nodes) { if (n.type === 'ssh' || n.type === 'sftp') n.params.credential = sc.id; if (n.type === 'teams') n.params.credential = tm.id; }
+  await api('PUT', `/api/workflows/${tw.id}`, tw);
+  const et = await waitExec((await api('POST', `/api/workflows/${tw.id}/run`, {})).executionId);
+  assert.equal(et.status, 'success', et.error);
+  const gun = new Date().toISOString().slice(0, 10);
+  assert.ok(fs.readFileSync(path.join(DATA, 'dosyalar', 'yedekler', `yedek-${gun}.sql.gz`)).length === 4096);
+  assert.equal(fakeSsh.files.has(`/tmp/yedek-${gun}.sql.gz`), false, 'sunucudaki kopya silinmeli');
+  assert.deepEqual(fakeMore3.teams.at(-1).attachments[0].content.body.map(b => b.text || b.facts), ['Yedek alındı', `${gun} yedeği bilgisayara indirildi.`, [{ title: 'Boyut', value: '4 KB' }]]);
+});
+
+test('OpenAI uyumlu model, Teams, Brevo, Todoist ve NocoDB (sahte API)', async () => {
+  const B0 = `http://127.0.0.1:${fakeClaude.port}`;
+  const mk = async (type, data, test, msg) => { const c = await api('POST', '/api/credentials', { type, name: type, data }); if (msg) assert.match((await api('POST', '/api/credentials/test', { type, id: c.id, data: test })).message, msg); return c.id; };
+  const oa = await mk('openaiCompat', { baseUrl: `${B0}/oai/v1/`, apiKey: 'oai-key', model: 'gpt-4o-mini' }, { baseUrl: `${B0}/oai/v1/`, model: 'gpt-4o-mini' }, /^Bağlanıldı; 2 model$/);
+  assert.match((await api('POST', '/api/credentials/test', { type: 'openaiCompat', data: { baseUrl: `${B0}/oai/v1`, apiKey: 'x' } })).message, /Model \(401\): API anahtarı geçersiz/);
+  const tm = await mk('teamsWebhook', { url: `${B0}/teams/hook1` });
+  const bv = await mk('brevoApi', { apiKey: 'bv-key' }, {}, /Bağlanıldı: Dükkan A\.Ş\./);
+  const td = await mk('todoistApi', { token: 'td-key' }, {}, /Bağlanıldı; 2 proje/);
+  const nc = await mk('nocodbApi', { url: `${B0}/noco`, token: 'nc-key' }, { url: `${B0}/noco` }, /1 veritabanı/);
+  fs.mkdirSync(path.join(DATA, 'dosyalar'), { recursive: true }); fs.writeFileSync(path.join(DATA, 'dosyalar', 'fatura-1.pdf'), '%PDF-1.4 fatura');
+  const w = await api('POST', '/api/workflows', wf('karma', [
+    ['manual', { data: '[{"metin":"Kargo çok geç geldi","ad":"Ayşe","eposta":"ayse@ornek.com","telefon":"0532 111 22 33","tutar":450}]' }],
+    ['llm', { credential: oa, op: 'chat', model: '', system: 'Duyguyu bul', prompt: '{{ $json.metin }}', json: true, temperature: '0,2', maxTokens: '', output: 'analiz' }, { name: 'model' }],
+    ['llm', { credential: oa, op: 'chat', model: 'gpt-4o-mini', system: '', prompt: 'Merhaba {{ $json.ad }}', json: false, temperature: '', maxTokens: '50', output: 'cevap' }, { name: 'model2' }],
+    ['llm', { credential: oa, op: 'embed', model: 'text-embedding-3-small', prompt: '{{ $json.metin }}', output: 'vektor' }, { name: 'vektor' }],
+    ['teams', { credential: tm, title: '{{ $json.analiz.duygu === "olumsuz" ? "Olumsuz yorum" : "Yorum" }}', text: '{{ $json.ad }}: {{ $json.metin }}', facts: [{ key: 'Puan', value: '{{ $json.analiz.puan }}' }, { key: 'Tutar', value: '{{ $json.tutar }} TL' }], button: 'Siparişi aç', url: 'https://magazam.com/s/1', color: 'attention' }, { name: 'teams' }],
+    ['brevo', { credential: bv, op: 'email', senderName: 'Dükkan', senderEmail: 'bilgi@dukkan.com', to: '{{ $json.eposta }}', toName: '{{ $json.ad }}', subject: 'Özür dileriz', html: '<p>Merhaba {{ $json.ad }}</p>', templateId: '', attach: 'fatura-1.pdf' }, { name: 'eposta' }],
+    ['brevo', { credential: bv, op: 'contact', email: '{{ $json.eposta }}', attributes: [{ key: 'ad', value: '{{ $json.ad }}' }, { key: 'SMS', value: '' }], lists: '3, 7' }, { name: 'kisi' }],
+    ['brevo', { credential: bv, op: 'sms', sender: 'DUKKAN-MAGAZA', phone: '{{ $json.telefon }}', message: 'Siparişiniz yolda' }, { name: 'sms' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const body = k => fakeMore3.bodies.filter(([r]) => r === k).map(x => x[1]);
+  const chat = body('POST /oai/v1/chat/completions');
+  assert.deepEqual([chat[0].model, chat[0].temperature, chat[0].response_format, chat[0].messages[0]], ['gpt-4o-mini', 0.2, { type: 'json_object' }, { role: 'system', content: 'Duyguyu bul' }]);
+  assert.deepEqual([chat[1].max_tokens, chat[1].messages.length], [50, 1]);
+  const o = outOf(e, 'vektor')[0];
+  assert.deepEqual([o.analiz, o.cevap, o.vektor, o.model, o.token], [{ duygu: 'olumsuz', puan: 2 }, 'Cevap: Merhaba Ayşe', [0.25, -0.5, 0.125], 'gpt-4o-mini-2024', { girdi: 11, cikti: 4 }]);
+  const card = fakeMore3.teams.at(-1).attachments[0];
+  assert.equal(card.contentType, 'application/vnd.microsoft.card.adaptive');
+  assert.deepEqual(card.content.body.map(b => b.text || b.facts), ['Olumsuz yorum', 'Ayşe: Kargo çok geç geldi', [{ title: 'Puan', value: '2' }, { title: 'Tutar', value: '450 TL' }]]);
+  assert.equal(card.content.body[0].color, 'attention'); assert.deepEqual(card.content.actions, [{ type: 'Action.OpenUrl', title: 'Siparişi aç', url: 'https://magazam.com/s/1' }]);
+  const mail = body('POST /brevo/smtp/email')[0];
+  assert.deepEqual([mail.sender, mail.to, mail.subject, mail.htmlContent, mail.attachment], [{ name: 'Dükkan', email: 'bilgi@dukkan.com' }, [{ email: 'ayse@ornek.com', name: 'Ayşe' }], 'Özür dileriz', '<p>Merhaba Ayşe</p>', [{ name: 'fatura-1.pdf', content: Buffer.from('%PDF-1.4 fatura').toString('base64') }]]);
+  assert.deepEqual(body('POST /brevo/contacts')[0], { email: 'ayse@ornek.com', attributes: { AD: 'Ayşe' }, listIds: [3, 7], updateEnabled: true });
+  assert.deepEqual(outOf(e, 'kisi')[0].brevo, { kisiId: 501, yeni: true });
+  const sms = body('POST /brevo/transactionalSMS/sms')[0];
+  assert.deepEqual([sms.sender, sms.recipient, sms.content, sms.unicodeEnabled], ['DUKKAN-MAGA', '905321112233', 'Siparişiniz yolda', true]);
+  const bad = await api('POST', '/api/workflows', wf('model-yok', [['manual', {}], ['llm', { credential: oa, op: 'chat', model: 'gpt-9', prompt: 'x' }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${bad.id}/run`, {})).executionId)).error, /Model \(404\): bulunamadı \(The model `gpt-9` does not exist\)/);
+
+  const w2 = await api('POST', '/api/workflows', wf('todoist', [
+    ['manual', { data: '[{"konu":"Faturayı kes"},{"konu":"Kargoyu ara"}]' }],
+    ['todoist', { credential: td, op: 'create', content: '{{ $json.konu }}', description: 'otomatik', due: 'yarın 10:00', priority: '4', labels: 'iş, acil', project: '' }, { name: 'ekle' }],
+  ], [[0, 1]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e2.status, 'success', e2.error);
+  assert.deepEqual(body('POST /todoist/tasks')[0], { content: 'Faturayı kes', description: 'otomatik', due_string: 'yarın 10:00', due_lang: 'tr', priority: 4, labels: ['iş', 'acil'] });
+  assert.deepEqual(outOf(e2, 'ekle').map(x => [x.id, x.tarih, x.oncelik]), [['6X1', '2026-10-23T07:00:00Z', 4], ['6X2', '2026-10-23T07:00:00Z', 4]]);
+  const w3 = await api('POST', '/api/workflows', wf('todoist2', [
+    ['manual', {}],
+    ['todoist', { credential: td, op: 'close', task: '6X1' }, { name: 'bitir' }],
+    ['todoist', { credential: td, op: 'comment', task: '6X2', text: 'Arandı' }, { name: 'yorum' }],
+    ['todoist', { credential: td, op: 'list', filter: '', project: '' }, { name: 'liste' }],
+    ['todoist', { credential: td, op: 'list', filter: 'today', project: '' }, { name: 'bugun' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4]]));
+  const e3 = await waitExec((await api('POST', `/api/workflows/${w3.id}/run`, {})).executionId);
+  assert.equal(e3.status, 'success', e3.error);
+  assert.equal(outOf(e3, 'yorum')[0].yorumId, 'cm9');
+  assert.deepEqual(outOf(e3, 'liste').map(x => x.gorev), ['Kargoyu ara']);
+  assert.equal(outOf(e3, 'bugun').length, 2);
+
+  const w4 = await api('POST', '/api/workflows', wf('noco', [
+    ['manual', { data: '[{"Ad":"Deniz","Durum":"yeni","Tutar":50}]' }],
+    ['nocodb', { credential: nc, table: 'mTBL1', op: 'list', where: 'Durum = yeni\nTutar > 100', sort: '-Tutar', limit: 10 }, { name: 'ara' }],
+    ['nocodb', { credential: nc, table: 'mTBL1', op: 'list', where: 'Ad ~ ş', sort: '', limit: 10 }, { name: 'icerir' }],
+    ['nocodb', { credential: nc, table: 'mTBL1', op: 'create', fields: [] }, { name: 'ekle' }],
+    ['nocodb', { credential: nc, table: 'mTBL1', op: 'update', id: '{{ $json.Id }}', fields: [{ key: 'Durum', value: 'işlendi' }] }, { name: 'guncelle' }],
+    ['nocodb', { credential: nc, table: 'mTBL1', op: 'delete', id: '2' }, { name: 'sil' }],
+  ], [[0, 1], [0, 2], [0, 3], [3, 4], [4, 5]]));
+  const e4 = await waitExec((await api('POST', `/api/workflows/${w4.id}/run`, {})).executionId);
+  assert.equal(e4.status, 'success', e4.error);
+  assert.deepEqual(outOf(e4, 'ara').map(x => x.Ad), ['Ece', 'Ayşe'], 'iki koşul, büyük tutar önce, sayfalı');
+  assert.deepEqual(outOf(e4, 'icerir').map(x => x.Ad), ['Ayşe']);
+  assert.deepEqual(outOf(e4, 'ekle')[0], { Ad: 'Deniz', Durum: 'yeni', Tutar: 50, Id: 4 });
+  assert.equal(fakeMore3.noco.find(x => x.Id === 4).Durum, 'işlendi');
+  assert.equal(fakeMore3.noco.some(x => x.Id === 2), false);
+});
+
+test('Google Dokümanlar: şablondan sözleşme + PDF, yeni belge, metin ekle, değiştir, oku; Jotform ve Typeform tetikleyicileri (sahte API)', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'googleOAuth', name: 'G-docs', data: { clientId: 'cid', clientSecret: 'sec', services: 'drive' } });
+  let r = await fetch(`${B}/oauth/start?cred=${cred.id}`, { redirect: 'manual' });
+  const loc = new URL(r.headers.get('location')); fakeG.challenge = loc.searchParams.get('code_challenge');
+  r = await fetch(`${B}/oauth/callback?code=kod1&state=${loc.searchParams.get('state')}`); assert.match(await r.text(), /Bağlandı/);
+  const w = await api('POST', '/api/workflows', wf('docs', [
+    ['manual', { data: '[{"ad":"Ayşe Yılmaz","tutar":"12.500","tarih":"22.10.2026","adres":{"il":"İzmir"}}]' }],
+    ['googleDocs', { credential: cred.id, op: 'template', template: 'https://docs.google.com/document/d/docTEMPLATE0000000000000001/edit', title: 'Sözleşme - {{ $json.ad }}', folder: '', values: [{ key: '{{tarih}}', value: '23.10.2026' }], pdf: true, pdfName: 'sozlesmeler/{{ $json.ad }}' }, { name: 'sablon' }],
+    ['googleDocs', { credential: cred.id, op: 'append', doc: '{{ $json.belgeLinki }}', text: 'Ek madde: teslim 7 gün.' }, { name: 'ekle' }],
+    ['googleDocs', { credential: cred.id, op: 'replace', doc: '{{ $json.belgeId }}', values: [{ key: 'SÖZLEŞME', value: 'HİZMET SÖZLEŞMESİ' }] }, { name: 'degistir' }],
+    ['googleDocs', { credential: cred.id, op: 'read', doc: '{{ $json.belgeId }}' }, { name: 'oku' }],
+    ['googleDocs', { credential: cred.id, op: 'create', title: 'Toplantı notları', folder: 'kl1', text: 'Gündem' }, { name: 'yeni' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const s = outOf(e, 'sablon')[0];
+  assert.deepEqual([s.belgeAdi, s.degisenYer, s.pdf.dosya], ['Sözleşme - Ayşe Yılmaz', 3, 'sozlesmeler/Ayşe Yılmaz.pdf']);
+  assert.match(fs.readFileSync(path.join(DATA, 'dosyalar', 'sozlesmeler', 'Ayşe Yılmaz.pdf'), 'utf8'), /Müşteri: Ayşe Yılmaz\nTutar: 12\.500 TL\nTarih: 23\.10\.2026/);
+  assert.equal(outOf(e, 'degistir')[0].degisenYer, 1);
+  assert.equal(outOf(e, 'oku')[0].metin, 'HİZMET SÖZLEŞMESİ\nMüşteri: Ayşe Yılmaz\nTutar: 12.500 TL\nTarih: 23.10.2026\n\nEk madde: teslim 7 gün.Ürün\tAdet');
+  const created = fakeMore3.bodies.find(([k]) => k === 'POST /drive/v3/files')[1];
+  assert.deepEqual(created, { name: 'Toplantı notları', mimeType: 'application/vnd.google-apps.document', parents: ['kl1'] });
+  assert.equal(fakeMore3.docs.get(outOf(e, 'yeni')[0].belgeId).text, 'Gündem');
+  assert.equal(fakeMore3.docs.get('docTEMPLATE0000000000000001').text.includes('{{ad}}'), true, 'şablon değişmemeli');
+
+  // Jotform + Typeform triggers: the first check remembers, later submissions start the workflow
+  const jf = await api('POST', '/api/credentials', { type: 'jotformApi', name: 'jf', data: { apiKey: 'jf-key', region: 'api' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'jotformApi', id: jf.id, data: { region: 'api' } })).message, /Bağlanıldı: Dükkan \(can@ornek\.com\)/);
+  assert.match((await api('POST', '/api/credentials/test', { type: 'jotformApi', data: { apiKey: 'x', region: 'api' } })).message, /API anahtarı geçersiz/);
+  const tf = await api('POST', '/api/credentials', { type: 'typeformApi', name: 'tf', data: { token: 'tf-key' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'typeformApi', id: tf.id, data: {} })).message, /Bağlanıldı: Dükkan/);
+  const t1 = await api('POST', '/api/workflows', wf('jf-tetik', [['jotformTrigger', { credential: jf.id, form: 'https://form.jotform.com/251234567890', every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  const t2 = await api('POST', '/api/workflows', wf('tf-tetik', [['typeformTrigger', { credential: tf.id, form: 'https://dukkan.typeform.com/to/AbC123', keys: 'title', every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${t1.id}`, { active: true }); await api('PUT', `/api/workflows/${t2.id}`, { active: true });
+  await sleep(1200);
+  fakeMore3.jf.push({ id: '5900000000000000002', created_at: '2026-10-22 10:00:00', ip: '1.2.3.4', status: 'ACTIVE', answers: { 3: { name: 'adSoyad', text: 'Ad Soyad', type: 'control_fullname', answer: { first: 'Ayşe', last: 'Yılmaz' } }, 4: { name: 'eposta', text: 'E-posta', type: 'control_email', answer: 'ayse@ornek.com' }, 5: { name: 'telefon', type: 'control_phone', answer: { area: '532', phone: '1112233', full: '(532) 111-2233' } }, 6: { name: 'baslik', type: 'control_head', text: 'Başvuru' }, 7: { name: 'urunler', type: 'control_checkbox', answer: ['Kupa', 'Tabak'] } } });
+  fakeMore3.tf.push({ response_id: 'r-new', submitted_at: '2026-10-22T10:00:00Z', hidden: { kaynak: 'instagram' }, calculated: { score: 7 }, answers: [{ field: { id: 'f1', type: 'short_text' }, type: 'text', text: 'Ayşe' }, { field: { id: 'f2', type: 'email' }, type: 'email', email: 'ayse@ornek.com' }, { field: { id: 'f3', type: 'multiple_choice' }, type: 'choice', choice: { label: 'Instagram' } }, { field: { id: 'f4', type: 'multiple_choice' }, type: 'choices', choices: { labels: ['Mutfak', 'Bahçe'] } }] });
+  await sleep(4800);
+  await api('PUT', `/api/workflows/${t1.id}`, { active: false }); await api('PUT', `/api/workflows/${t2.id}`, { active: false });
+  const j = await api('GET', `/api/executions?workflowId=${t1.id}`); assert.equal(j.items.length, 1, 'yalnız yeni Jotform gönderimi');
+  const jo = outOf(await waitExec(j.items[0].id), 'son')[0];
+  assert.deepEqual(jo, { gonderimId: '5900000000000000002', tarih: '2026-10-22 10:00:00', ip: '1.2.3.4', adSoyad: 'Ayşe Yılmaz', eposta: 'ayse@ornek.com', telefon: '(532) 111-2233', urunler: ['Kupa', 'Tabak'] });
+  const t = await api('GET', `/api/executions?workflowId=${t2.id}`); assert.equal(t.items.length, 1, 'yalnız yeni Typeform cevabı');
+  const to = outOf(await waitExec(t.items[0].id), 'son')[0];
+  assert.deepEqual(to, { cevapId: 'r-new', tarih: '2026-10-22T10:00:00Z', 'Adınız nedir?': 'Ayşe', 'e-posta adresiniz?': 'ayse@ornek.com', 'Bizi nereden duydunuz?': 'Instagram', 'İlgi alanları': ['Mutfak', 'Bahçe'], gizli: { kaynak: 'instagram' }, puan: 7 });
+});
+
 test('MCP aracı: Claude istemcisi akışı araç olarak listeler ve çağırır', async () => {
   const tok = await api('POST', '/api/credentials', { type: 'httpBearer', name: 'mcp-token', data: { token: 'mcp-gizli' } });
   const w = await api('POST', '/api/workflows', wf('mcp', [
@@ -2140,6 +2329,7 @@ const fakeServer = require('http').createServer((req, res) => {
   const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp], [/^\/(stripe|shop|woo|trello|jira|hubspot|mc|twilio|netgsm|tcmb|geo|meteo)\//, fakeBizApi], [/^\/(pushover\/|ntfy|iyzico\/|graphql|urun\.html)/, fakeMiscApi], [/^\/(es|supa|odoo|ty|parasut|ollama)(\/|$)/, fakeMoreApi]];
   if (req.url.startsWith('/s3/')) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeS3Api(req, res, Buffer.concat(ch))); }
   if (/^\/(dbx|graph-upload\/|graph\/me\/drive|pd\/|asana\/|cu\/|deepl\/|zd\/|meta\/)/.test(req.url)) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeWorkApi(req, res, Buffer.concat(ch))); }
+  if (/^\/(oai|teams|brevo|todoist|jotform|typeform|noco)\/|^\/v1\/documents\/|^\/drive\/v3\/files\/doc\w+\/(copy|export)|^\/drive\/v3\/files\?fields=id,name,webViewLink$/.test(req.url)) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeMore3Api(req, res, Buffer.concat(ch))); }
   for (const [re, fn] of routes) if (re.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fn(req, res, raw)); }
   if (/^\/(oauth-token|gmail\/|drive\/|upload\/|calendar\/)/.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleOAuth(req, res, raw)); }
   if (req.url === '/token' || req.url.startsWith('/v4/')) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleApi(req, res, raw)); }
@@ -2760,6 +2950,159 @@ function fakeWorkApi(req, res, rawBuf) {
   return json({ error: 'yok' }, 404);
 }
 
+/* fake SSH / SFTP server (ssh2): user ali with password "sifre" or the test RSA key; in-memory files */
+const sshKeys = (() => { const k = () => require('crypto').generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs1', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } }).privateKey; return { host: k(), client: k() }; })();
+const fakeSsh = { port: 0, cmds: [], files: new Map([['/srv/rapor.txt', Buffer.from('günlük rapor')]]), dirs: new Set(['/', '/srv', '/srv/yedek']), logins: 0 };
+const sshServer = (() => {
+  const { Server, utils } = require('ssh2');
+  const allowed = utils.parseKey(sshKeys.client);
+  const { STATUS_CODE: S, OPEN_MODE: O } = utils.sftp;
+  return new Server({ hostKeys: [sshKeys.host] }, client => {
+    client.on('authentication', ctx => {
+      if (ctx.username !== 'ali') return ctx.reject();
+      if (ctx.method === 'password' && ctx.password === 'sifre') { fakeSsh.logins++; return ctx.accept(); }
+      if (ctx.method === 'publickey' && ctx.key.algo === allowed.type && ctx.key.data.equals(allowed.getPublicSSH())) {
+        if (!ctx.signature) return ctx.accept();
+        if (allowed.verify(ctx.blob, ctx.signature, ctx.hashAlgo) === true) { fakeSsh.logins++; return ctx.accept(); }
+      }
+      ctx.reject(['password', 'publickey']);
+    }).on('ready', () => client.on('session', accept => {
+      const session = accept();
+      session.on('exec', (acc, rej, info) => {
+        const st = acc(); const cmd = info.command; fakeSsh.cmds.push(cmd);
+        if (cmd.startsWith('uname')) { st.write('Linux sunucu1\n'); return st.exit(0), st.end(); }
+        if (cmd === 'cat') { const ch = []; st.on('data', d => ch.push(d)); return st.on('end', () => { st.write(Buffer.concat(ch).toString().toUpperCase()); st.exit(0); st.end(); }); }
+        if (cmd.startsWith('exit ')) { st.stderr.write('disk dolu\n'); st.exit(Number(cmd.slice(5))); return st.end(); }
+        if (cmd.startsWith('sleep')) return; // never ends
+        if (cmd.startsWith('mysqldump')) { fakeSsh.dirs.add('/tmp'); fakeSsh.files.set(cmd.match(/> (\S+)$/)[1], Buffer.alloc(4096, 1)); }
+        if (cmd.startsWith('rm -f ')) fakeSsh.files.delete(cmd.slice(6));
+        st.write(`çalıştı: ${cmd}\n`); st.exit(0); st.end();
+      });
+      session.on('sftp', acc => {
+        const sftp = acc(); const handles = new Map(); let hn = 0;
+        const H = v => { const b = Buffer.alloc(4); b.writeUInt32BE(++hn); handles.set(hn, v); return b; };
+        const get = b => handles.get(b.readUInt32BE(0));
+        const attrs = p => fakeSsh.dirs.has(p) ? { mode: 0o040755, size: 4096, uid: 0, gid: 0, atime: 1761100000, mtime: 1761100000 } : { mode: 0o100644, size: fakeSsh.files.get(p).length, uid: 0, gid: 0, atime: 1761100000, mtime: 1761100000 };
+        const exists = p => fakeSsh.dirs.has(p) || fakeSsh.files.has(p);
+        sftp.on('OPEN', (id, p, flags) => {
+          const parent = path.posix.dirname(p);
+          if (flags & O.WRITE) { if (!fakeSsh.dirs.has(parent)) return sftp.status(id, S.NO_SUCH_FILE); fakeSsh.files.set(p, Buffer.alloc(0)); return sftp.handle(id, H({ p, w: true })); }
+          if (!fakeSsh.files.has(p)) return sftp.status(id, S.NO_SUCH_FILE);
+          sftp.handle(id, H({ p }));
+        });
+        sftp.on('WRITE', (id, h, off, data) => { const x = get(h); const cur = fakeSsh.files.get(x.p); const n = Buffer.alloc(Math.max(cur.length, off + data.length)); cur.copy(n); data.copy(n, off); fakeSsh.files.set(x.p, n); sftp.status(id, S.OK); });
+        sftp.on('READ', (id, h, off, len) => { const b = fakeSsh.files.get(get(h).p); if (off >= b.length) return sftp.status(id, S.EOF); sftp.data(id, b.subarray(off, off + len)); });
+        sftp.on('FSTAT', (id, h) => sftp.attrs(id, attrs(get(h).p)));
+        sftp.on('FSETSTAT', id => sftp.status(id, S.OK)); sftp.on('SETSTAT', id => sftp.status(id, S.OK));
+        sftp.on('CLOSE', (id, h) => { handles.delete(h.readUInt32BE(0)); sftp.status(id, S.OK); });
+        for (const ev of ['STAT', 'LSTAT']) sftp.on(ev, (id, p) => (exists(p) ? sftp.attrs(id, attrs(p)) : sftp.status(id, S.NO_SUCH_FILE)));
+        sftp.on('REALPATH', (id, p) => sftp.name(id, [{ filename: path.posix.resolve('/', p), longname: '', attrs: {} }]));
+        sftp.on('OPENDIR', (id, p) => (fakeSsh.dirs.has(p) ? sftp.handle(id, H({ dir: p, done: false })) : sftp.status(id, S.NO_SUCH_FILE)));
+        sftp.on('READDIR', (id, h) => {
+          const x = get(h); if (x.done) return sftp.status(id, S.EOF); x.done = true;
+          const kids = [...fakeSsh.dirs, ...fakeSsh.files.keys()].filter(k => k !== x.dir && path.posix.dirname(k) === x.dir);
+          sftp.name(id, kids.map(k => ({ filename: path.posix.basename(k), longname: path.posix.basename(k), attrs: attrs(k) })));
+        });
+        sftp.on('REMOVE', (id, p) => sftp.status(id, fakeSsh.files.delete(p) ? S.OK : S.NO_SUCH_FILE));
+        sftp.on('RENAME', (id, a, b) => { if (!fakeSsh.files.has(a)) return sftp.status(id, S.NO_SUCH_FILE); fakeSsh.files.set(b, fakeSsh.files.get(a)); fakeSsh.files.delete(a); sftp.status(id, S.OK); });
+        sftp.on('MKDIR', (id, p) => { if (exists(p)) return sftp.status(id, S.FAILURE); fakeSsh.dirs.add(p); sftp.status(id, S.OK); });
+      });
+    })).on('error', () => {});
+  });
+})();
+
+/* OpenAI-compatible model, Teams webhook, Brevo, Todoist, Jotform, Typeform, NocoDB, Google Docs */
+const fakeMore3 = { bodies: [], teams: [], docs: new Map([['docTEMPLATE0000000000000001', { title: 'Sözleşme şablonu', text: 'SÖZLEŞME\nMüşteri: {{ad}}\nTutar: {{tutar}} TL\nTarih: {{tarih}}\n' }]]), todo: [], noco: [{ Id: 1, Ad: 'Ayşe', Durum: 'yeni', Tutar: 120 }, { Id: 2, Ad: 'Can', Durum: 'eski', Tutar: 80 }, { Id: 3, Ad: 'Ece', Durum: 'yeni', Tutar: 300 }], jf: [{ id: '5900000000000000001', created_at: '2026-10-22 09:00:00', status: 'ACTIVE', answers: { 3: { name: 'adSoyad', text: 'Ad Soyad', type: 'control_fullname', answer: { first: 'Eski', last: 'Kayıt' } } } }], tf: [{ response_id: 'r-old', submitted_at: '2026-10-22T08:00:00Z', answers: [{ field: { id: 'f1', type: 'short_text' }, type: 'text', text: 'Eski' }] }] };
+function fakeMore3Api(req, res, rawBuf) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(o === undefined ? '' : JSON.stringify(o)); };
+  const u = new URL(req.url, 'http://x'); const p = u.pathname; const raw = rawBuf.toString();
+  const body = (() => { try { return JSON.parse(raw || 'null'); } catch { return null; } })();
+  const rec = () => fakeMore3.bodies.push([`${req.method} ${p}`, body]);
+  let m;
+  if (p.startsWith('/oai/')) {
+    if (req.headers.authorization !== 'Bearer oai-key') return json({ error: { message: 'Incorrect API key provided', type: 'invalid_request_error' } }, 401);
+    rec();
+    if (p === '/oai/v1/models') return json({ data: [{ id: 'gpt-4o-mini', owned_by: 'openai' }, { id: 'text-embedding-3-small', owned_by: 'openai' }] });
+    if (p === '/oai/v1/embeddings') return json({ data: [{ embedding: [0.25, -0.5, 0.125] }], model: body.model });
+    if (p === '/oai/v1/chat/completions') {
+      if (!['gpt-4o-mini'].includes(body.model)) return json({ error: { message: `The model \`${body.model}\` does not exist` } }, 404);
+      const last = body.messages.at(-1).content;
+      const content = body.response_format?.type === 'json_object' ? '```json\n{"duygu":"olumsuz","puan":2}\n```' : `Cevap: ${last}`;
+      return json({ id: 'c1', model: 'gpt-4o-mini-2024', choices: [{ index: 0, message: { role: 'assistant', content } }], usage: { prompt_tokens: 11, completion_tokens: 4 } });
+    }
+  }
+  if (p.startsWith('/teams/')) { if (p !== '/teams/hook1') return json({ error: { code: 'NotFound', message: 'not found' } }, 404); fakeMore3.teams.push(body); return json(undefined, 202); }
+  if (p.startsWith('/brevo/')) {
+    if (req.headers['api-key'] !== 'bv-key') return json({ code: 'unauthorized', message: 'Key not found' }, 401);
+    rec(); const r = p.slice(6);
+    if (r === '/account') return json({ email: 'can@ornek.com', companyName: 'Dükkan A.Ş.' });
+    if (r === '/smtp/email') { if (!body.sender?.email) return json({ code: 'invalid_parameter', message: 'sender is missing' }, 400); return json({ messageId: '<202610@smtp-relay.brevo.com>' }, 201); }
+    if (r === '/contacts') return body.email === 'mevcut@ornek.com' ? json(undefined, 204) : json({ id: 501 }, 201);
+    if (r === '/transactionalSMS/sms') return json({ reference: 'ab1', messageId: 1511882900176220, smsCount: 1, usedCredits: 0.7, remainingCredits: 100 }, 201);
+  }
+  if (p.startsWith('/todoist/')) {
+    if (req.headers.authorization !== 'Bearer td-key') return json({ error: 'Unauthorized' }, 401);
+    rec(); const r = p.slice(8); const T = fakeMore3.todo;
+    if (r === '/projects') return json({ results: [{ id: 'p1', name: 'Gelen kutusu' }, { id: 'p2', name: 'İş' }], next_cursor: null });
+    if (r === '/tasks' && req.method === 'POST') { const t = { id: `6X${T.length + 1}`, content: body.content, description: body.description || '', priority: body.priority, labels: body.labels || [], project_id: body.project_id || 'p1', checked: false, due: body.due_string ? { string: body.due_string, date: '2026-10-23', datetime: '2026-10-23T07:00:00Z', lang: body.due_lang } : null }; T.push(t); return json(t); }
+    if (r === '/tasks') { const all = T.filter(t => !t.checked); const cur = u.searchParams.get('cursor'); return json({ results: cur ? all.slice(1) : all.slice(0, 1), next_cursor: !cur && all.length > 1 ? 'k2' : null }); }
+    if (r === '/tasks/filter') return json({ results: u.searchParams.get('query') === 'today' && u.searchParams.get('lang') === 'tr' ? T.filter(t => t.due) : [], next_cursor: null });
+    if ((m = r.match(/^\/tasks\/(\w+)\/close$/))) { const t = T.find(x => x.id === m[1]); if (!t) return json({ error: 'Task not found' }, 404); t.checked = true; return json(undefined, 204); }
+    if (r === '/comments') return json({ id: 'cm9', content: body.content, task_id: body.task_id });
+  }
+  if (p.startsWith('/jotform/')) {
+    if (u.searchParams.get('apiKey') !== 'jf-key') return json({ responseCode: 401, message: "You're not authorized to use (/user) ", content: '' }, 401);
+    const r = p.slice(8);
+    if (r === '/user') return json({ responseCode: 200, content: { username: 'dukkan', name: 'Dükkan', email: 'can@ornek.com' } });
+    if (r === '/form/251234567890/submissions') return json({ responseCode: 200, content: [...fakeMore3.jf].reverse() });
+  }
+  if (p.startsWith('/typeform/')) {
+    if (req.headers.authorization !== 'Bearer tf-key') return json({ code: 'AUTHENTICATION_FAILED', description: 'Authentication credentials not found' }, 403);
+    const r = p.slice(9);
+    if (r === '/me') return json({ alias: 'Dükkan', email: 'can@ornek.com' });
+    if (r === '/forms/AbC123/responses') return json({ total_items: fakeMore3.tf.length, items: [...fakeMore3.tf].reverse() });
+    if (r === '/forms/AbC123') return json({ id: 'AbC123', fields: [{ id: 'f1', ref: 'ad', title: 'Adınız nedir?' }, { id: 'f2', ref: 'eposta', title: '{{field:ad}}, e-posta adresiniz?' }, { id: 'g', ref: 'grup', title: 'Grup', properties: { fields: [{ id: 'f3', ref: 'kanal', title: 'Bizi nereden duydunuz?' }, { id: 'f4', ref: 'ilgi', title: 'İlgi alanları' }] } }] });
+  }
+  if (p.startsWith('/noco/')) {
+    if (req.headers['xc-token'] !== 'nc-key') return json({ msg: 'Invalid token' }, 401);
+    rec(); const r = p.slice(5); const N = fakeMore3.noco;
+    if (r === '/api/v2/meta/bases/') return json({ list: [{ id: 'p1', title: 'Dükkan' }] });
+    if (r === '/api/v2/tables/mTBL1/records') {
+      if (req.method === 'GET') {
+        let list = [...N]; const w = u.searchParams.get('where');
+        if (w) for (const [, f, op, v] of w.matchAll(/\(([^,]+),(\w+),([^)]*)\)/g)) list = list.filter(x => op === 'eq' ? String(x[f]) === v : op === 'gt' ? x[f] > Number(v) : op === 'like' ? String(x[f]).toLowerCase().includes(v.replace(/%/g, '').toLowerCase()) : true);
+        if (u.searchParams.get('sort') === '-Tutar') list.sort((a, b) => b.Tutar - a.Tutar);
+        const lim = Number(u.searchParams.get('limit')), off = Number(u.searchParams.get('offset'));
+        const page = list.slice(off, off + Math.min(lim, 1)); // one row per page, to exercise paging
+        return json({ list: page, pageInfo: { totalRows: list.length, isLastPage: off + page.length >= list.length } });
+      }
+      if (req.method === 'POST') { const x = { Id: N.length + 1, ...body }; N.push(x); return json({ Id: x.Id }); }
+      if (req.method === 'PATCH') { const x = N.find(y => y.Id === body.Id); if (!x) return json({ msg: 'Record not found' }, 404); Object.assign(x, body); return json({ Id: x.Id }); }
+      if (req.method === 'DELETE') { const i = N.findIndex(y => y.Id === body.Id); if (i < 0) return json({ msg: 'Record not found' }, 404); N.splice(i, 1); return json({ Id: body.Id }); }
+    }
+    return json({ msg: 'Table not found' }, 404);
+  }
+  // Google Docs (+ the Drive calls it makes)
+  if (/^\/(v1\/documents|drive\/v3\/files)/.test(p)) {
+    if (!/^Bearer g-at[12]$/.test(req.headers.authorization || '')) return json({ error: { message: 'Invalid Credentials' } }, 401);
+    rec(); const D = fakeMore3.docs;
+    if ((m = p.match(/^\/drive\/v3\/files\/(\w+)\/copy$/))) { const src = D.get(m[1]); if (!src) return json({ error: { message: 'File not found' } }, 404); const id = `docCOPY${String(D.size).padStart(19, '0')}`; D.set(id, { title: body.name, text: src.text, parents: body.parents }); return json({ id, name: body.name, webViewLink: `https://docs.google.com/document/d/${id}/edit` }); }
+    if ((m = p.match(/^\/drive\/v3\/files\/(\w+)\/export$/))) { const d = D.get(m[1]); res.writeHead(200, { 'Content-Type': 'application/pdf' }); return res.end(`%PDF-1.4\n${d.text}\n%%EOF`); }
+    if (p === '/drive/v3/files' && req.method === 'POST') { const id = `docNEW${String(D.size).padStart(20, '0')}`; D.set(id, { title: body.name, text: '' }); return json({ id, name: body.name }); }
+    if ((m = p.match(/^\/v1\/documents\/(\w+):batchUpdate$/))) {
+      const d = D.get(m[1]); if (!d) return json({ error: { message: 'Requested entity was not found.' } }, 404);
+      const replies = body.requests.map(q => {
+        if (q.replaceAllText) { const t = q.replaceAllText.containsText.text; const n = d.text.split(t).length - 1; d.text = d.text.split(t).join(q.replaceAllText.replaceText); return { replaceAllText: n ? { occurrencesChanged: n } : {} }; }
+        if (q.insertText) { d.text += q.insertText.text; return {}; }
+        return {};
+      });
+      return json({ documentId: m[1], replies });
+    }
+    if ((m = p.match(/^\/v1\/documents\/(\w+)$/))) { const d = D.get(m[1]); if (!d) return json({ error: { message: 'Requested entity was not found.' } }, 404); return json({ documentId: m[1], title: d.title, body: { content: [{ sectionBreak: {} }, ...d.text.split(/(?<=\n)/).map(line => ({ paragraph: { elements: [{ textRun: { content: line } }] } })), { table: { tableRows: [{ tableCells: [{ content: [{ paragraph: { elements: [{ textRun: { content: 'Ürün\n' } }] } }] }, { content: [{ paragraph: { elements: [{ textRun: { content: 'Adet\n' } }] } }] }] }] } }] } }); }
+  }
+  return json({ error: 'yok' }, 404);
+}
+
 /* self-signed TLS server for the SSL check (CN=localhost, O=8n8 Test, valid until 2036) */
 const tlsServer = require('tls').createServer({
   key: '-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg/GIm/fbRLgtjYLos\nURWFa8DCJNlnZK26xybhJBJn3H2hRANCAATEk5LNlH9PDEuFH8GM9o/fKPS1HNrW\n/kIGjXsJUFUggDMNRSY5qYg3xi0VcE8Kv3gfgjTuRgkmrpTRSblvhTHe\n-----END PRIVATE KEY-----\n',
@@ -2869,8 +3212,9 @@ function fakeMoreApi(req, res, raw) {
   await new Promise(r => mongoServer.listen(0, '127.0.0.1', r)); fakeMongo.port = mongoServer.address().port;
   await new Promise(r => mqttServer.listen(0, '127.0.0.1', r)); fakeMqtt.port = mqttServer.address().port;
   await new Promise(r => tlsServer.listen(0, '127.0.0.1', r));
+  await new Promise(r => sshServer.listen(0, '127.0.0.1', r)); fakeSsh.port = sshServer.address().port;
   await new Promise(r => amqpServer.listen(0, '127.0.0.1', r)); fakeAmqp.port = amqpServer.address().port;
-  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, N8N8_DROPBOX_CONTENT: `http://127.0.0.1:${fakeClaude.port}/dbxc`, N8N8_DROPBOX_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-auth`, N8N8_DROPBOX_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-token`, ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut', DROPBOX: 'dbx', PIPEDRIVE: 'pd', ASANA: 'asana', CLICKUP: 'cu', DEEPL: 'deepl', ZENDESK: 'zd', META: 'meta' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, N8N8_DROPBOX_CONTENT: `http://127.0.0.1:${fakeClaude.port}/dbxc`, N8N8_DROPBOX_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-auth`, N8N8_DROPBOX_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-token`, ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut', DROPBOX: 'dbx', PIPEDRIVE: 'pd', ASANA: 'asana', CLICKUP: 'cu', DEEPL: 'deepl', ZENDESK: 'zd', META: 'meta', BREVO: 'brevo', TODOIST: 'todoist', JOTFORM: 'jotform', TYPEFORM: 'typeform' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0, ran = 0;
@@ -2879,7 +3223,7 @@ function fakeMoreApi(req, res, raw) {
     ran++;
     try { await fn(); console.log(`  ✓ ${name}`); } catch (e) { fail++; console.log(`  ✗ ${name}\n    ${e.message}`); }
   }
-  srv.kill(); fakeServer.close(); imapServer.close(); ftpServer.close(); redisServer.close(); mongoServer.close(); mqttServer.close(); tlsServer.close(); amqpServer.close();
+  srv.kill(); fakeServer.close(); imapServer.close(); ftpServer.close(); redisServer.close(); mongoServer.close(); mqttServer.close(); tlsServer.close(); amqpServer.close(); sshServer.close();
   fs.rmSync(DATA, { recursive: true, force: true });
   console.log(fail ? `\n${fail} test başarısız` : `\nTüm ${ran} test geçti`);
   process.exit(fail ? 1 : 0);
