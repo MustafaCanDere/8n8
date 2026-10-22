@@ -1545,6 +1545,261 @@ test('JWT, iki adımlı kod (TOTP), ağ kontrolü (site, SSL, port) ve Ollama (s
   assert.match((await waitExec((await api('POST', `/api/workflows/${g.id}/run`, {})).executionId)).error, /"qwen3" modeli yüklü değil; önce "ollama pull qwen3"/);
 });
 
+test('RabbitMQ: kuyruğa ve değişime gönder, kuyruktan al, boşalt; tetikleyici bağlanıp mesajları alır (sahte sunucu)', async () => {
+  const data = { host: '127.0.0.1', port: String(fakeAmqp.port), user: 'ali', vhost: '/', secure: 'false' };
+  const rc = await api('POST', '/api/credentials', { type: 'rabbitmq', name: 'rmq', data: { ...data, password: 'şifre1' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'rabbitmq', id: rc.id, data })).message, 'Bağlanıldı (vhost /)');
+  assert.match((await api('POST', '/api/credentials/test', { type: 'rabbitmq', data: { ...data, password: 'yanlis' } })).message, /girişi başarısız/);
+  assert.match((await api('POST', '/api/credentials/test', { type: 'rabbitmq', id: rc.id, data: { ...data, vhost: 'dukkan' } })).message, /"dukkan" sanal sunucusu/);
+  // trigger first: declares its queue and binds it to the topic exchange
+  const t = await api('POST', '/api/workflows', wf('rmq-tetik', [['rabbitmqTrigger', { credential: rc.id, queue: 'bildirimler', bind: 'olaylar', bindKey: 'siparis.*', max: 50, parse: true, every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${t.id}`, { active: true });
+  await sleep(1000);
+  const w = await api('POST', '/api/workflows', wf('rmq', [
+    ['manual', { data: '[{"siparisId":1,"tutar":450},{"siparisId":2,"tutar":99}]' }],
+    ['rabbitmq', { credential: rc.id, op: 'queue', queue: 'siparisler', message: '', durable: true }, { name: 'kuyruk' }],
+    ['rabbitmq', { credential: rc.id, op: 'exchange', exchange: 'olaylar', exchangeType: 'topic', routingKey: 'siparis.yeni', message: 'Sipariş {{ $json.siparisId }} · {{ $json.tutar }} TL', durable: true, headers: [{ key: 'kaynak', value: '8n8' }] }, { name: 'degisim' }],
+    ['rabbitmq', { credential: rc.id, op: 'exchange', exchange: 'olaylar', exchangeType: 'topic', routingKey: 'stok.az', message: 'yönlendirilmez', durable: true }, { name: 'baska' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(outOf(e, 'kuyruk')[0].rabbitmq, { gonderildi: true, anahtar: 'siparisler' });
+  const q1 = fakeAmqp.published.filter(x => x.key === 'siparisler');
+  assert.deepEqual(q1.map(x => [JSON.parse(x.body).siparisId, x.props.contentType, x.props.deliveryMode]), [[1, 'application/json', 2], [2, 'application/json', 2]]);
+  assert.equal(fakeAmqp.queues.get('siparisler').msgs.length, 2);
+  const w2 = await api('POST', '/api/workflows', wf('rmq-al', [
+    ['manual', {}],
+    ['rabbitmq', { credential: rc.id, op: 'get', queue: 'siparisler', max: 1, parse: true }, { name: 'al' }],
+    ['rabbitmq', { credential: rc.id, op: 'purge', queue: 'siparisler' }, { name: 'bosalt' }],
+  ], [[0, 1], [1, 2]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e2.status, 'success', e2.error);
+  const g = outOf(e2, 'al'); assert.equal(g.length, 1); assert.deepEqual([g[0].mesaj, g[0].kuyruk, g[0].yenidenTeslim], [{ siparisId: 1, tutar: 450 }, 'siparisler', false]);
+  assert.deepEqual(outOf(e2, 'bosalt'), [{ kuyruk: 'siparisler', silinen: 1 }]);
+  const yok = await api('POST', '/api/workflows', wf('rmq-yok', [['manual', {}], ['rabbitmq', { credential: rc.id, op: 'get', queue: 'olmayan', max: 1 }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${yok.id}/run`, {})).executionId)).error, /RabbitMQ: bulunamadı \(no queue 'olmayan'/);
+  await sleep(5000);
+  await api('PUT', `/api/workflows/${t.id}`, { active: false });
+  const { items } = await api('GET', `/api/executions?workflowId=${t.id}`);
+  assert.equal(items.length, 2, 'değişime giden iki mesaj tetikleyiciyi çalıştırmalı; stok.az bağlanmadı');
+  const got = [];
+  for (const x of items) got.push(outOf(await waitExec(x.id), 'son')[0]);
+  assert.deepEqual(got.map(x => x.mesaj).sort(), ['Sipariş 1 · 450 TL', 'Sipariş 2 · 99 TL']);
+  assert.deepEqual([got[0].degisim, got[0].kuyruk, got[0].basliklar], ['olaylar', 'siparis.yeni', { kaynak: '8n8' }]);
+  assert.equal(fakeAmqp.queues.get('bildirimler').msgs.length, 0, 'alınan mesajlar onaylanmalı');
+});
+
+test('Veritabanında yeni satır tetikleyicisi (SQLite): ilk kontrol yalnız hatırlar, sonra yeni satırlar gelir', async () => {
+  const cred = await api('POST', '/api/credentials', { type: 'sqlite', name: 'tetik-db', data: { file: 'tetik.db' } });
+  const kur = await api('POST', '/api/workflows', wf('db-kur', [
+    ['manual', {}],
+    ['database', { credential: cred.id, op: 'query', sql: 'CREATE TABLE siparis (id INTEGER PRIMARY KEY, musteri TEXT, tutar REAL)', params: '' }, { name: 'a' }],
+    ['database', { credential: cred.id, op: 'query', sql: "INSERT INTO siparis (musteri, tutar) VALUES ('Eski', 1)", params: '' }, { name: 'b' }],
+  ], [[0, 1], [1, 2]]));
+  assert.equal((await waitExec((await api('POST', `/api/workflows/${kur.id}/run`, {})).executionId)).status, 'success');
+  const t = await api('POST', '/api/workflows', wf('db-tetik', [['databaseTrigger', { credential: cred.id, table: 'siparis', column: 'id', limit: 100, every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${t.id}`, { active: true });
+  await sleep(1200);
+  const ekle = await api('POST', '/api/workflows', wf('db-ekle', [
+    ['manual', { data: '[{"musteri":"Ayşe","tutar":120.5},{"musteri":"Can","tutar":80}]' }],
+    ['database', { credential: cred.id, op: 'insert', table: 'siparis' }],
+  ], [[0, 1]]));
+  assert.equal((await waitExec((await api('POST', `/api/workflows/${ekle.id}/run`, {})).executionId)).status, 'success');
+  await sleep(5000);
+  await api('PUT', `/api/workflows/${t.id}`, { active: false });
+  const { items } = await api('GET', `/api/executions?workflowId=${t.id}`);
+  assert.equal(items.length, 2, 'yalnız sonradan eklenen iki satır');
+  const rows = []; for (const x of items) rows.push(outOf(await waitExec(x.id), 'son')[0]);
+  assert.deepEqual(rows.sort((a, b) => a.id - b.id), [{ id: 2, musteri: 'Ayşe', tutar: 120.5 }, { id: 3, musteri: 'Can', tutar: 80 }]);
+});
+
+test('Dropbox (OAuth, yükle, listele, indir, taşı, bağlantı, sil) ve OneDrive (yükle, büyük dosya, listele, indir, bağlantı, sil) (sahte API)', async () => {
+  const dc = await api('POST', '/api/credentials', { type: 'dropboxOAuth', name: 'DBX', data: { clientId: 'dbx-app', clientSecret: 'dbx-sec' } });
+  let r = await fetch(`${B}/oauth/start?cred=${dc.id}`, { redirect: 'manual' });
+  const loc = new URL(r.headers.get('location'));
+  assert.equal(loc.pathname, '/dbx-auth'); assert.equal(loc.searchParams.get('token_access_type'), 'offline'); assert.match(loc.searchParams.get('scope'), /files\.content\.write/);
+  r = await fetch(`${B}/oauth/callback?code=dkod&state=${loc.searchParams.get('state')}`);
+  assert.match(await r.text(), /Bağlandı/);
+  assert.equal((await api('GET', `/api/credentials/${dc.id}`)).account, 'can@ornek.com');
+  fs.mkdirSync(path.join(DATA, 'dosyalar'), { recursive: true }); fs.writeFileSync(path.join(DATA, 'dosyalar', 'teklif.txt'), 'Teklif: 1.250 TL');
+  const w = await api('POST', '/api/workflows', wf('dropbox', [
+    ['manual', { data: '[{"dosya":"teklif.txt","ad":"Müşteri teklifi ğüş.txt"}]' }],
+    ['dropbox', { credential: dc.id, op: 'upload', source: 'file', file: '{{ $json.dosya }}', path: '/Belgeler/{{ $json.ad }}', overwrite: true }, { name: 'yukle' }],
+    ['dropbox', { credential: dc.id, op: 'list', folder: 'Belgeler' }, { name: 'liste' }],
+    ['dropbox', { credential: dc.id, op: 'download', path: '{{ $json.yol }}', target: 'indirilen/{{ $json.ad }}' }, { name: 'indir' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  const e0 = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e0.status, 'success', e0.error);
+  const wb = await api('POST', '/api/workflows', wf('dropbox2', [
+    ['manual', {}],
+    ['dropbox', { credential: dc.id, op: 'move', path: '/Belgeler/fiyat.txt', to: '/Arşiv/fiyat.txt' }, { name: 'tasi' }],
+    ['dropbox', { credential: dc.id, op: 'link', path: '/Arşiv/fiyat.txt' }, { name: 'bag' }],
+    ['dropbox', { credential: dc.id, op: 'link', path: '/Arşiv/fiyat.txt' }, { name: 'bag2' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  const e1 = await waitExec((await api('POST', `/api/workflows/${wb.id}/run`, {})).executionId);
+  assert.equal(e1.status, 'success', e1.error);
+  const e = { nodes: { ...e0.nodes, ...e1.nodes } };
+  assert.equal(fakeWork.dbxArgs.path, '/Belgeler/Müşteri teklifi ğüş.txt', 'Türkçe ad ASCII başlıkla doğru gitmeli');
+  assert.equal(fakeWork.dbx.get('/Belgeler/Müşteri teklifi ğüş.txt').toString(), 'Teklif: 1.250 TL');
+  assert.deepEqual(outOf(e, 'yukle')[0].dropbox.boyut, 16);
+  assert.deepEqual(outOf(e, 'liste').map(x => x.ad), ['Müşteri teklifi ğüş.txt', 'fiyat.txt'], JSON.stringify(outOf(e, 'liste')));
+  assert.deepEqual(outOf(e, 'indir').map(x => x.dosya), ['indirilen/Müşteri teklifi ğüş.txt', 'indirilen/fiyat.txt']);
+  assert.equal(fs.readFileSync(path.join(DATA, 'dosyalar', 'indirilen', 'fiyat.txt'), 'utf8'), 'Fiyat listesi');
+  assert.equal(outOf(e, 'tasi')[0].dropbox.yol, '/Arşiv/fiyat.txt');
+  assert.equal(outOf(e, 'bag')[0].indirmeBaglantisi, 'https://www.dropbox.com/s/abc/fiyat.txt?dl=1');
+  assert.equal(outOf(e, 'bag2')[0].baglanti, 'https://www.dropbox.com/s/abc/fiyat.txt?dl=0', 'bağlantı zaten varsa mevcut bağlantı dönmeli');
+  const sil = await api('POST', '/api/workflows', wf('dbx-sil', [['manual', {}], ['dropbox', { credential: dc.id, op: 'delete', path: '/Belgeler/yok.txt' }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${sil.id}/run`, {})).executionId)).error, /Dropbox \(409\): dosya ya da klasör bulunamadı/);
+
+  // OneDrive with the Microsoft account
+  const mc = await api('POST', '/api/credentials', { type: 'microsoftOAuth', name: 'MS-OD', data: { clientId: 'mcid', clientSecret: 'msec', tenant: 'common' } });
+  r = await fetch(`${B}/oauth/start?cred=${mc.id}`, { redirect: 'manual' });
+  const ml = new URL(r.headers.get('location')); assert.match(ml.searchParams.get('scope'), /Files\.ReadWrite/);
+  await fetch(`${B}/oauth/callback?code=mkod&state=${ml.searchParams.get('state')}`);
+  const big = Buffer.alloc(5 * 1048576 + 123, 7); fs.writeFileSync(path.join(DATA, 'dosyalar', 'buyuk.bin'), big);
+  const w2 = await api('POST', '/api/workflows', wf('onedrive', [
+    ['manual', { data: '[{"dosya":"teklif.txt","ad":"teklif.txt"},{"dosya":"buyuk.bin","ad":"büyük.bin"}]' }],
+    ['onedrive', { credential: mc.id, op: 'upload', source: 'file', file: '{{ $json.dosya }}', path: 'Belgeler/{{ $json.ad }}' }, { name: 'yukle' }],
+    ['onedrive', { credential: mc.id, op: 'list', folder: 'Belgeler' }, { name: 'liste' }],
+    ['onedrive', { credential: mc.id, op: 'download', path: 'Belgeler/{{ $json.ad }}', target: 'od/{{ $json.ad }}' }, { name: 'indir' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  const e20 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e20.status, 'success', e20.error);
+  const w3 = await api('POST', '/api/workflows', wf('onedrive2', [
+    ['manual', {}],
+    ['onedrive', { credential: mc.id, op: 'link', path: 'Belgeler/teklif.txt', scope: 'organization' }, { name: 'bag' }],
+    ['onedrive', { credential: mc.id, op: 'delete', path: 'Belgeler/büyük.bin' }, { name: 'sil' }],
+  ], [[0, 1], [1, 2]]));
+  const e21 = await waitExec((await api('POST', `/api/workflows/${w3.id}/run`, {})).executionId);
+  assert.equal(e21.status, 'success', e21.error);
+  const e2 = { nodes: { ...e20.nodes, ...e21.nodes } };
+  assert.deepEqual(outOf(e2, 'yukle').map(x => [x.onedrive.ad, x.onedrive.boyut]), [['teklif.txt', 16], ['büyük.bin', big.length]]);
+  assert.equal(fakeWork.odSessions.get('s1').parts, 2, '5 MB üstü dosya parça parça yüklenmeli');
+  assert.deepEqual(outOf(e2, 'liste').map(x => [x.ad, x.yol]), [['büyük.bin', 'Belgeler/büyük.bin'], ['teklif.txt', 'Belgeler/teklif.txt']].map(([a, y]) => [a, `/${y}`]));
+  assert.ok(fs.readFileSync(path.join(DATA, 'dosyalar', 'od', 'büyük.bin')).equals(big));
+  assert.equal(outOf(e2, 'bag')[0].baglanti, 'https://1drv.ms/t/Belgeler%2Fteklif.txt');
+  assert.equal(fakeWork.od.has('Belgeler/büyük.bin'), false);
+});
+
+test('CRM ve iş takibi: Pipedrive, Asana, ClickUp, Zendesk (+tetikleyici); DeepL çeviri (sahte API)', async () => {
+  const mk = async (type, data, test, msg) => { const c = await api('POST', '/api/credentials', { type, name: type, data }); assert.match((await api('POST', '/api/credentials/test', { type, id: c.id, data: test })).message, msg); return c.id; };
+  const pd = await mk('pipedriveApi', { token: 'pd-key', domain: '' }, { domain: '' }, /Bağlanıldı: Can \(Dükkan A\.Ş\.\)/);
+  assert.match((await api('POST', '/api/credentials/test', { type: 'pipedriveApi', data: { token: 'x' } })).message, /API anahtarı geçersiz/);
+  const as = await mk('asanaApi', { token: 'as-key' }, {}, /Bağlanıldı: Can; çalışma alanları: Dükkan/);
+  const cu = await mk('clickupApi', { token: 'pk_cu' }, {}, /Bağlanıldı: can/);
+  const dl = await mk('deeplApi', { key: 'dl-key:fx' }, {}, /12\.345 \/ 500\.000 karakter/);
+  assert.match((await api('POST', '/api/credentials/test', { type: 'deeplApi', data: { key: 'yanlis' } })).message, /DeepL \(403\): API anahtarı geçersiz/);
+  const zd = await mk('zendeskApi', { subdomain: 'dukkan', email: 'can@ornek.com', token: 'zd-key' }, { subdomain: 'dukkan', email: 'can@ornek.com' }, /Bağlanıldı: Can \(admin\)/);
+  const w = await api('POST', '/api/workflows', wf('crm', [
+    ['manual', { data: '[{"ad":"Mevcut Kişi","eposta":"mevcut@ornek.com","tutar":"12.500,75"},{"ad":"Ali Veli","eposta":"ali@ornek.com","telefon":"05321112233","tutar":"300"}]' }],
+    ['pipedrive', { credential: pd, op: 'person', name: '{{ $json.ad }}', email: '{{ $json.eposta }}', phone: '{{ $json.telefon }}' }, { name: 'kisi' }],
+    ['pipedrive', { credential: pd, op: 'deal', title: '{{ $json.ad }} - teklif', value: '{{ $json.tutar }}', currency: 'TRY', personId: '{{ $json.kisiId }}' }, { name: 'firsat' }],
+    ['pipedrive', { credential: pd, op: 'note', dealId: '{{ $json.firsatId }}', note: 'Teklif gönderildi' }, { name: 'not' }],
+    ['pipedrive', { credential: pd, op: 'activity', dealId: '{{ $json.firsatId }}', subject: 'Ara', activityType: 'call', due: '2026-10-25' }, { name: 'akt' }],
+    ['pipedrive', { credential: pd, op: 'dealUpdate', dealId: '{{ $json.firsatId }}', status: 'won', stageId: '' }, { name: 'kazan' }],
+    ['pipedrive', { credential: pd, op: 'deals', dealStatus: 'won', max: 10 }, { name: 'kazanilan' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(outOf(e, 'kisi').map(x => [x.kisiId, x.yeniKisi]), [[5, false], [6, true]]);
+  const body = k => fakeWork.bodies.filter(([r]) => r === k).map(x => x[1]);
+  assert.deepEqual(body('POST /pd/persons')[0], { name: 'Ali Veli', email: [{ value: 'ali@ornek.com', primary: true }], phone: [{ value: '05321112233', primary: true }] });
+  assert.deepEqual(body('POST /pd/deals').map(b => [b.title, b.value, b.person_id]), [['Mevcut Kişi - teklif', 12500.75, 5], ['Ali Veli - teklif', 300, 6]]);
+  assert.deepEqual(outOf(e, 'firsat').map(x => [x.firsatId, x.kisi]), [[30, 'Mevcut Kişi'], [31, 'Ali Veli']]);
+  assert.deepEqual(body('POST /pd/activities')[0], { subject: 'Ara', type: 'call', due_date: '2026-10-25', deal_id: 30, person_id: 5 });
+  assert.deepEqual(outOf(e, 'kazanilan').map(x => [x.firsatId, x.durum]), [[30, 'won'], [31, 'won']]);
+  // template: form -> Pipedrive person, deal, note, call tomorrow -> ntfy
+  const nt = await api('POST', '/api/credentials', { type: 'ntfyApi', name: 'nt-crm', data: { server: `http://127.0.0.1:${fakeClaude.port}/ntfy`, token: 'tk_ntfy' } });
+  const tw = await api('POST', '/api/templates/formCrm', {});
+  for (const n of tw.nodes) { if (n.type === 'pipedrive') n.params.credential = pd; if (n.type === 'push') { n.params.ntfyCred = nt.id; n.params.topic = 'crm-x1'; } }
+  await api('PUT', `/api/workflows/${tw.id}`, tw);
+  const fr = await fetch(`${B}/form-test/teklif-iste`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ ad: 'Zeynep Ak', eposta: 'zeynep@ornek.com', telefon: '05551112233', tutar: '45000', mesaj: '20 kişilik ofis için yazılım' }).toString() });
+  assert.equal(fr.status, 200);
+  await sleep(300);
+  const te = await waitExec((await api('GET', `/api/executions?workflowId=${tw.id}`)).items[0].id);
+  assert.equal(te.status, 'success', te.error);
+  const lastAct = body('POST /pd/activities').at(-1);
+  assert.deepEqual([lastAct.subject, lastAct.deal_id, lastAct.person_id, lastAct.due_date], ['Zeynep Ak ile teklif görüşmesi', 32, 7, new Date(Date.now() + 86400000).toISOString().slice(0, 10)]);
+  assert.equal(body('POST /pd/notes').at(-1).content, '20 kişilik ofis için yazılım');
+  assert.equal(fakeMisc.pushes.at(-1).message, 'Zeynep Ak · 45000 TL · yeni kişi');
+
+  const w2 = await api('POST', '/api/workflows', wf('gorev', [
+    ['manual', { data: '[{"konu":"Kargo gecikti","metin":"Siparişim nerede? Çok bekledim."}]' }],
+    ['asana', { credential: as, op: 'create', project: 'https://app.asana.com/0/1209999999999999/list', name: '{{ $json.konu }}', notes: 'Müşteri yazdı', due: '2026-10-30', assignee: '' }, { name: 'asana' }],
+    ['asana', { credential: as, op: 'comment', task: '{{ $json.adres }}', text: 'Kargoya soruldu' }, { name: 'asanaYorum' }],
+    ['asana', { credential: as, op: 'complete', task: '{{ $json.id }}' }, { name: 'asanaBitir' }],
+    ['asana', { credential: as, op: 'list', project: '1209999999999999', open: false }, { name: 'asanaListe' }],
+    ['clickup', { credential: cu, op: 'create', list: '901', name: 'Kargo gecikti', description: 'x', priority: '2', due: '2026-10-30' }, { name: 'cu' }],
+    ['clickup', { credential: cu, op: 'status', task: '{{ $json.id }}', status: 'complete' }, { name: 'cuDurum' }],
+    ['clickup', { credential: cu, op: 'status', task: '{{ $json.id }}', status: 'yok-boyle' }, { name: 'cuHata', settings: { continueOnFail: true } }],
+    ['deepl', { credential: dl, op: 'translate', text: '{{ $json.metin || "Hello" }}', target: 'EN-US', source: '', formality: 'prefer_more', output: 'ingilizce' }, { name: 'ceviri' }],
+    ['deepl', { credential: dl, op: 'usage' }, { name: 'hak' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [0, 8], [8, 9]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e2.status, 'success', e2.error);
+  assert.deepEqual(body('POST /asana/tasks')[0].data, { name: 'Kargo gecikti', notes: 'Müşteri yazdı', projects: ['1209999999999999'], due_on: '2026-10-30' });
+  assert.equal(outOf(e2, 'asanaYorum')[0].yorumId, '9001');
+  assert.equal(outOf(e2, 'asanaBitir')[0].tamamlandi, true);
+  assert.equal(outOf(e2, 'asanaListe').length, 1);
+  const cb = body('POST /cu/list/901/task')[0]; assert.deepEqual([cb.priority, new Date(cb.due_date).toISOString(), cb.due_date_time], [2, '2026-10-30T14:00:00.000Z', false]);
+  assert.deepEqual([outOf(e2, 'cuDurum')[0].durum, outOf(e2, 'cuDurum')[0].oncelik], ['complete', 'high']);
+  assert.match(JSON.stringify(outOf(e2, 'cuHata')), /Status does not exist/);
+  assert.deepEqual([outOf(e2, 'ceviri')[0].ingilizce, outOf(e2, 'ceviri')[0].kaynakDil], ['[EN-US/prefer_more] Siparişim nerede? Çok bekledim.', 'TR']);
+  assert.deepEqual(outOf(e2, 'hak')[0], { kullanilan: 12345, sinir: 500000, kalan: 487655 });
+
+  // Zendesk: trigger remembers the old ticket, the new one starts the workflow
+  const t = await api('POST', '/api/workflows', wf('zd-tetik', [['zendeskTrigger', { credential: zd, every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${t.id}`, { active: true });
+  await sleep(1200);
+  const w3 = await api('POST', '/api/workflows', wf('zd', [
+    ['manual', { data: '[{"konu":"İade talebi","mesaj":"Ürünü iade etmek istiyorum","ad":"Ayşe","eposta":"ayse@ornek.com"}]' }],
+    ['zendesk', { credential: zd, op: 'create', subject: '{{ $json.konu }}', body: '{{ $json.mesaj }}', name: '{{ $json.ad }}', email: '{{ $json.eposta }}', priority: 'high', tags: 'iade, web' }, { name: 'ac' }],
+    ['zendesk', { credential: zd, op: 'update', ticket: '{{ $json.id }}', body: 'İade kodunuz: R-55', public: true, status: 'pending' }, { name: 'yanit' }],
+    ['zendesk', { credential: zd, op: 'get', ticket: '{{ $json.id }}' }, { name: 'getir' }],
+    ['zendesk', { credential: zd, op: 'search', query: 'status<solved', max: 10 }, { name: 'ara' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4]]));
+  const e3 = await waitExec((await api('POST', `/api/workflows/${w3.id}/run`, {})).executionId);
+  assert.equal(e3.status, 'success', e3.error);
+  assert.deepEqual(body('POST /zd/tickets.json')[0].ticket, { subject: 'İade talebi', comment: { body: 'Ürünü iade etmek istiyorum' }, priority: 'high', requester: { name: 'Ayşe', email: 'ayse@ornek.com' }, tags: ['iade', 'web'] });
+  assert.deepEqual(body('PUT /zd/tickets/101.json')[0], { ticket: { comment: { body: 'İade kodunuz: R-55', public: true }, status: 'pending' } });
+  const g = outOf(e3, 'getir')[0]; assert.deepEqual([g.id, g.durum, g.oncelik, g.adres], [101, 'pending', 'high', 'https://dukkan.zendesk.com/agent/tickets/101']);
+  assert.deepEqual(outOf(e3, 'ara').map(x => x.id), [100, 101]);
+  await sleep(4500);
+  await api('PUT', `/api/workflows/${t.id}`, { active: false });
+  const { items } = await api('GET', `/api/executions?workflowId=${t.id}`);
+  assert.equal(items.length, 1, 'yalnız yeni talep');
+  assert.equal(outOf(await waitExec(items[0].id), 'son')[0].konu, 'İade talebi');
+});
+
+test('Facebook sayfası ve Instagram: paylaş, fotoğraf, Instagram gönderisi, yorumlar ve yanıt (sahte API)', async () => {
+  const fb = await api('POST', '/api/credentials', { type: 'metaPage', name: 'fb', data: { pageId: '555', token: 'fb-token', igUserId: '' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'metaPage', id: fb.id, data: { pageId: '555', igUserId: '' } })).message, 'Sayfa: Dükkan Sayfası; Instagram hesabı bağlı');
+  assert.match((await api('POST', '/api/credentials/test', { type: 'metaPage', data: { pageId: '555', token: 'eski' } })).message, /süresi dolmuş ya da geçersiz/);
+  const w = await api('POST', '/api/workflows', wf('meta', [
+    ['manual', { data: '[{"metin":"Yeni sezon ürünleri geldi! 🎉","resim":"https://cdn.ornek.com/urun.jpg"}]' }],
+    ['facebook', { credential: fb.id, op: 'post', message: '{{ $json.metin }}', link: 'https://magazam.com' }, { name: 'paylas' }],
+    ['facebook', { credential: fb.id, op: 'photo', message: '{{ $json.metin }}', image: '{{ $json.resim }}' }, { name: 'foto' }],
+    ['facebook', { credential: fb.id, op: 'igPost', message: '{{ $json.metin }} #yenisezon', image: '{{ $json.resim }}' }, { name: 'ig' }],
+    ['facebook', { credential: fb.id, op: 'posts', platform: 'facebook', max: 5 }, { name: 'gonderiler' }],
+    ['facebook', { credential: fb.id, op: 'comments', postId: '{{ $json.id }}', platform: 'facebook', max: 5 }, { name: 'yorumlar' }],
+    ['facebook', { credential: fb.id, op: 'reply', commentId: '{{ $json.id }}', message: 'Merhaba {{ $json.yazan }}, fiyat 450 TL.', platform: 'facebook' }, { name: 'yanit' }],
+    ['facebook', { credential: fb.id, op: 'photo', message: 'x', image: 'http://guvensiz.com/a.jpg' }, { name: 'http', settings: { continueOnFail: true } }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [0, 7]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const call = (m, r) => fakeWork.meta.find(([a, b]) => a === m && b === r)?.[2];
+  assert.deepEqual([call('POST', '/555/feed').message, call('POST', '/555/feed').link], ['Yeni sezon ürünleri geldi! 🎉', 'https://magazam.com']);
+  assert.equal(outOf(e, 'paylas')[0].gonderiId, '555_1001');
+  assert.equal(outOf(e, 'foto')[0].gonderiId, '555_1002');
+  assert.deepEqual([call('POST', '/1789/media').image_url, call('POST', '/1789/media').caption], ['https://cdn.ornek.com/urun.jpg', 'Yeni sezon ürünleri geldi! 🎉 #yenisezon']);
+  assert.deepEqual(call('POST', '/1789/media_publish').creation_id, 'kap1');
+  assert.equal(outOf(e, 'ig')[0].gonderiId, 'ig900');
+  assert.deepEqual(outOf(e, 'yorumlar').map(x => [x.id, x.metin, x.yazan]), [['cm1', 'Fiyatı nedir?', 'Ali']]);
+  assert.equal(call('POST', '/cm1/comments').message, 'Merhaba Ali, fiyat 450 TL.');
+  assert.equal(outOf(e, 'yanit')[0].yanitId, 'yanit-cm1');
+  assert.match(JSON.stringify(outOf(e, 'http')), /https ile başlamalı/);
+});
+
 test('MCP aracı: Claude istemcisi akışı araç olarak listeler ve çağırır', async () => {
   const tok = await api('POST', '/api/credentials', { type: 'httpBearer', name: 'mcp-token', data: { token: 'mcp-gizli' } });
   const w = await api('POST', '/api/workflows', wf('mcp', [
@@ -1884,6 +2139,7 @@ const fakeServer = require('http').createServer((req, res) => {
   if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
   const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp], [/^\/(stripe|shop|woo|trello|jira|hubspot|mc|twilio|netgsm|tcmb|geo|meteo)\//, fakeBizApi], [/^\/(pushover\/|ntfy|iyzico\/|graphql|urun\.html)/, fakeMiscApi], [/^\/(es|supa|odoo|ty|parasut|ollama)(\/|$)/, fakeMoreApi]];
   if (req.url.startsWith('/s3/')) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeS3Api(req, res, Buffer.concat(ch))); }
+  if (/^\/(dbx|graph-upload\/|graph\/me\/drive|pd\/|asana\/|cu\/|deepl\/|zd\/|meta\/)/.test(req.url)) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeWorkApi(req, res, Buffer.concat(ch))); }
   for (const [re, fn] of routes) if (re.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fn(req, res, raw)); }
   if (/^\/(oauth-token|gmail\/|drive\/|upload\/|calendar\/)/.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleOAuth(req, res, raw)); }
   if (req.url === '/token' || req.url.startsWith('/v4/')) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleApi(req, res, raw)); }
@@ -2309,6 +2565,201 @@ const mqttServer = net.createServer(sock => {
   sock.on('close', () => fakeMqtt.clients.delete(me)); sock.on('error', () => {});
 });
 
+/* fake RabbitMQ (AMQP 0-9-1): one vhost "/", user ali / şifre1, queues, topic/direct/fanout exchanges, publisher confirms, basic.get with ack */
+const fakeAmqp = { port: 0, queues: new Map(), exchanges: new Map(), published: [], logins: 0 };
+const amqpServer = net.createServer(sock => {
+  const { table, Reader, encodeProps, decodeProps } = require('../lib/amqp');
+  const u8 = n => Buffer.from([n]); const u16 = n => { const b = Buffer.alloc(2); b.writeUInt16BE(n); return b; }; const u32 = n => { const b = Buffer.alloc(4); b.writeUInt32BE(n); return b; };
+  const u64 = n => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; };
+  const ss = s => { const b = Buffer.from(s); return Buffer.concat([u8(b.length), b]); }; const ls = s => { const b = Buffer.from(s); return Buffer.concat([u32(b.length), b]); };
+  const frame = (type, ch, p) => Buffer.concat([u8(type), u16(ch), u32(p.length), p, u8(0xce)]);
+  const method = (ch, cls, mth, args = Buffer.alloc(0)) => sock.write(frame(1, ch, Buffer.concat([u16(cls), u16(mth), args])));
+  const closeCh = (code, text) => method(1, 20, 40, Buffer.concat([u16(code), ss(text), u16(0), u16(0)]));
+  const topic = (pat, key) => new RegExp(`^${pat.split('.').map(w => w === '#' ? '.*' : w === '*' ? '[^.]+' : w.replace(/[^\w]/g, '\\$&')).join('\\.')}$`).test(key);
+  let buf = Buffer.alloc(0); let hdr = false; let pub = null; let confirm = false; let seq = 0; let tag = 0; const unacked = new Map();
+  method(0, 10, 10, Buffer.concat([u8(0), u8(9), table({ product: 'FakeRabbit' }), ls('PLAIN AMQPLAIN'), ls('en_US')]));
+  const route = (ex, key, props, body) => {
+    fakeAmqp.published.push({ ex, key, props, body: body.toString() });
+    const targets = ex === '' ? [key] : (fakeAmqp.exchanges.get(ex)?.binds || []).filter(b => { const t = fakeAmqp.exchanges.get(ex).type; return t === 'fanout' || (t === 'topic' ? topic(b.key, key) : b.key === key); }).map(b => b.q);
+    for (const q of targets) fakeAmqp.queues.get(q)?.msgs.push({ ex, key, props, body, redelivered: false });
+  };
+  const onMethod = (cls, mth, r) => {
+    if (cls === 10 && mth === 11) {
+      r.table(); r.shortstr(); const [, user, pass] = r.longstr().toString().split('\0');
+      if (user !== 'ali' || pass !== 'şifre1') { method(0, 10, 50, Buffer.concat([u16(403), ss('ACCESS_REFUSED - Login was refused using authentication mechanism PLAIN'), u16(0), u16(0)])); return sock.end(); }
+      fakeAmqp.logins++; method(0, 10, 30, Buffer.concat([u16(2047), u32(131072), u16(60)]));
+    } else if (cls === 10 && mth === 40) {
+      const vh = r.shortstr(); if (vh !== '/') { method(0, 10, 50, Buffer.concat([u16(530), ss(`NOT_ALLOWED - vhost ${vh} not found`), u16(0), u16(0)])); return sock.end(); }
+      method(0, 10, 41, ss(''));
+    } else if (cls === 20 && mth === 10) method(1, 20, 11, ls(''));
+    else if (cls === 85 && mth === 10) { confirm = true; method(1, 85, 11); }
+    else if (cls === 50 && mth === 10) {
+      r.u16(); const name = r.shortstr(); const f = r.u8(); const q = fakeAmqp.queues.get(name);
+      if (f & 1 && !q) return closeCh(404, `NOT_FOUND - no queue '${name}' in vhost '/'`);
+      if (q && !(f & 1) && q.durable !== !!(f & 2)) return closeCh(406, `PRECONDITION_FAILED - inequivalent arg 'durable' for queue '${name}' in vhost '/'`);
+      if (!q) fakeAmqp.queues.set(name, { durable: !!(f & 2), msgs: [] });
+      method(1, 50, 11, Buffer.concat([ss(name), u32(fakeAmqp.queues.get(name).msgs.length), u32(0)]));
+    } else if (cls === 40 && mth === 10) { r.u16(); const name = r.shortstr(); const type = r.shortstr(); if (!fakeAmqp.exchanges.has(name)) fakeAmqp.exchanges.set(name, { type, binds: [] }); method(1, 40, 11); }
+    else if (cls === 50 && mth === 20) { r.u16(); const q = r.shortstr(), ex = r.shortstr(), key = r.shortstr(); const x = fakeAmqp.exchanges.get(ex); if (!x.binds.some(b => b.q === q && b.key === key)) x.binds.push({ q, key }); method(1, 50, 21); }
+    else if (cls === 50 && mth === 30) { r.u16(); const q = fakeAmqp.queues.get(r.shortstr()); const n = q ? q.msgs.length : 0; if (q) q.msgs = []; method(1, 50, 31, u32(n)); }
+    else if (cls === 60 && mth === 40) { r.u16(); pub = { ex: r.shortstr(), key: r.shortstr(), size: null, chunks: [], got: 0 }; }
+    else if (cls === 60 && mth === 70) {
+      r.u16(); const name = r.shortstr(); const q = fakeAmqp.queues.get(name);
+      if (!q) return closeCh(404, `NOT_FOUND - no queue '${name}' in vhost '/'`);
+      const m = q.msgs.shift(); if (!m) return method(1, 60, 72, ss(''));
+      tag++; unacked.set(tag, { q: name, m });
+      method(1, 60, 71, Buffer.concat([u64(tag), u8(m.redelivered ? 1 : 0), ss(m.ex), ss(m.key), u32(q.msgs.length)]));
+      sock.write(frame(2, 1, Buffer.concat([u16(60), u16(0), u64(m.body.length), encodeProps(m.props)])));
+      if (m.body.length) sock.write(frame(3, 1, m.body));
+    } else if (cls === 60 && mth === 80) { const t = Number(r.u64()); const multi = r.u8(); for (const k of [...unacked.keys()]) if (k === t || (multi && k <= t)) unacked.delete(k); }
+    else if (cls === 20 && mth === 40) method(1, 20, 41);
+    else if (cls === 10 && mth === 50) { method(0, 10, 51); sock.end(); }
+  };
+  const published = () => { route(pub.ex, pub.key, pub.props, Buffer.concat(pub.chunks)); pub = null; if (confirm) method(1, 60, 80, Buffer.concat([u64(++seq), u8(0)])); };
+  sock.on('data', d => {
+    buf = Buffer.concat([buf, d]);
+    if (!hdr) { if (buf.length < 8) return; hdr = true; buf = buf.subarray(8); }
+    while (buf.length >= 8) {
+      const type = buf[0], size = buf.readUInt32BE(3); if (buf.length < size + 8) return;
+      const p = buf.subarray(7, 7 + size); buf = buf.subarray(size + 8);
+      if (type === 1) { const r = new Reader(p); onMethod(r.u16(), r.u16(), r); }
+      else if (type === 2 && pub) { const r = new Reader(p); r.u16(); r.u16(); pub.size = Number(r.u64()); pub.props = decodeProps(r); if (!pub.size) published(); }
+      else if (type === 3 && pub) { pub.chunks.push(Buffer.from(p)); pub.got += p.length; if (pub.got >= pub.size) published(); }
+    }
+  });
+  sock.on('close', () => { for (const { q, m } of [...unacked.values()].reverse()) fakeAmqp.queues.get(q)?.msgs.unshift({ ...m, redelivered: true }); unacked.clear(); });
+  sock.on('error', () => {});
+});
+
+/* Dropbox, OneDrive (Graph drive), Pipedrive, Asana, ClickUp, DeepL, Zendesk, Facebook / Instagram */
+const fakeWork = { dbx: new Map([['/Belgeler/fiyat.txt', Buffer.from('Fiyat listesi')]]), dbxLinks: new Set(), od: new Map(), odSessions: new Map(), bodies: [], pd: { persons: [{ id: 5, name: 'Mevcut Kişi', email: 'mevcut@ornek.com' }], deals: [] }, asana: [], cu: [], zd: [{ id: 100, subject: 'Eski talep', description: 'eski', status: 'open', priority: 'normal', created_at: '2026-10-01T10:00:00Z' }], meta: [] };
+function fakeWorkApi(req, res, rawBuf) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  const u = new URL(req.url, 'http://x'); const p = u.pathname; const raw = rawBuf.toString();
+  const body = (() => { try { return (req.headers['content-type'] || '').includes('json') ? JSON.parse(raw || 'null') : Object.fromEntries(new URLSearchParams(raw)); } catch { return {}; } })();
+  const rec = () => fakeWork.bodies.push([`${req.method} ${p}`, body]);
+  let m;
+  // ---- Dropbox
+  if (p === '/dbx-token') { const b = Object.fromEntries(new URLSearchParams(raw)); if (b.client_id !== 'dbx-app' || (b.grant_type === 'authorization_code' && b.code !== 'dkod')) return json({ error: 'invalid_grant' }, 400); return json({ access_token: 'dbx-at', refresh_token: 'dbx-rt', expires_in: 14400, token_type: 'bearer' }); }
+  if (p.startsWith('/dbx')) {
+    if (req.headers.authorization !== 'Bearer dbx-at') return json({ error_summary: 'invalid_access_token/' }, 401);
+    const arg = req.headers['dropbox-api-arg'] ? JSON.parse(req.headers['dropbox-api-arg']) : null;
+    if (arg && /[^\x20-\x7e]/.test(req.headers['dropbox-api-arg'])) return json({ error_summary: 'header ASCII olmalı' }, 400);
+    const nf = () => json({ error_summary: 'path/not_found/..', error: { '.tag': 'path' } }, 409);
+    const entry = k => ({ '.tag': 'file', name: k.split('/').pop(), path_display: k, path_lower: k.toLowerCase(), id: `id:${k}`, size: fakeWork.dbx.get(k).length, server_modified: '2026-10-22T10:00:00Z' });
+    if (p === '/dbxc/2/files/upload') { fakeWork.dbxArgs = arg; if (arg.mode !== 'overwrite' && fakeWork.dbx.has(arg.path)) return json({ error_summary: 'path/conflict/file/' }, 409); fakeWork.dbx.set(arg.path, rawBuf); return json({ ...entry(arg.path), '.tag': undefined }); }
+    if (p === '/dbxc/2/files/download') { if (!fakeWork.dbx.has(arg.path)) return nf(); res.writeHead(200, { 'Content-Type': 'application/octet-stream' }); return res.end(fakeWork.dbx.get(arg.path)); }
+    rec();
+    if (p === '/dbx/2/users/get_current_account') return json({ email: 'can@ornek.com', name: { display_name: 'Can' } });
+    if (p === '/dbx/2/files/list_folder') { const all = [...fakeWork.dbx.keys()].filter(k => k.startsWith(`${body.path}/`)).sort(); return json({ entries: all.slice(0, 1).map(entry), cursor: 'c2', has_more: all.length > 1 }); }
+    if (p === '/dbx/2/files/list_folder/continue') { const all = [...fakeWork.dbx.keys()].sort().filter(k => k.startsWith('/Belgeler/')); return json({ entries: all.slice(1).map(entry), cursor: 'c3', has_more: false }); }
+    if (p === '/dbx/2/files/move_v2') { if (!fakeWork.dbx.has(body.from_path)) return nf(); fakeWork.dbx.set(body.to_path, fakeWork.dbx.get(body.from_path)); fakeWork.dbx.delete(body.from_path); return json({ metadata: entry(body.to_path) }); }
+    if (p === '/dbx/2/files/delete_v2') { if (!fakeWork.dbx.has(body.path)) return nf(); fakeWork.dbx.delete(body.path); return json({ metadata: { name: 'x' } }); }
+    if (p === '/dbx/2/sharing/create_shared_link_with_settings') { if (fakeWork.dbxLinks.has(body.path)) return json({ error_summary: 'shared_link_already_exists/metadata/..' }, 409); fakeWork.dbxLinks.add(body.path); return json({ url: `https://www.dropbox.com/s/abc/${encodeURIComponent(body.path.split('/').pop())}?dl=0` }); }
+    if (p === '/dbx/2/sharing/list_shared_links') return json({ links: [{ url: `https://www.dropbox.com/s/abc/${encodeURIComponent(body.path.split('/').pop())}?dl=0` }] });
+    return json({ error_summary: 'yok' }, 404);
+  }
+  // ---- OneDrive
+  if ((m = p.match(/^\/graph-upload\/(\w+)$/))) {
+    const s = fakeWork.odSessions.get(m[1]); const [, a, b, total] = req.headers['content-range'].match(/bytes (\d+)-(\d+)\/(\d+)/).map(Number);
+    if (a !== s.got || rawBuf.length !== b - a + 1 || (rawBuf.length % 327680 && b + 1 !== total)) return json({ error: { message: 'parça hatalı' } }, 400);
+    s.chunks.push(rawBuf); s.got += rawBuf.length; s.parts++;
+    if (s.got < total) return json({ nextExpectedRanges: [`${s.got}-`] }, 202);
+    fakeWork.od.set(s.path, Buffer.concat(s.chunks)); return json({ id: 'OD-big', name: s.path.split('/').pop(), size: s.got, parentReference: { path: `/drive/root:/${s.path.split('/').slice(0, -1).join('/')}` }, file: {} }, 201);
+  }
+  if (p.startsWith('/graph/me/drive')) {
+    if (req.headers.authorization !== 'Bearer ms-at') return json({ error: { message: 'unauthorized' } }, 401);
+    const it = k => ({ id: `OD-${k}`, name: k.split('/').pop(), size: fakeWork.od.get(k).length, lastModifiedDateTime: '2026-10-22T10:00:00Z', webUrl: `https://onedrive.live.com/${k}`, parentReference: { path: `/drive/root:/${k.split('/').slice(0, -1).join('/')}` }, file: {} });
+    const q = decodeURIComponent(p.replace(/^\/graph\/me\/drive\/root/, ''));
+    if ((m = q.match(/^:\/(.+):\/content$/))) {
+      if (req.method === 'PUT') { fakeWork.od.set(m[1], rawBuf); return json(it(m[1]), 201); }
+      if (!fakeWork.od.has(m[1])) return json({ error: { message: 'itemNotFound' } }, 404);
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream' }); return res.end(fakeWork.od.get(m[1]));
+    }
+    if ((m = q.match(/^:\/(.+):\/createUploadSession$/))) { const id = `s${fakeWork.odSessions.size + 1}`; fakeWork.odSessions.set(id, { path: m[1], chunks: [], got: 0, parts: 0 }); return json({ uploadUrl: `http://127.0.0.1:${fakeClaude.port}/graph-upload/${id}` }); }
+    if ((m = q.match(/^:\/(.+):\/createLink$/))) { rec(); return json({ link: { webUrl: `https://1drv.ms/t/${encodeURIComponent(m[1])}`, scope: body.scope } }); }
+    if ((m = q.match(/^(?::\/(.+):)?\/children$/))) {
+      const dir = m[1] ? `${m[1]}/` : ''; const all = [...fakeWork.od.keys()].filter(k => k.startsWith(dir) && !k.slice(dir.length).includes('/')).sort();
+      if (u.searchParams.get('skip')) return json({ value: all.slice(1).map(it) });
+      return json({ value: all.slice(0, 1).map(it), ...(all.length > 1 ? { '@odata.nextLink': `http://127.0.0.1:${fakeClaude.port}${p}?skip=1` } : {}) });
+    }
+    if ((m = q.match(/^:\/(.+):$/)) && req.method === 'DELETE') { if (!fakeWork.od.delete(m[1])) return json({ error: { message: 'itemNotFound' } }, 404); res.writeHead(204); return res.end(); }
+    return json({ error: { message: 'yok ' + q } }, 400);
+  }
+  // ---- Pipedrive
+  if (p.startsWith('/pd/')) {
+    if (u.searchParams.get('api_token') !== 'pd-key') return json({ success: false, error: 'unauthorized access', errorCode: 401 }, 401);
+    rec(); const d = fakeWork.pd; const r = p.slice(3);
+    const deal = x => ({ ...x, person_id: x.person_id ? { value: x.person_id, name: d.persons.find(y => y.id === x.person_id)?.name } : null });
+    if (r === '/users/me') return json({ success: true, data: { name: 'Can', company_name: 'Dükkan A.Ş.' } });
+    if (r === '/persons/search') { const f = d.persons.filter(x => x.email === u.searchParams.get('term')); return json({ success: true, data: { items: f.map(item => ({ result_score: 1, item })) } }); }
+    if (r === '/persons' && req.method === 'POST') { const x = { id: 6 + d.persons.length - 1, name: body.name, email: body.email?.[0]?.value, phone: body.phone?.[0]?.value }; d.persons.push(x); return json({ success: true, data: x }, 201); }
+    if (r === '/deals' && req.method === 'POST') { const x = { id: 30 + d.deals.length, title: body.title, value: body.value, currency: body.currency, status: 'open', stage_id: 1, person_id: body.person_id, add_time: '2026-10-22 10:00:00' }; d.deals.push(x); return json({ success: true, data: deal(x) }, 201); }
+    if ((m = r.match(/^\/deals\/(\d+)$/))) { const x = d.deals.find(y => y.id === Number(m[1])); if (!x) return json({ success: false, error: 'Deal not found' }, 404); Object.assign(x, body); return json({ success: true, data: deal(x) }); }
+    if (r === '/deals') return json({ success: true, data: d.deals.filter(x => u.searchParams.get('status') === 'all_not_deleted' || x.status === u.searchParams.get('status')).map(deal) });
+    if (r === '/notes') return json({ success: true, data: { id: 70 } }, 201);
+    if (r === '/activities') return json({ success: true, data: { id: 80 } }, 201);
+    return json({ success: false, error: 'yok' }, 404);
+  }
+  // ---- Asana
+  if (p.startsWith('/asana/')) {
+    if (req.headers.authorization !== 'Bearer as-key') return json({ errors: [{ message: 'Not Authorized' }] }, 401);
+    rec(); const r = p.slice(6); const task = x => ({ gid: x.gid, name: x.name, completed: !!x.completed, due_on: x.due_on || null, assignee: x.assignee ? { name: x.assignee } : null, permalink_url: `https://app.asana.com/0/0/${x.gid}` });
+    if (r === '/users/me') return json({ data: { name: 'Can', workspaces: [{ gid: '1', name: 'Dükkan' }] } });
+    if (r === '/tasks' && req.method === 'POST') { const x = { gid: String(1200000000000001 + fakeWork.asana.length), ...body.data }; fakeWork.asana.push(x); return json({ data: task(x) }, 201); }
+    if ((m = r.match(/^\/tasks\/(\d+)$/))) { const x = fakeWork.asana.find(y => y.gid === m[1]); if (!x) return json({ errors: [{ message: 'task: Not a recognized ID' }] }, 404); Object.assign(x, body.data); return json({ data: task(x) }); }
+    if ((m = r.match(/^\/tasks\/(\d+)\/stories$/))) return json({ data: { gid: '9001', text: body.data.text } }, 201);
+    if ((m = r.match(/^\/projects\/(\d+)\/tasks$/))) { const all = fakeWork.asana.filter(x => !u.searchParams.has('completed_since') || !x.completed); const off = u.searchParams.get('offset'); return json({ data: (off ? all.slice(1) : all.slice(0, 1)).map(task), next_page: !off && all.length > 1 ? { offset: 'o2' } : null }); }
+    return json({ errors: [{ message: 'yok' }] }, 404);
+  }
+  // ---- ClickUp
+  if (p.startsWith('/cu/')) {
+    if (req.headers.authorization !== 'pk_cu') return json({ err: 'Token invalid', ECODE: 'OAUTH_025' }, 401);
+    rec(); const r = p.slice(3); const task = x => ({ id: x.id, name: x.name, status: { status: x.status }, priority: { priority: { 1: 'urgent', 2: 'high', 3: 'normal', 4: 'low' }[x.priority] }, due_date: x.due_date ? String(x.due_date) : null, url: `https://app.clickup.com/t/${x.id}` });
+    if (r === '/user') return json({ user: { username: 'can', email: 'can@ornek.com' } });
+    if ((m = r.match(/^\/list\/(\d+)\/task$/))) { if (req.method === 'GET') return json({ tasks: fakeWork.cu.map(task) }); const x = { id: `86a${fakeWork.cu.length + 1}`, ...body, status: 'to do' }; fakeWork.cu.push(x); return json(task(x)); }
+    if ((m = r.match(/^\/task\/(\w+)$/))) { const x = fakeWork.cu.find(y => y.id === m[1]); if (!['to do', 'complete'].includes(body.status)) return json({ err: 'Status does not exist', ECODE: 'CRTSK_001' }, 400); x.status = body.status; return json(task(x)); }
+    if ((m = r.match(/^\/task\/(\w+)\/comment$/))) return json({ id: 458, hist_id: 'h1' });
+    return json({ err: 'yok' }, 404);
+  }
+  // ---- DeepL
+  if (p.startsWith('/deepl/')) {
+    if (req.headers.authorization !== 'DeepL-Auth-Key dl-key:fx') return json({ message: 'Forbidden' }, 403);
+    rec();
+    if (p === '/deepl/v2/usage') return json({ character_count: 12345, character_limit: 500000 });
+    if (p === '/deepl/v2/translate') return json({ translations: body.text.map(t => ({ detected_source_language: /[ğışçöü]/i.test(t) ? 'TR' : 'EN', text: `[${body.target_lang}${body.formality ? `/${body.formality}` : ''}] ${t}` })) });
+    return json({ message: 'yok' }, 404);
+  }
+  // ---- Zendesk
+  if (p.startsWith('/zd/')) {
+    if (req.headers.authorization !== `Basic ${Buffer.from('can@ornek.com/token:zd-key').toString('base64')}`) return json({ error: 'Couldn\'t authenticate you' }, 401);
+    rec(); const r = p.slice(3); const t = x => ({ ...x, url: `https://dukkan.zendesk.com/api/v2/tickets/${x.id}.json` });
+    if (r === '/users/me.json') return json({ user: { id: 1, name: 'Can', role: 'admin' } });
+    if (r === '/tickets.json' && req.method === 'POST') { const x = { id: 100 + fakeWork.zd.length, subject: body.ticket.subject, description: body.ticket.comment.body, status: 'new', priority: body.ticket.priority, tags: body.ticket.tags || [], requester_id: 77, created_at: new Date().toISOString() }; fakeWork.zd.push(x); return json({ ticket: t(x) }, 201); }
+    if (r === '/tickets.json') return json({ tickets: [...fakeWork.zd].reverse().map(t) });
+    if ((m = r.match(/^\/tickets\/(\d+)\.json$/))) { const x = fakeWork.zd.find(y => y.id === Number(m[1])); if (!x) return json({ error: 'RecordNotFound', description: 'Not found' }, 404); if (req.method === 'PUT') { if (body.ticket.status) x.status = body.ticket.status; (x.comments ??= []).push(body.ticket.comment); } return json({ ticket: t(x) }); }
+    if (r === '/search.json') { const q = u.searchParams.get('query'); return json({ results: fakeWork.zd.filter(x => q.startsWith('type:ticket ') && (q.includes('status<solved') ? x.status !== 'solved' : true)).map(t) }); }
+    return json({ error: 'yok' }, 404);
+  }
+  // ---- Meta
+  if (p.startsWith('/meta/')) {
+    const tok = u.searchParams.get('access_token') || body.access_token;
+    if (tok !== 'fb-token') return json({ error: { message: 'Invalid OAuth access token - Cannot parse access token', type: 'OAuthException', code: 190 } }, 400);
+    const r = p.slice(5); fakeWork.meta.push([req.method, r, req.method === 'GET' ? Object.fromEntries(u.searchParams) : body]);
+    if (r === '/555') return json({ id: '555', name: 'Dükkan Sayfası', instagram_business_account: { id: '1789' } });
+    if (r === '/555/feed') return json({ id: '555_1001' });
+    if (r === '/555/photos') return json({ id: 'ph1', post_id: '555_1002' });
+    if (r === '/555/posts') return json({ data: [{ id: '555_1001', message: 'Merhaba', created_time: '2026-10-22T10:00:00+0000', permalink_url: 'https://facebook.com/555_1001' }] });
+    if (r === '/1789/media' && req.method === 'POST') return json({ id: 'kap1' });
+    if (r === '/kap1') return json({ status_code: 'FINISHED', id: 'kap1' });
+    if (r === '/1789/media_publish') return json({ id: 'ig900' });
+    if (r === '/555_1001/comments' && req.method === 'GET') return json({ data: [{ id: 'cm1', message: 'Fiyatı nedir?', from: { name: 'Ali' }, created_time: '2026-10-22T11:00:00+0000' }] });
+    if ((m = r.match(/^\/(\w+)\/(comments|replies)$/))) return json({ id: `yanit-${m[1]}` });
+    return json({ error: { message: 'Unsupported request ' + r, code: 100 } }, 400);
+  }
+  return json({ error: 'yok' }, 404);
+}
+
 /* self-signed TLS server for the SSL check (CN=localhost, O=8n8 Test, valid until 2036) */
 const tlsServer = require('tls').createServer({
   key: '-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg/GIm/fbRLgtjYLos\nURWFa8DCJNlnZK26xybhJBJn3H2hRANCAATEk5LNlH9PDEuFH8GM9o/fKPS1HNrW\n/kIGjXsJUFUggDMNRSY5qYg3xi0VcE8Kv3gfgjTuRgkmrpTRSblvhTHe\n-----END PRIVATE KEY-----\n',
@@ -2418,7 +2869,8 @@ function fakeMoreApi(req, res, raw) {
   await new Promise(r => mongoServer.listen(0, '127.0.0.1', r)); fakeMongo.port = mongoServer.address().port;
   await new Promise(r => mqttServer.listen(0, '127.0.0.1', r)); fakeMqtt.port = mqttServer.address().port;
   await new Promise(r => tlsServer.listen(0, '127.0.0.1', r));
-  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  await new Promise(r => amqpServer.listen(0, '127.0.0.1', r)); fakeAmqp.port = amqpServer.address().port;
+  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, N8N8_DROPBOX_CONTENT: `http://127.0.0.1:${fakeClaude.port}/dbxc`, N8N8_DROPBOX_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-auth`, N8N8_DROPBOX_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-token`, ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut', DROPBOX: 'dbx', PIPEDRIVE: 'pd', ASANA: 'asana', CLICKUP: 'cu', DEEPL: 'deepl', ZENDESK: 'zd', META: 'meta' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0, ran = 0;
@@ -2427,7 +2879,7 @@ function fakeMoreApi(req, res, raw) {
     ran++;
     try { await fn(); console.log(`  ✓ ${name}`); } catch (e) { fail++; console.log(`  ✗ ${name}\n    ${e.message}`); }
   }
-  srv.kill(); fakeServer.close(); imapServer.close(); ftpServer.close(); redisServer.close(); mongoServer.close(); mqttServer.close(); tlsServer.close();
+  srv.kill(); fakeServer.close(); imapServer.close(); ftpServer.close(); redisServer.close(); mongoServer.close(); mqttServer.close(); tlsServer.close(); amqpServer.close();
   fs.rmSync(DATA, { recursive: true, force: true });
   console.log(fail ? `\n${fail} test başarısız` : `\nTüm ${ran} test geçti`);
   process.exit(fail ? 1 : 0);
