@@ -1299,6 +1299,252 @@ test('Web sayfası oku, GraphQL, anlık bildirim, iyzico ve iş günü hesabı (
   assert.equal(l.find(x => x.tarih === '2026-03-20').gun, 'Cuma');
 });
 
+test('MongoDB (SCRAM girişi, getMore), MQTT gönder ve tetikleyici (sahte sunucular)', async () => {
+  const uri = `mongodb://ali:gizli@127.0.0.1:${fakeMongo.port}/magaza?authSource=admin`;
+  const mg = await api('POST', '/api/credentials', { type: 'mongoDb', name: 'mg', data: { uri } });
+  const bad = await api('POST', '/api/credentials/test', { type: 'mongoDb', data: { uri: uri.replace(':gizli@', ':yanlis@') } });
+  assert.equal(bad.ok, false); assert.match(bad.message, /kullanıcı adı ya da şifre yanlış/);
+  const w = await api('POST', '/api/workflows', wf('mongo', [
+    ['manual', { data: '[{"ad":"Ayşe","sehir":"İzmir","puan":5,"kayit":{"$date":"2026-01-02T03:04:05Z"}},{"ad":"Ali","sehir":"Bursa","puan":3},{"ad":"Can","sehir":"İzmir","puan":4}]' }],
+    ['mongodb', { credential: mg.id, op: 'insert', collection: 'musteriler' }, { name: 'ekle' }],
+    ['mongodb', { credential: mg.id, op: 'find', collection: 'musteriler', filter: '{}', sort: '', limit: 100 }, { name: 'hepsi' }],
+    ['mongodb', { credential: mg.id, op: 'find', collection: 'musteriler', filter: '{ "sehir": "İzmir", "puan": { "$gte": 4 } }', sort: '{ "puan": -1 }', projection: 'ad,puan', limit: 10 }, { name: 'bul' }],
+    ['mongodb', { credential: mg.id, op: 'update', collection: 'musteriler', filter: '{ "_id": "{{ $json._id }}" }', update: '{ "durum": "vip", "puan": {{ $json.puan + 1 }} }' }, { name: 'gunc' }],
+    ['mongodb', { credential: mg.id, op: 'count', collection: 'musteriler', filter: '{ "durum": "vip" }' }, { name: 'say' }],
+    ['mongodb', { credential: mg.id, op: 'aggregate', collection: 'musteriler', pipeline: '[{ "$group": { "_id": "$sehir", "adet": { "$sum": 1 } } }, { "$sort": { "adet": -1 } }]' }, { name: 'grup' }],
+    ['mongodb', { credential: mg.id, op: 'delete', collection: 'musteriler', filter: '{ "sehir": "{{ $json._id }}", "puan": 3 }' }, { name: 'sil' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.match((await api('POST', '/api/credentials/test', { type: 'mongoDb', id: mg.id, data: {} })).message, /Bağlanıldı \(magaza\); koleksiyonlar: musteriler/);
+  const hepsi = outOf(e, 'hepsi'); assert.equal(hepsi.length, 3, 'getMore ile üç belge');
+  assert.match(hepsi[0]._id, /^[0-9a-f]{24}$/); assert.equal(hepsi[0].kayit, '2026-01-02T03:04:05.000Z');
+  const M = require('../lib/mongo'); const stored = fakeMongo.cols.musteriler;
+  assert.ok(stored.every(d => d._id instanceof M.ObjectId)); assert.ok(stored.find(d => d.ad === 'Ayşe').kayit instanceof Date);
+  assert.deepEqual(outOf(e, 'bul').map(x => [x.ad, x.puan, 'sehir' in x]), [['Ayşe', 5, false], ['Can', 4, false]]);
+  assert.deepEqual(outOf(e, 'gunc').map(x => [x.eslesen, x.degisen]), [[1, 1], [1, 1]]);
+  assert.deepEqual([stored.find(d => d.ad === 'Ayşe').puan, stored.find(d => d.ad === 'Ayşe').durum], [6, 'vip']);
+  assert.equal(outOf(e, 'say')[0].adet, 2);
+  assert.deepEqual(outOf(e, 'grup').map(x => [x._id, x.adet]), [['İzmir', 2], ['Bursa', 1]]);
+  assert.deepEqual(outOf(e, 'sil').map(x => x.silinen), [0, 1]); assert.equal(fakeMongo.cols.musteriler.length, 2);
+  const w0 = await api('POST', '/api/workflows', wf('mongo-bos', [['manual', {}], ['mongodb', { credential: mg.id, op: 'delete', collection: 'musteriler', filter: '{}' }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${w0.id}/run`, {})).executionId)).error, /Filtre boş/);
+
+  // MQTT: publish, wrong password, and the trigger fires once per matching message
+  const mq = await api('POST', '/api/credentials', { type: 'mqttBroker', name: 'mq', data: { host: '127.0.0.1', port: String(fakeMqtt.port), user: 'ali', password: 'gizli', secure: 'false' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'mqttBroker', id: mq.id, data: { host: '127.0.0.1', port: String(fakeMqtt.port), user: 'ali', secure: 'false' } })).message, 'Bağlanıldı');
+  const mb = await api('POST', '/api/credentials/test', { type: 'mqttBroker', data: { host: '127.0.0.1', port: String(fakeMqtt.port), user: 'ali', password: 'x' } });
+  assert.match(mb.message, /reddedildi: yetkiniz yok/);
+  const t = await api('POST', '/api/workflows', wf('mqtt-tetik', [['mqttTrigger', { credential: mq.id, topics: 'ev/+/sicaklik, alarm/#', every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${t.id}`, { active: true });
+  await sleep(1300);
+  const p = await api('POST', '/api/workflows', wf('mqtt-gonder', [
+    ['manual', { data: '[{"oda":"salon","tur":"sicaklik","sicaklik":22.5},{"oda":"mutfak","tur":"nem","nem":40}]' }],
+    ['mqtt', { credential: mq.id, topic: 'ev/{{ $json.oda }}/{{ $json.tur }}', message: '', qos: '1', retain: false }, { name: 'gonder' }],
+    ['mqtt', { credential: mq.id, topic: 'alarm/kapi', message: 'açıldı', qos: '0', retain: true }, { name: 'alarm' }],
+  ], [[0, 1], [1, 2]]));
+  const ep = await waitExec((await api('POST', `/api/workflows/${p.id}/run`, {})).executionId);
+  assert.equal(ep.status, 'success', ep.error);
+  assert.deepEqual(fakeMqtt.published.map(x => [x.topic, x.qos, x.retain]), [['ev/salon/sicaklik', 1, false], ['ev/mutfak/nem', 1, false], ['alarm/kapi', 0, true], ['alarm/kapi', 0, true]]);
+  assert.deepEqual(JSON.parse(fakeMqtt.published[0].payload), { oda: 'salon', tur: 'sicaklik', sicaklik: 22.5 });
+  await sleep(4500);
+  await api('PUT', `/api/workflows/${t.id}`, { active: false });
+  const { items } = await api('GET', `/api/executions?workflowId=${t.id}`);
+  const got = await Promise.all(items.map(async x => outOf(await waitExec(x.id), 'son')[0]));
+  assert.deepEqual(got.map(x => [x.konu, x.mesaj]).sort((a, b) => a[0].localeCompare(b[0])), [['alarm/kapi', 'açıldı'], ['alarm/kapi', 'açıldı'], ['ev/salon/sicaklik', { oda: 'salon', tur: 'sicaklik', sicaklik: 22.5 }]]);
+});
+
+test('Elasticsearch, Supabase ve Odoo (sahte API)', async () => {
+  const B0 = `http://127.0.0.1:${fakeClaude.port}`;
+  const es = await api('POST', '/api/credentials', { type: 'elasticsearchApi', name: 'es', data: { url: `${B0}/es`, apiKey: 'es-key' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'elasticsearchApi', id: es.id, data: { url: `${B0}/es` } })).message, 'Bağlanıldı: Elasticsearch 8.15.0');
+  const sb = await api('POST', '/api/credentials', { type: 'supabaseApi', name: 'sb', data: { url: `${B0}/supa/`, key: 'supa-key' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'supabaseApi', id: sb.id, data: { url: `${B0}/supa/` } })).message, 'Bağlanıldı');
+  const od = await api('POST', '/api/credentials', { type: 'odooApi', name: 'od', data: { url: B0 + '/odoo', db: 'firma', user: 'admin@ornek.com', password: 'odoo-key' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'odooApi', id: od.id, data: { url: B0 + '/odoo', db: 'firma', user: 'admin@ornek.com' } })).message, /kullanıcı #7/);
+  const ob = await api('POST', '/api/credentials/test', { type: 'odooApi', data: { url: B0 + '/odoo', db: 'firma', user: 'admin@ornek.com', password: 'x' } });
+  assert.match(ob.message, /Odoo girişi başarısız/);
+  const w = await api('POST', '/api/workflows', wf('es-supa-odoo', [
+    ['manual', { data: '[{"id":"k1","ad":"Kırmızı Kupa","fiyat":225,"gizli":1},{"id":"k2","ad":"Mavi tabak","fiyat":120}]' }],
+    ['elasticsearch', { credential: es.id, op: 'index', index: 'urunler', id: '{{ $json.id }}', fields: 'ad,fiyat' }, { name: 'esEkle' }],
+    ['elasticsearch', { credential: es.id, op: 'search', index: 'urunler', text: 'kupa', query: '', size: 20 }, { name: 'esAra' }],
+    ['elasticsearch', { credential: es.id, op: 'update', index: 'urunler', id: '{{ $json._id }}', fields: 'fiyat' }, { name: 'esGunc' }],
+    ['elasticsearch', { credential: es.id, op: 'get', index: 'urunler', id: '{{ $json._id }}' }, { name: 'esGetir' }],
+    ['elasticsearch', { credential: es.id, op: 'delete', index: 'urunler', id: '{{ $json._id }}' }, { name: 'esSil' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const w2 = await api('POST', '/api/workflows', wf('supa-odoo', [
+    ['manual', { data: '[{"id":1,"musteri":"Ayşe","durum":"yeni"},{"id":2,"musteri":"Ali","durum":"hazir"},{"id":3,"musteri":"Alper","durum":"yeni"}]' }, { name: 'satirlar' }],
+    ['supabase', { credential: sb.id, op: 'insert', table: 'siparisler' }, { name: 'sEkle' }],
+    ['supabase', { credential: sb.id, op: 'select', table: 'siparisler', filter: 'durum = yeni', columns: '*', order: 'id.desc', limit: 1 }, { name: 'sOku' }],
+    ['supabase', { credential: sb.id, op: 'update', table: 'siparisler', filter: 'id = {{ $json.id }}', values: '{ "durum": "hazirlaniyor" }' }, { name: 'sGunc' }],
+    ['set', { fields: [{ key: 'id', value: '{{ 2 }}' }, { key: 'durum', value: 'kargoda' }], keep: false }],
+    ['supabase', { credential: sb.id, op: 'upsert', table: 'siparisler', onConflict: 'id' }, { name: 'sUpsert' }],
+    ['supabase', { credential: sb.id, op: 'delete', table: 'siparisler', filter: 'musteri ~ ayş' }, { name: 'sSil' }],
+    ['odoo', { credential: od.id, op: 'search', model: 'res.partner', domain: '[["is_company", "=", true]]', fieldNames: 'name,email,phone,country_id', limit: 10 }, { name: 'oAra' }],
+    ['odoo', { credential: od.id, op: 'create', model: 'crm.lead', values: '{ "name": "{{ $json.name }} fırsatı", "email_from": "{{ $json.email }}" }' }, { name: 'oEkle' }],
+    ['odoo', { credential: od.id, op: 'update', model: 'crm.lead', id: '{{ $json.id }}', values: '{ "priority": "2" }' }, { name: 'oGunc' }],
+    ['odoo', { credential: od.id, op: 'delete', model: 'crm.lead', id: '{{ $json.id }}' }, { name: 'oSil' }],
+  ], Array.from({ length: 10 }, (_, i) => [i, i + 1])));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e2.status, 'success', e2.error);
+  assert.deepEqual(outOf(e, 'esEkle').map(x => [x._id, x.sonuc]), [['k1', 'created'], ['k2', 'created']]);
+  assert.deepEqual(outOf(e, 'esAra').map(x => [x._id, x.ad, x._skor]), [['k1', 'Kırmızı Kupa', 1.2]]);
+  assert.equal(outOf(e, 'esGunc')[0].sonuc, 'updated');
+  assert.deepEqual(outOf(e, 'esGetir')[0], { _id: 'k1', ad: 'Kırmızı Kupa', fiyat: 225 });
+  assert.deepEqual(outOf(e, 'esSil')[0], { _id: 'k1', sonuc: 'deleted' }); assert.deepEqual(Object.keys(fakeMore.es.urunler), ['k2']);
+  assert.equal(outOf(e2, 'sEkle').length, 3);
+  assert.deepEqual(outOf(e2, 'sOku').map(x => x.id), [3]);
+  assert.deepEqual(outOf(e2, 'sGunc').map(x => [x.id, x.durum]), [[3, 'hazirlaniyor']]);
+  assert.deepEqual(outOf(e2, 'sUpsert').map(x => [x.id, x.musteri, x.durum]), [[2, 'Ali', 'kargoda']]);
+  assert.deepEqual(outOf(e2, 'sSil').map(x => x.musteri), ['Ayşe']);
+  assert.ok(fakeMore.supaQs.includes('GET ?select=*&durum=eq.yeni&order=id.desc&limit=1'), fakeMore.supaQs.join(' | '));
+  assert.ok(fakeMore.supaQs.includes('DELETE ?musteri=ilike.*ay%C5%9F*'), fakeMore.supaQs.join(' | '));
+  assert.deepEqual(outOf(e2, 'oAra')[0], { id: 14, name: 'Deco Ltd', email: 'info@deco.com', phone: null, country_id: { id: 224, ad: 'Türkiye' } });
+  assert.equal(outOf(e2, 'oEkle')[0].id, 51); assert.equal(outOf(e2, 'oGunc')[0].guncellendi, true); assert.deepEqual(outOf(e2, 'oSil')[0], { id: 51, silindi: true });
+  assert.deepEqual(fakeMore.odoo.filter(x => x[0] === 'object').map(x => [x[3], x[2]]), [['search_read', 'res.partner'], ['create', 'crm.lead'], ['write', 'crm.lead'], ['unlink', 'crm.lead']]);
+  assert.deepEqual(fakeMore.odoo.find(x => x[3] === 'create')[4], [{ name: 'Deco Ltd fırsatı', email_from: 'info@deco.com' }]);
+  const g = await api('POST', '/api/workflows', wf('supa-bos', [['manual', {}], ['supabase', { credential: sb.id, op: 'delete', table: 'siparisler', filter: '' }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${g.id}/run`, {})).executionId)).error, /Filtre boş/);
+});
+
+test('Trendyol (sipariş, paket durumu, fatura, stok, soru) + tetikleyici ve Paraşüt (müşteri, fatura, tahsilat, e-Arşiv) (sahte API)', async () => {
+  const ty = await api('POST', '/api/credentials', { type: 'trendyolApi', name: 'ty', data: { sellerId: '555', apiKey: 'ty-key', apiSecret: 'ty-secret', stage: 'false' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'trendyolApi', id: ty.id, data: { sellerId: '555', apiKey: 'ty-key', stage: 'false' } })).message, 'Bağlanıldı (canlı); 1 ürün');
+  const tb = await api('POST', '/api/credentials/test', { type: 'trendyolApi', data: { sellerId: '555', apiKey: 'ty-key', apiSecret: 'x' } });
+  assert.match(tb.message, /API Key ya da Secret yanlış/);
+  const w = await api('POST', '/api/workflows', wf('trendyol', [
+    ['manual', {}],
+    ['trendyol', { credential: ty.id, op: 'orders', status: 'Created', days: 7, max: 50 }, { name: 'sip' }],
+    ['trendyol', { credential: ty.id, op: 'status', packageId: '{{ $json.paketId }}', newStatus: 'Picking', lines: '{{ $json.urunler }}' }, { name: 'durum' }],
+    ['trendyol', { credential: ty.id, op: 'status', packageId: '{{ $json.paketId }}', newStatus: 'Invoiced', lines: '{{ $json.urunler }}', invoiceNumber: 'GIB2026000000001' }, { name: 'durum2' }],
+    ['trendyol', { credential: ty.id, op: 'invoice', packageId: '{{ $json.paketId }}', invoiceLink: 'https://f.com/{{ $json.siparisNo }}.pdf' }, { name: 'fatura' }],
+    ['trendyol', { credential: ty.id, op: 'stock', barcode: '{{ $json.urunler[0].barkod }}', quantity: '7', salePrice: '1.250,50', listPrice: '' }, { name: 'stok' }],
+    ['trendyol', { credential: ty.id, op: 'batch', batchId: '{{ $json.islemNo }}' }, { name: 'islem' }],
+    ['trendyol', { credential: ty.id, op: 'products', productBarcode: '869001' }, { name: 'urun' }],
+    ['trendyol', { credential: ty.id, op: 'questions', max: 10 }, { name: 'soru' }],
+    ['trendyol', { credential: ty.id, op: 'answer', questionId: '{{ $json.soruId }}', answer: 'Merhaba, bulaşık makinesinde yıkanabilir.' }, { name: 'cevap' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 9]]));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const o = outOf(e, 'sip')[0];
+  assert.deepEqual([o.paketId, o.siparisNo, o.musteri, o.tutar, o.adres.il, o.urunler[0].satirId, o.tarih], [3360001, '10561', 'Ayşe Yılmaz', 449.9, 'İstanbul', 77, '2025-10-20T22:40:00.000Z']);
+  assert.deepEqual(fakeMore.ty.status, [{ id: 3360001, lines: [{ lineId: 77, quantity: 1 }], params: {}, status: 'Picking' }, { id: 3360001, lines: [{ lineId: 77, quantity: 1 }], params: { invoiceNumber: 'GIB2026000000001' }, status: 'Invoiced' }]);
+  assert.deepEqual(fakeMore.ty.invoices, [{ invoiceLink: 'https://f.com/10561.pdf', shipmentPackageId: 3360001 }]);
+  assert.deepEqual(fakeMore.ty.stock, [{ barcode: '869001', quantity: 7, salePrice: 1250.5, listPrice: 1250.5 }]);
+  assert.deepEqual(outOf(e, 'islem')[0], { islemNo: 'b-123', durum: 'COMPLETED', toplam: 1, hatali: 0, hatalar: [] });
+  assert.equal(outOf(e, 'urun')[0].urun.stok, 7);
+  assert.deepEqual(outOf(e, 'soru').map(x => [x.soruId, x.soru]), [[901, 'Bulaşık makinesine girer mi?']]);
+  assert.deepEqual(fakeMore.ty.answers, [{ id: 901, text: 'Merhaba, bulaşık makinesinde yıkanabilir.' }]);
+  const kisa = await api('POST', '/api/workflows', wf('ty-kisa', [['manual', { data: '[{"soruId":1}]' }], ['trendyol', { credential: ty.id, op: 'answer', questionId: '1', answer: 'Evet' }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${kisa.id}/run`, {})).executionId)).error, /10-2000 karakter/);
+  // trigger: only the order added after the first check starts the workflow
+  const t = await api('POST', '/api/workflows', wf('ty-tetik', [['trendyolTrigger', { credential: ty.id, every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${t.id}`, { active: true });
+  await sleep(1300);
+  fakeMore.ty.orders.unshift({ id: 3360002, orderNumber: '10562', status: 'Created', customerFirstName: 'Mert', customerLastName: 'Kaya', totalPrice: 120, currencyCode: 'TRY', lines: [] });
+
+  // Paraşüt
+  const ps = await api('POST', '/api/credentials', { type: 'parasutApi', name: 'ps', data: { companyId: '777', clientId: 'pc', clientSecret: 'ps', user: 'muh@ornek.com', password: 'pp' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'parasutApi', id: ps.id, data: { companyId: '777', clientId: 'pc', user: 'muh@ornek.com' } })).message, /Giriş yapıldı; 0 müşteri/);
+  const pb = await api('POST', '/api/credentials/test', { type: 'parasutApi', data: { companyId: '777', clientId: 'pc', clientSecret: 'ps', user: 'muh@ornek.com', password: 'x' } });
+  assert.match(pb.message, /e-posta ya da şifre yanlış/);
+  const tokensBefore = fakeMore.parasut.tokens;
+  const w2 = await api('POST', '/api/workflows', wf('parasut', [
+    ['manual', { data: '[{"musteri":"Ayşe Yılmaz","eposta":"ayse@ornek.com","telefon":"05321112233","vergiNo":"11111111111","il":"İzmir","ilce":"Konak","adres":"Cumhuriyet Blv. 5","siparisNo":"S-1","urunler":[{"ad":"Kupa","adet":2,"fiyat":"100,50","kdv":20}]}]' }],
+    ['parasut', { credential: ps.id, op: 'contacts', search: '{{ $json.eposta }}' }, { name: 'ara' }],
+    ['parasut', { credential: ps.id, op: 'contact' }, { name: 'musteri' }],
+    ['parasut', { credential: ps.id, op: 'invoice', contactId: '{{ $json.id }}', lines: '{{ $json.urunler }}', issueDate: '2026-10-22', dueDays: 15, currency: 'TRL' }, { name: 'fatura' }],
+    ['parasut', { credential: ps.id, op: 'pay', invoiceId: '{{ $json.faturaId }}', accountId: '42', amount: '{{ $json.faturaTutari }}', issueDate: '2026-10-22' }, { name: 'tahsilat' }],
+    ['parasut', { credential: ps.id, op: 'formalize', invoiceId: '{{ $json.faturaId }}', internetSale: true, saleUrl: 'https://magazam.com' }, { name: 'resmi' }],
+    ['parasut', { credential: ps.id, op: 'invoices', max: 5 }, { name: 'liste' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6]]));
+  const e2 = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e2.status, 'success', e2.error);
+  assert.equal(outOf(e2, 'ara')[0].musteriBulundu, false);
+  const body = k => fakeMore.parasut.bodies.find(([r]) => r === k)?.[1];
+  assert.deepEqual(body('/contacts').data.attributes, { account_type: 'customer', name: 'Ayşe Yılmaz', email: 'ayse@ornek.com', phone: '05321112233', tax_number: '11111111111', city: 'İzmir', district: 'Konak', address: 'Cumhuriyet Blv. 5', contact_type: 'person' });
+  const inv = body('/sales_invoices').data;
+  assert.deepEqual([inv.attributes.issue_date, inv.attributes.due_date, inv.attributes.currency, inv.attributes.description, inv.relationships.contact.data.id], ['2026-10-22', '2026-11-06', 'TRL', 'Sipariş S-1', '501']);
+  assert.deepEqual(inv.relationships.details.data[0].attributes, { quantity: 2, unit_price: 100.5, vat_rate: 20, description: 'Kupa' });
+  assert.deepEqual([outOf(e2, 'fatura')[0].faturaId, outOf(e2, 'fatura')[0].faturaTutari, outOf(e2, 'fatura')[0].kdv], ['9001', 241.2, 40.2]);
+  assert.deepEqual(body('/sales_invoices/9001/payments').data.attributes, { account_id: 42, date: '2026-10-22', amount: 241.2 });
+  assert.deepEqual([outOf(e2, 'resmi')[0].resmiTur, outOf(e2, 'resmi')[0].isNo], ['e-Arşiv', 'job-1']);
+  assert.equal(body('/e_archives').data.attributes.internet_sale.url, 'https://magazam.com');
+  assert.deepEqual(outOf(e2, 'liste').map(x => [x.faturaId, x.musteri, x.tutar]), [['9001', 'Ayşe Yılmaz', 241.2]]);
+  assert.equal(fakeMore.parasut.tokens - tokensBefore, 0, 'jeton önbellekten kullanılmalı');
+
+  // template: Trendyol order -> Paraşüt invoice with VAT-inclusive prices -> e-Arşiv -> ntfy
+  const nt = await api('POST', '/api/credentials', { type: 'ntfyApi', name: 'nt-ty', data: { server: `http://127.0.0.1:${fakeClaude.port}/ntfy`, token: 'tk_ntfy' } });
+  const tw = await api('POST', '/api/templates/trendyolParasut', {});
+  for (const n of tw.nodes) { if (n.type === 'trendyolTrigger') n.params.credential = ty.id; if (n.type === 'parasut') n.params.credential = ps.id; if (n.type === 'push') { n.params.ntfyCred = nt.id; n.params.topic = 'magaza-x7k2'; } }
+  await api('PUT', `/api/workflows/${tw.id}`, tw);
+  const et = await waitExec((await api('POST', `/api/workflows/${tw.id}/run`, {})).executionId);
+  assert.equal(et.status, 'success', et.error);
+  const lastInv = fakeMore.parasut.bodies.filter(([r]) => r === '/sales_invoices').at(-1)[1].data;
+  assert.deepEqual(lastInv.relationships.details.data[0].attributes, { quantity: 1, unit_price: 374.9167, vat_rate: 20, description: 'Seramik Kupa' });
+  assert.equal(lastInv.attributes.description, 'Trendyol sipariş 10560000001');
+  assert.equal(fakeMisc.pushes.at(-1).message, '10560000001 · Ayşe Yılmaz · 449.9 TL');
+  await sleep(Math.max(0, 4500 - 0));
+  await api('PUT', `/api/workflows/${t.id}`, { active: false });
+  const { items } = await api('GET', `/api/executions?workflowId=${t.id}`);
+  assert.equal(items.length, 1, 'yalnız yeni sipariş akışı başlatmalı');
+  const x = outOf(await waitExec(items[0].id), 'son')[0]; assert.deepEqual([x.siparisNo, x.musteri, x.tutar], ['10562', 'Mert Kaya', 120]);
+});
+
+test('JWT, iki adımlı kod (TOTP), ağ kontrolü (site, SSL, port) ve Ollama (sahte API)', async () => {
+  const B0 = `http://127.0.0.1:${fakeClaude.port}`;
+  const jw = await api('POST', '/api/credentials', { type: 'jwtAuth', name: 'jw', data: { algorithm: 'HS256', secret: 'cok-gizli' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'jwtAuth', id: jw.id, data: { algorithm: 'HS256' } })).message, /imzalandı ve doğrulandı/);
+  const tp = await api('POST', '/api/credentials', { type: 'totpSecret', name: 'tp', data: { secret: 'JBSWY3DPEHPK3PXP', digits: '6', period: '30', algorithm: 'SHA1' } });
+  assert.match((await api('POST', '/api/credentials/test', { type: 'totpSecret', id: tp.id, data: { digits: '6', period: '30', algorithm: 'SHA1' } })).message, /şu anki kod \d{6}/);
+  const ol = await api('POST', '/api/credentials', { type: 'ollamaApi', name: 'ol', data: { url: `${B0}/ollama` } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'ollamaApi', id: ol.id, data: { url: `${B0}/ollama` } })).message, 'Bağlanıldı; modeller: llama3.2:latest');
+  const closed = net.createServer(); await new Promise(r => closed.listen(0, '127.0.0.1', r)); const closedPort = closed.address().port; await new Promise(r => closed.close(r));
+  const w = await api('POST', '/api/workflows', wf('araclar', [
+    ['manual', { data: '[{"id":"u1","ad":"Ayşe"}]' }],
+    ['jwt', { op: 'sign', credential: jw.id, payload: '{ "sub": "{{ $json.id }}", "ad": "{{ $json.ad }}" }', expires: 60, output: 'jwt' }, { name: 'imzala' }],
+    ['jwt', { op: 'verify', credential: jw.id, token: 'Bearer {{ $json.jwt }}', output: 'dogru' }, { name: 'dogrula' }],
+    ['jwt', { op: 'verify', credential: jw.id, token: '{{ $json.jwt }}x', output: 'bozuk' }, { name: 'bozuk' }],
+    ['jwt', { op: 'decode', token: '{{ $json.jwt }}', output: 'coz' }, { name: 'coz' }],
+    ['totp', { op: 'generate', credential: tp.id, output: 'totp' }, { name: 'kod' }],
+    ['totp', { op: 'verify', credential: tp.id, code: '{{ $json.totp.kod }}', output: 'kontrol' }, { name: 'kodDogru' }],
+    ['totp', { op: 'verify', credential: tp.id, code: '12345', output: 'kontrol2' }, { name: 'kodYanlis' }],
+    ['totp', { op: 'newSecret', account: 'ayse@ornek.com', issuer: 'Mağazam', output: 'yeni' }, { name: 'yeniAnahtar' }],
+    ['netCheck', { op: 'http', url: `${B0}/urun.html`, expect: 'Kırmızı Kupa', output: 'site' }, { name: 'site' }],
+    ['netCheck', { op: 'http', url: `${B0}/es/`, expect: '', output: 'site2' }, { name: 'site2' }],
+    ['netCheck', { op: 'ssl', host: 'localhost', port: String(tlsServer.address().port), output: 'ssl' }, { name: 'ssl' }],
+    ['netCheck', { op: 'port', host: '127.0.0.1', port: String(fakeMqtt.port), output: 'p1' }, { name: 'p1' }],
+    ['netCheck', { op: 'port', host: '127.0.0.1', port: String(closedPort), output: 'p2' }, { name: 'p2' }],
+    ['ollama', { credential: ol.id, op: 'chat', model: 'llama3.2', system: 'Kısa cevap ver.', prompt: 'Selam {{ $json.ad }}', temperature: 0.2, output: 'cevap' }, { name: 'sohbet' }],
+    ['ollama', { credential: ol.id, op: 'chat', model: 'llama3.2', system: '', prompt: 'Duygu?', json: true, output: 'analiz' }, { name: 'json' }],
+    ['ollama', { credential: ol.id, op: 'embed', model: 'llama3.2', prompt: 'kupa', output: 'vektor' }, { name: 'gomme' }],
+    ['ollama', { credential: ol.id, op: 'models' }, { name: 'modeller' }],
+  ], Array.from({ length: 17 }, (_, i) => [i, i + 1])));
+  const e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const tok = outOf(e, 'imzala')[0].jwt; assert.match(tok, /^eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[\w-]+\.[\w-]{43}$/);
+  const d = outOf(e, 'dogrula')[0].dogru; assert.deepEqual([d.gecerli, d.icerik.sub, d.icerik.ad, d.icerik.exp - d.icerik.iat], [true, 'u1', 'Ayşe', 3600]);
+  assert.deepEqual(outOf(e, 'bozuk')[0].bozuk, { gecerli: false, hata: 'İmza geçersiz' });
+  assert.equal(outOf(e, 'coz')[0].coz.baslik.alg, 'HS256');
+  const k = outOf(e, 'kodDogru')[0]; assert.match(k.totp.kod, /^\d{6}$/); assert.equal(k.kontrol.gecerli, true);
+  assert.equal(outOf(e, 'kodYanlis')[0].kontrol2.gecerli, false);
+  const yeni = outOf(e, 'yeniAnahtar')[0].yeni; assert.match(yeni.anahtar, /^[A-Z2-7]{32}$/); assert.ok(yeni.adres.startsWith('otpauth://totp/Ma%C4%9Fazam:ayse%40ornek.com?secret='));
+  const s = outOf(e, 'site')[0].site; assert.deepEqual([s.acik, s.durumKodu, s.metinVar], [true, 200, true]); assert.ok(s.sureMs >= 0);
+  assert.deepEqual([outOf(e, 'site2')[0].site2.acik, outOf(e, 'site2')[0].site2.durumKodu], [false, 401]);
+  const ssl = outOf(e, 'ssl')[0].ssl; assert.deepEqual([ssl.gecerli, ssl.konu, ssl.veren, ssl.alanlar, ssl.bitis.slice(0, 10)], [false, 'localhost', '8n8 Test', ['localhost'], '2036-10-19']);
+  assert.match(ssl.hata, /SELF_SIGNED/); assert.ok(ssl.kalanGun > 3000);
+  assert.equal(outOf(e, 'p1')[0].p1.acik, true); assert.deepEqual([outOf(e, 'p2')[0].p2.acik, outOf(e, 'p2')[0].p2.hata], [false, 'ECONNREFUSED']);
+  const so = outOf(e, 'sohbet')[0]; assert.equal(so.cevap, 'Merhaba! "Selam Ayşe" mesajını aldım.'); assert.deepEqual(so.ollama, { model: 'llama3.2', sureMs: 1500, girdiToken: 12, ciktiToken: 8 });
+  assert.deepEqual(fakeMore.ollama[0].messages, [{ role: 'system', content: 'Kısa cevap ver.' }, { role: 'user', content: 'Selam Ayşe' }]); assert.equal(fakeMore.ollama[0].options.temperature, 0.2);
+  assert.deepEqual(outOf(e, 'json')[0].analiz, { duygu: 'olumlu' }); assert.equal(fakeMore.ollama[1].format, 'json');
+  assert.deepEqual(outOf(e, 'gomme')[0].vektor, [0.1, -0.2, 0.3]);
+  assert.deepEqual(outOf(e, 'modeller')[0], { ad: 'llama3.2:latest', boyutMB: 1926, degisti: '2026-10-01T10:00:00Z', aile: 'llama', parametre: '3.2B' });
+  const g = await api('POST', '/api/workflows', wf('ollama-yok', [['manual', {}], ['ollama', { credential: ol.id, op: 'chat', model: 'qwen3', prompt: 'x' }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${g.id}/run`, {})).executionId)).error, /"qwen3" modeli yüklü değil; önce "ollama pull qwen3"/);
+});
+
 test('MCP aracı: Claude istemcisi akışı araç olarak listeler ve çağırır', async () => {
   const tok = await api('POST', '/api/credentials', { type: 'httpBearer', name: 'mcp-token', data: { token: 'mcp-gizli' } });
   const w = await api('POST', '/api/workflows', wf('mcp', [
@@ -1636,7 +1882,7 @@ function fakeTelegramApi(req, res) {
 }
 const fakeServer = require('http').createServer((req, res) => {
   if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
-  const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp], [/^\/(stripe|shop|woo|trello|jira|hubspot|mc|twilio|netgsm|tcmb|geo|meteo)\//, fakeBizApi], [/^\/(pushover\/|ntfy|iyzico\/|graphql|urun\.html)/, fakeMiscApi]];
+  const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp], [/^\/(stripe|shop|woo|trello|jira|hubspot|mc|twilio|netgsm|tcmb|geo|meteo)\//, fakeBizApi], [/^\/(pushover\/|ntfy|iyzico\/|graphql|urun\.html)/, fakeMiscApi], [/^\/(es|supa|odoo|ty|parasut|ollama)(\/|$)/, fakeMoreApi]];
   if (req.url.startsWith('/s3/')) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeS3Api(req, res, Buffer.concat(ch))); }
   for (const [re, fn] of routes) if (re.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fn(req, res, raw)); }
   if (/^\/(oauth-token|gmail\/|drive\/|upload\/|calendar\/)/.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleOAuth(req, res, raw)); }
@@ -1944,20 +2190,245 @@ function fakeMiscApi(req, res, raw) {
   return json({ error: 'yok' }, 404);
 }
 
+/* fake MongoDB: OP_MSG, SCRAM-SHA-256 login (ali / gizli), in-memory collections, small batches so getMore is used */
+const fakeMongo = { port: 0, cols: {}, logins: 0 };
+const mongoServer = net.createServer(sock => {
+  const B = require('../lib/mongo'); const crypto = require('crypto');
+  let buf = Buffer.alloc(0); let authed = false; let sc = null; const cursors = new Map(); let curSeq = 0;
+  const salt = crypto.randomBytes(16); const salted = crypto.pbkdf2Sync('gizli', salt, 4096, 32, 'sha256');
+  const hm = (k, d) => crypto.createHmac('sha256', k).update(d).digest(); const storedKey = crypto.createHash('sha256').update(hm(salted, 'Client Key')).digest();
+  const send = (to, doc) => { const body = B.encode(doc); const h = Buffer.alloc(21); h.writeInt32LE(21 + body.length, 0); h.writeInt32LE(1, 4); h.writeInt32LE(to, 8); h.writeInt32LE(2013, 12); h.writeUInt32LE(0, 16); h[20] = 0; sock.write(Buffer.concat([h, body])); };
+  const key = v => (v instanceof B.ObjectId ? `oid:${v}` : v instanceof Date ? `d:${v.getTime()}` : JSON.stringify(v));
+  const match = (d, q) => Object.entries(q).every(([k, c]) => {
+    const v = d[k];
+    if (c && typeof c === 'object' && !(c instanceof B.ObjectId) && !(c instanceof Date) && Object.keys(c).some(x => x.startsWith('$'))) return Object.entries(c).every(([op, x]) => (op === '$gt' ? v > x : op === '$gte' ? v >= x : op === '$lt' ? v < x : op === '$in' ? x.some(y => key(y) === key(v)) : op === '$ne' ? key(v) !== key(x) : false));
+    return key(v) === key(c);
+  });
+  const col = n => (fakeMongo.cols[n] ??= []);
+  const batch = (ns, docs) => { const first = docs.slice(0, 2); const rest = docs.slice(2); let id = 0; if (rest.length) { id = 2 ** 40 + ++curSeq; cursors.set(id, rest); } return { cursor: { id: id ? BigInt(id) : 0, ns, firstBatch: first }, ok: 1 }; };
+  const handle = cmd => {
+    const name = Object.keys(cmd)[0]; const db = cmd.$db;
+    if (/^(hello|isMaster|ismaster)$/.test(name)) return { isWritablePrimary: true, ismaster: true, helloOk: true, maxWireVersion: 21, minWireVersion: 0, maxBsonObjectSize: 16777216, maxMessageSizeBytes: 48000000, maxWriteBatchSize: 100000, localTime: new Date(), logicalSessionTimeoutMinutes: 30, connectionId: 1, ok: 1 };
+    if (name === 'saslStart') {
+      if (cmd.mechanism !== 'SCRAM-SHA-256') return { ok: 0, errmsg: `Unsupported mechanism ${cmd.mechanism}`, code: 334 };
+      const first = Buffer.from(cmd.payload).toString(); const bare = first.replace(/^n,,/, ''); const a = Object.fromEntries(bare.split(',').map(x => [x[0], x.slice(2)]));
+      const serverFirst = `r=${a.r}${crypto.randomBytes(12).toString('base64')},s=${salt.toString('base64')},i=4096`;
+      sc = { user: a.n, bare, serverFirst }; return { conversationId: 1, done: false, payload: Buffer.from(serverFirst), ok: 1 };
+    }
+    if (name === 'saslContinue') {
+      const fin = Buffer.from(cmd.payload).toString(); const without = fin.replace(/,p=[^,]*$/, ''); const proof = Buffer.from(fin.match(/,p=([^,]*)$/)[1], 'base64');
+      const authMsg = `${sc.bare},${sc.serverFirst},${without}`; const sig = hm(storedKey, authMsg); const clientKey = Buffer.from(proof.map((b, i) => b ^ sig[i]));
+      if (sc.user !== 'ali' || !crypto.createHash('sha256').update(clientKey).digest().equals(storedKey)) return { ok: 0, errmsg: 'Authentication failed.', code: 18, codeName: 'AuthenticationFailed' };
+      authed = true; fakeMongo.logins++; return { conversationId: 1, done: true, payload: Buffer.from(`v=${hm(hm(salted, 'Server Key'), authMsg).toString('base64')}`), ok: 1 };
+    }
+    if (/^(ping|endSessions|buildInfo)$/.test(name)) return { ok: 1 };
+    if (!authed) return { ok: 0, errmsg: 'command requires authentication', code: 13, codeName: 'Unauthorized' };
+    if (name === 'listCollections') return batch(`${db}.$cmd.listCollections`, Object.keys(fakeMongo.cols).map(n => ({ name: n, type: 'collection' })));
+    const c = ['insert', 'find', 'count', 'update', 'delete', 'aggregate'].includes(name) ? col(cmd[name]) : null;
+    if (name === 'insert') { for (const d of cmd.documents) { if (c.some(x => key(x._id) === key(d._id))) return { n: 0, writeErrors: [{ index: 0, code: 11000, errmsg: 'E11000 duplicate key error' }], ok: 1 }; c.push(d); } return { n: cmd.documents.length, ok: 1 }; }
+    if (name === 'find') {
+      let docs = c.filter(d => match(d, cmd.filter || {}));
+      if (cmd.sort) { const [[f, dir]] = Object.entries(cmd.sort); docs = [...docs].sort((a, b) => (a[f] > b[f] ? 1 : a[f] < b[f] ? -1 : 0) * dir); }
+      if (cmd.limit) docs = docs.slice(0, cmd.limit);
+      if (cmd.projection) docs = docs.map(d => Object.fromEntries(Object.entries(d).filter(([k]) => k === '_id' || cmd.projection[k])));
+      return batch(`${db}.${cmd.find}`, docs);
+    }
+    if (name === 'getMore') { const id = Number(cmd.getMore); const rest = cursors.get(id) || []; const next = rest.splice(0, 2); if (!rest.length) cursors.delete(id); return { cursor: { id: rest.length ? BigInt(id) : 0, ns: `${db}.${cmd.collection}`, nextBatch: next }, ok: 1 }; }
+    if (name === 'killCursors') return { cursorsKilled: cmd.cursors, ok: 1 };
+    if (name === 'count') return { n: c.filter(d => match(d, cmd.query || {})).length, ok: 1 };
+    if (name === 'update') {
+      let n = 0, nModified = 0; const upserted = [];
+      cmd.updates.forEach((u, i) => {
+        const hits = c.filter(d => match(d, u.q)).slice(0, u.multi ? undefined : 1);
+        const apply = d => { for (const [k, v] of Object.entries(u.u.$set || {})) d[k] = v; for (const [k, v] of Object.entries(u.u.$inc || {})) d[k] = (d[k] || 0) + v; };
+        if (!hits.length && u.upsert) { const d = { _id: new B.ObjectId(), ...Object.fromEntries(Object.entries(u.q).filter(([, v]) => typeof v !== 'object')) }; apply(d); c.push(d); upserted.push({ index: i, _id: d._id }); n++; }
+        for (const d of hits) { n++; nModified++; apply(d); }
+      });
+      return { n, nModified, ...(upserted.length ? { upserted } : {}), ok: 1 };
+    }
+    if (name === 'delete') { let n = 0; for (const d of cmd.deletes) { const hits = c.filter(x => match(x, d.q)).slice(0, d.limit ? 1 : undefined); n += hits.length; fakeMongo.cols[cmd.delete] = col(cmd.delete).filter(x => !hits.includes(x)); } return { n, ok: 1 }; }
+    if (name === 'aggregate') {
+      let docs = c;
+      for (const st of cmd.pipeline) {
+        if (st.$match) docs = docs.filter(d => match(d, st.$match));
+        if (st.$group) { const g = new Map(); const f = String(st.$group._id).replace(/^\$/, ''); for (const d of docs) { const k = d[f]; g.set(k, (g.get(k) || 0) + 1); } const out = Object.keys(st.$group).find(k => k !== '_id'); docs = [...g].map(([k, n]) => ({ _id: k, [out]: n })); }
+        if (st.$sort) { const [[f, dir]] = Object.entries(st.$sort); docs = [...docs].sort((a, b) => (a[f] > b[f] ? 1 : -1) * dir); }
+      }
+      return batch(`${db}.${cmd.aggregate}`, docs);
+    }
+    return { ok: 0, errmsg: `no such command: '${name}'`, code: 59 };
+  };
+  sock.on('data', d => {
+    buf = Buffer.concat([buf, d]);
+    while (buf.length >= 16 && buf.length >= buf.readInt32LE(0)) {
+      const len = buf.readInt32LE(0); const msg = buf.subarray(0, len); buf = buf.subarray(len);
+      const reqId = msg.readInt32LE(4); const op = msg.readInt32LE(12);
+      if (op !== 2013) { sock.destroy(); return; }
+      let i = 20; let cmd = null; const seqs = {};
+      while (i < len) { const kind = msg[i++]; if (kind === 0) { cmd = B.decode(msg, i); i += msg.readInt32LE(i); } else { const sz = msg.readInt32LE(i); const end = i + sz; const z = msg.indexOf(0, i + 4); const ident = msg.toString('utf8', i + 4, z); let j = z + 1; seqs[ident] = []; while (j < end) { seqs[ident].push(B.decode(msg, j)); j += msg.readInt32LE(j); } i = end; } }
+      Object.assign(cmd, seqs);
+      send(reqId, handle(cmd));
+    }
+  });
+  sock.on('error', () => {});
+});
+
+/* fake MQTT broker: login ali / gizli, routes publishes to matching subscriptions */
+const fakeMqtt = { port: 0, published: [], clients: new Set() };
+const mqttServer = net.createServer(sock => {
+  const { matches } = require('../lib/mqtt');
+  let buf = Buffer.alloc(0); const me = { sock, subs: [] };
+  const pkt = (type, flags, body) => { const len = []; let n = body.length; do { let d = n % 128; n = Math.floor(n / 128); if (n) d |= 128; len.push(d); } while (n); return Buffer.concat([Buffer.from([(type << 4) | flags, ...len]), body]); };
+  const s16 = (b, i) => b.toString('utf8', i + 2, i + 2 + b.readUInt16BE(i));
+  const enc = t => { const b = Buffer.from(t); const l = Buffer.alloc(2); l.writeUInt16BE(b.length); return Buffer.concat([l, b]); };
+  sock.on('data', d => {
+    buf = Buffer.concat([buf, d]);
+    for (;;) {
+      if (buf.length < 2) return; let mul = 1, len = 0, i = 1, byte;
+      do { if (i >= buf.length) return; byte = buf[i++]; len += (byte & 127) * mul; mul *= 128; } while (byte & 128);
+      if (buf.length < i + len) return;
+      const type = buf[0] >> 4, flags = buf[0] & 15, b = buf.subarray(i, i + len); buf = buf.subarray(i + len);
+      if (type === 1) {
+        let p = 2 + b.readUInt16BE(0); p += 1; const f = b[p++]; p += 2; p += 2 + b.readUInt16BE(p);
+        const user = f & 0x80 ? s16(b, p) : null; if (f & 0x80) p += 2 + b.readUInt16BE(p); const pass = f & 0x40 ? s16(b, p) : null;
+        if (user !== 'ali' || pass !== 'gizli') { sock.end(pkt(2, 0, Buffer.from([0, 5]))); return; }
+        fakeMqtt.clients.add(me); sock.write(pkt(2, 0, Buffer.from([0, 0])));
+      } else if (type === 8) {
+        const id = b.readUInt16BE(0); let p = 2; const granted = [];
+        while (p < b.length) { const t = s16(b, p); p += 2 + b.readUInt16BE(p); const q = b[p++]; me.subs.push(t); granted.push(t.startsWith('yasak/') ? 0x80 : q); }
+        sock.write(pkt(9, 0, Buffer.concat([Buffer.from([id >> 8, id & 255]), Buffer.from(granted)])));
+      } else if (type === 3) {
+        const qos = (flags >> 1) & 3; const topic = s16(b, 0); let p = 2 + b.readUInt16BE(0); let id = 0; if (qos) { id = b.readUInt16BE(p); p += 2; }
+        const payload = b.subarray(p).toString(); fakeMqtt.published.push({ topic, payload, qos, retain: !!(flags & 1) });
+        if (qos === 1) sock.write(pkt(4, 0, Buffer.from([id >> 8, id & 255])));
+        for (const c of fakeMqtt.clients) if (c.subs.some(s => matches(s, topic))) c.sock.write(pkt(3, 0, Buffer.concat([enc(topic), Buffer.from(payload)])));
+      } else if (type === 12) sock.write(Buffer.from([0xd0, 0]));
+      else if (type === 14) sock.end();
+    }
+  });
+  sock.on('close', () => fakeMqtt.clients.delete(me)); sock.on('error', () => {});
+});
+
+/* self-signed TLS server for the SSL check (CN=localhost, O=8n8 Test, valid until 2036) */
+const tlsServer = require('tls').createServer({
+  key: '-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg/GIm/fbRLgtjYLos\nURWFa8DCJNlnZK26xybhJBJn3H2hRANCAATEk5LNlH9PDEuFH8GM9o/fKPS1HNrW\n/kIGjXsJUFUggDMNRSY5qYg3xi0VcE8Kv3gfgjTuRgkmrpTRSblvhTHe\n-----END PRIVATE KEY-----\n',
+  cert: '-----BEGIN CERTIFICATE-----\nMIIBujCCAV+gAwIBAgIUPOfUEe447dcon9QeEZ3ho9R9OT8wCgYIKoZIzj0EAwIw\nJzESMBAGA1UEAwwJbG9jYWxob3N0MREwDwYDVQQKDAg4bjggVGVzdDAeFw0yNjEw\nMjIxNjA5MDdaFw0zNjEwMTkxNjA5MDdaMCcxEjAQBgNVBAMMCWxvY2FsaG9zdDER\nMA8GA1UECgwIOG44IFRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATEk5LN\nlH9PDEuFH8GM9o/fKPS1HNrW/kIGjXsJUFUggDMNRSY5qYg3xi0VcE8Kv3gfgjTu\nRgkmrpTRSblvhTHeo2kwZzAdBgNVHQ4EFgQUc3DQA8wXXT8oYB6pMv7L3gKSVPcw\nHwYDVR0jBBgwFoAUc3DQA8wXXT8oYB6pMv7L3gKSVPcwDwYDVR0TAQH/BAUwAwEB\n/zAUBgNVHREEDTALgglsb2NhbGhvc3QwCgYIKoZIzj0EAwIDSQAwRgIhAJE7eu55\nJYCm6+kDhaZISofEG82ZKR0A9TB0OU8qtCeMAiEAp+mFTb6PnSD/YbNihi2woT32\n3pHzLycMa+huA3WW30s=\n-----END CERTIFICATE-----\n',
+}, s => s.end());
+tlsServer.on('tlsClientError', () => {});
+
+/* Elasticsearch, Supabase (PostgREST), Odoo (JSON-RPC), Trendyol, Paraşüt, Ollama */
+const fakeMore = { es: {}, supa: [], supaQs: [], odoo: [], ty: { orders: [], stock: [], status: [], invoices: [], answers: [] }, parasut: { tokens: 0, bodies: [] }, ollama: [] };
+fakeMore.ty.orders.push({ id: 3360001, orderNumber: '10561', status: 'Created', customerFirstName: 'Ayşe', customerLastName: 'Yılmaz', customerEmail: 'pf+abc@trendyolmail.com', totalPrice: 449.9, currencyCode: 'TRY', orderDate: 1761000000000, cargoProviderName: 'Trendyol Express', shipmentAddress: { fullName: 'Ayşe Yılmaz', phone: '05321112233', city: 'İstanbul', district: 'Kadıköy', fullAddress: 'Moda Cd. 1' }, lines: [{ id: 77, productName: 'Seramik Kupa', barcode: '869001', merchantSku: 'KUP-1', quantity: 1, price: 449.9, amount: 449.9 }] });
+function fakeMoreApi(req, res, raw) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  const u = new URL(req.url, 'http://x'); const p = u.pathname; const body = (req.headers['content-type'] || '').includes('json') ? JSON.parse(raw || 'null') : Object.fromEntries(new URLSearchParams(raw));
+  if (p.startsWith('/es/') || p === '/es') {
+    if (req.headers.authorization !== 'ApiKey es-key') return json({ error: { root_cause: [{ reason: 'missing authentication credentials' }] }, status: 401 }, 401);
+    const m = p.match(/^\/es\/([^/]+)\/(_doc|_search|_update)(?:\/(.+))?$/);
+    if (!m) return json({ name: 'n1', version: { number: '8.15.0' }, tagline: 'You Know, for Search' });
+    const [, ix, what, id] = m; const store = (fakeMore.es[ix] ??= {});
+    if (what === '_search') {
+      const q = body.query; let hits = Object.entries(store);
+      if (q.multi_match) hits = hits.filter(([, s]) => JSON.stringify(s).toLocaleLowerCase('tr').includes(q.multi_match.query.toLocaleLowerCase('tr')));
+      return json({ hits: { total: { value: hits.length }, hits: hits.map(([k, s]) => ({ _index: ix, _id: k, _score: 1.2, _source: s })) } });
+    }
+    if (what === '_update') { if (!store[id]) return json({ error: { reason: 'document missing' } }, 404); Object.assign(store[id], body.doc); return json({ _id: id, result: 'updated' }); }
+    if (req.method === 'GET') return store[id] ? json({ _id: id, found: true, _source: store[id] }) : json({ _id: id, found: false }, 404);
+    if (req.method === 'DELETE') { const had = !!store[id]; delete store[id]; return json({ _id: id, result: had ? 'deleted' : 'not_found' }, had ? 200 : 404); }
+    const nid = id || `auto${Object.keys(store).length + 1}`; const had = !!store[nid]; store[nid] = body; return json({ _id: nid, result: had ? 'updated' : 'created' }, had ? 200 : 201);
+  }
+  if (p.startsWith('/supa/')) {
+    if (req.headers.apikey !== 'supa-key' || req.headers.authorization !== 'Bearer supa-key') return json({ message: 'Invalid API key' }, 401);
+    if (p === '/supa/rest/v1/') return json({ swagger: '2.0' });
+    fakeMore.supaQs.push(`${req.method} ${u.search}`);
+    const conds = [...u.searchParams].filter(([k]) => !['select', 'order', 'limit', 'on_conflict'].includes(k));
+    const ok = r => conds.every(([k, v]) => { const [op, ...rest] = v.split('.'); const x = rest.join('.'); return op === 'eq' ? String(r[k]) === x : op === 'gt' ? r[k] > Number(x) : op === 'ilike' ? new RegExp(`^${x.replace(/\*/g, '.*')}$`, 'i').test(r[k]) : op === 'is' ? r[k] == null : false; });
+    const pref = req.headers.prefer || '';
+    if (req.method === 'GET') return json(fakeMore.supa.filter(ok).sort((a, b) => b.id - a.id).slice(0, Number(u.searchParams.get('limit')) || 1000));
+    if (req.method === 'POST') {
+      const out = [];
+      for (const r of body) { const ex = fakeMore.supa.find(x => x.id === r.id); if (ex && !pref.includes('merge-duplicates')) return json({ code: '23505', message: 'duplicate key value violates unique constraint "siparisler_pkey"' }, 409); if (ex) { Object.assign(ex, r); out.push(ex); } else { const n = { id: r.id ?? fakeMore.supa.length + 1, ...r }; fakeMore.supa.push(n); out.push(n); } }
+      return json(pref.includes('return=representation') ? out : null, 201);
+    }
+    const hits = fakeMore.supa.filter(ok);
+    if (req.method === 'PATCH') { hits.forEach(r => Object.assign(r, body)); return json(hits); }
+    if (req.method === 'DELETE') { fakeMore.supa = fakeMore.supa.filter(r => !hits.includes(r)); return json(hits); }
+  }
+  if (p === '/odoo/jsonrpc') {
+    const { service, method, args } = body.params; fakeMore.odoo.push([service, method, ...(service === 'object' ? args.slice(3, 6) : [])]);
+    if (service === 'common') return json({ jsonrpc: '2.0', id: body.id, result: args[1] === 'admin@ornek.com' && args[2] === 'odoo-key' && args[0] === 'firma' ? 7 : false });
+    if (args[2] !== 'odoo-key') return json({ jsonrpc: '2.0', id: body.id, error: { code: 200, message: 'Odoo Server Error', data: { message: 'Access Denied' } } });
+    const [, , , model, m, a, kw] = args;
+    if (m === 'search_read') return json({ jsonrpc: '2.0', id: body.id, result: [{ id: 14, name: 'Deco Ltd', email: 'info@deco.com', phone: false, country_id: [224, 'Türkiye'], is_company: true }].map(r => Object.fromEntries(Object.entries(r).filter(([k]) => k === 'id' || !kw.fields || kw.fields.includes(k)))) });
+    if (m === 'create') return json({ jsonrpc: '2.0', id: body.id, result: 51 });
+    if (m === 'write' || m === 'unlink') return json({ jsonrpc: '2.0', id: body.id, result: true });
+    return json({ jsonrpc: '2.0', id: body.id, error: { message: 'Odoo Server Error', data: { message: `${model}.${m} yok` } } });
+  }
+  if (p.startsWith('/ty/')) {
+    if (req.headers.authorization !== `Basic ${Buffer.from('ty-key:ty-secret').toString('base64')}`) return json({ errors: [{ message: 'Unauthorized' }] }, 401);
+    if (req.headers['user-agent'] !== '555 - SelfIntegration') return json({ errors: [{ message: 'forbidden' }] }, 403);
+    const q = u.searchParams;
+    if (p === '/ty/order/sellers/555/orders') { const list = fakeMore.ty.orders.filter(o => !q.get('status') || o.status === q.get('status')); return json({ page: 0, size: 50, totalPages: 1, totalElements: list.length, content: list }); }
+    let m = p.match(/^\/ty\/order\/sellers\/555\/shipment-packages\/(\d+)$/); if (m) { fakeMore.ty.status.push({ id: Number(m[1]), ...body }); return json(null); }
+    if (p === '/ty/order/sellers/555/seller-invoice-links') { fakeMore.ty.invoices.push(body); return json(null, 201); }
+    if (p === '/ty/inventory/sellers/555/products/price-and-inventory') { fakeMore.ty.stock.push(...body.items); return json({ batchRequestId: 'b-123' }); }
+    if (p === '/ty/product/sellers/555/products/batch-requests/b-123') return json({ batchRequestId: 'b-123', status: 'COMPLETED', itemCount: 1, failedItemCount: 0, items: [{ requestItem: { barcode: '869001' }, status: 'SUCCESS', failureReasons: [] }] });
+    if (p === '/ty/product/sellers/555/products') return json({ totalElements: 1, content: [{ id: 'x1', title: 'Seramik Kupa', barcode: '869001', stockCode: 'KUP-1', brand: 'Atölye', quantity: 7, salePrice: 1250.5, listPrice: 1250.5, vatRate: 20, approved: true, onSale: true, productUrl: 'https://ty.com/x1' }].filter(x => !q.get('barcode') || x.barcode === q.get('barcode')) });
+    if (p === '/ty/qna/sellers/555/questions/filter') return json({ content: [{ id: 901, text: 'Bulaşık makinesine girer mi?', productName: 'Seramik Kupa', userName: 'A***', creationDate: 1761000000000 }] });
+    m = p.match(/^\/ty\/qna\/sellers\/555\/questions\/(\d+)\/answers$/); if (m) { fakeMore.ty.answers.push({ id: Number(m[1]), ...body }); return json(null); }
+    return json({ errors: [{ message: 'yok' }] }, 404);
+  }
+  if (p.startsWith('/parasut/')) {
+    if (p === '/parasut/oauth/token') {
+      if (body.grant_type !== 'password' || body.client_id !== 'pc' || body.client_secret !== 'ps') return json({ error: 'invalid_client' }, 401);
+      if (body.username !== 'muh@ornek.com' || body.password !== 'pp') return json({ error: 'invalid_grant' }, 401);
+      fakeMore.parasut.tokens++; return json({ access_token: 'p-tok', token_type: 'bearer', expires_in: 7200, refresh_token: 'r' });
+    }
+    if (req.headers.authorization !== 'Bearer p-tok') return json({ errors: [{ title: 'Unauthorized' }] }, 401);
+    const r = p.replace(/^\/parasut\/v4\/777/, ''); if (body) fakeMore.parasut.bodies.push([r, body]);
+    if (r === '/contacts' && req.method === 'GET') return json({ data: [], meta: { total_count: 0 } });
+    if (r === '/contacts') return json({ data: { id: '501', type: 'contacts', attributes: body.data.attributes } }, 201);
+    if (r === '/sales_invoices' && req.method === 'POST') {
+      const d = body.data.relationships.details.data; const net = d.reduce((s, x) => s + x.attributes.quantity * x.attributes.unit_price, 0); const vat = d.reduce((s, x) => s + x.attributes.quantity * x.attributes.unit_price * x.attributes.vat_rate / 100, 0);
+      return json({ data: { id: '9001', type: 'sales_invoices', attributes: { ...body.data.attributes, net_total: String((net + vat).toFixed(2)), total_vat: String(vat.toFixed(2)) } } }, 201);
+    }
+    if (r === '/sales_invoices') return json({ data: [{ id: '9001', type: 'sales_invoices', attributes: { description: 'Sipariş S-1', issue_date: '2026-10-22', due_date: '2026-10-22', net_total: '241.2', remaining: '0.0', currency: 'TRL', payment_status: 'paid' }, relationships: { contact: { data: { id: '501', type: 'contacts' } } } }], included: [{ id: '501', type: 'contacts', attributes: { name: 'Ayşe Yılmaz' } }] });
+    if (r === '/sales_invoices/9001/payments') return json({ data: { id: 'pay1', type: 'payments', attributes: body.data.attributes } }, 201);
+    if (r === '/sales_invoices/9001') return json({ data: { id: '9001', type: 'sales_invoices', attributes: {} }, included: [{ id: '501', type: 'contacts', attributes: { name: 'Ayşe Yılmaz', tax_number: '11111111111' } }] });
+    if (r === '/e_invoice_inboxes') return json({ data: [] });
+    if (r === '/e_archives') return json({ data: { id: 'job-1', type: 'trackable_jobs', attributes: { status: 'pending' } } }, 202);
+    return json({ errors: [{ title: 'Not found', detail: r }] }, 404);
+  }
+  if (p.startsWith('/ollama/')) {
+    if (p === '/ollama/api/tags') return json({ models: [{ name: 'llama3.2:latest', size: 2019393189, modified_at: '2026-10-01T10:00:00Z', details: { family: 'llama', parameter_size: '3.2B' } }] });
+    if (!/^llama3\.2/.test(body.model)) return json({ error: `model "${body.model}" not found, try pulling it first` }, 404);
+    fakeMore.ollama.push(body);
+    if (p === '/ollama/api/embed') return json({ model: body.model, embeddings: [[0.1, -0.2, 0.3]] });
+    const last = body.messages.at(-1).content;
+    return json({ model: body.model, message: { role: 'assistant', content: body.format === 'json' ? '{"duygu":"olumlu"}' : `Merhaba! "${last}" mesajını aldım.` }, done: true, total_duration: 1500000000, prompt_eval_count: 12, eval_count: 8 });
+  }
+  return json({ error: 'yok' }, 404);
+}
+
 (async () => {
   await new Promise(r => fakeServer.listen(0, '127.0.0.1', r)); fakeClaude.port = fakeServer.address().port;
   await new Promise(r => imapServer.listen(0, '127.0.0.1', r)); fakeIMAP.port = imapServer.address().port;
   await new Promise(r => ftpServer.listen(0, '127.0.0.1', r)); fakeFTP.port = ftpServer.address().port;
   await new Promise(r => redisServer.listen(0, '127.0.0.1', r)); fakeRedis.port = redisServer.address().port;
-  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  await new Promise(r => mongoServer.listen(0, '127.0.0.1', r)); fakeMongo.port = mongoServer.address().port;
+  await new Promise(r => mqttServer.listen(0, '127.0.0.1', r)); fakeMqtt.port = mqttServer.address().port;
+  await new Promise(r => tlsServer.listen(0, '127.0.0.1', r));
+  const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
-  let fail = 0;
+  let fail = 0, ran = 0;
   for (const [name, fn] of tests) {
+    if (process.env.ONLY && !new RegExp(process.env.ONLY, 'i').test(name)) continue; // ONLY=mongo npm test
+    ran++;
     try { await fn(); console.log(`  ✓ ${name}`); } catch (e) { fail++; console.log(`  ✗ ${name}\n    ${e.message}`); }
   }
-  srv.kill(); fakeServer.close(); imapServer.close(); ftpServer.close(); redisServer.close();
+  srv.kill(); fakeServer.close(); imapServer.close(); ftpServer.close(); redisServer.close(); mongoServer.close(); mqttServer.close(); tlsServer.close();
   fs.rmSync(DATA, { recursive: true, force: true });
-  console.log(fail ? `\n${fail} test başarısız` : `\nTüm ${tests.length} test geçti`);
+  console.log(fail ? `\n${fail} test başarısız` : `\nTüm ${ran} test geçti`);
   process.exit(fail ? 1 : 0);
 })();
