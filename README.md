@@ -6,7 +6,7 @@
 
 ### Windows: tek dosya (8n8.exe)
 
-`8n8-windows.zip` içindeki `8n8.exe` dosyasını istediğiniz bir klasöre çıkarıp çift tıklayın. Node.js kurmanız ya da `baslat.bat` çalıştırmanız gerekmez; her şey bu dosyanın içindedir. Siyah bir pencere açılır ve tarayıcı kendiliğinden 8n8'i gösterir. Programı kapatmak için bu pencereyi kapatın.
+[Sürümler (Releases)](https://github.com/MustafaCanDere/8n8/releases) sayfasından `8n8-windows.zip` dosyasını indirin. İçindeki `8n8.exe` dosyasını istediğiniz bir klasöre çıkarıp çift tıklayın. Node.js kurmanız ya da `baslat.bat` çalıştırmanız gerekmez; her şey bu dosyanın içindedir. Siyah bir pencere açılır ve tarayıcı kendiliğinden 8n8'i gösterir. Programı kapatmak için bu pencereyi kapatın.
 
 - İmzasız bir program olduğu için Windows ilk açılışta "Windows bilgisayarınızı korudu" uyarısı gösterebilir. "Ek bilgi"ye, sonra "Yine de çalıştır"a tıklayın.
 - Güvenlik duvarı sorarsa izin vermeniz gerekmez: 8n8 yalnızca bu bilgisayardan erişilecek şekilde açılır.
@@ -274,6 +274,8 @@ ONLY=mongo npm test   # yalnız adında "mongo" geçen testler
 Aynı testleri derlenmiş tek dosya programa karşı çalıştırmak için: `N8N8_TEST_EXE=dist/8n8 npm test`.
 
 ### 8n8.exe'yi yeniden oluşturmak
+
+GitHub'da `main` dalına her gönderimde testler çalışır, Windows'ta `8n8.exe` oluşturulur, açıldığı denenir ve `package.json`'daki sürüm numarasıyla Sürümler sayfasına yüklenir (`.github/workflows/exe.yml`). Kendi bilgisayarınızda oluşturmak için:
 
 ```
 npm install --no-save esbuild postject resedit
