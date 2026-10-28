@@ -1,10 +1,10 @@
 {
-  "name": "8n8",
-  "version": "3.4.0",
+  "name": "auto-move",
+  "version": "3.5.0",
   "description": "Bilgisayarınızda çalışan görsel iş akışı otomasyon programı",
   "main": "server.js",
   "bin": {
-    "8n8": "server.js"
+    "auto-move": "server.js"
   },
   "scripts": {
     "start": "node server.js",

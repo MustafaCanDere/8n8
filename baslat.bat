@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-title 8n8
+title Auto-Move
 where node >nul 2>nul
 if errorlevel 1 (
   echo Node.js bulunamadi. https://nodejs.org adresinden LTS surumunu kurup tekrar deneyin.

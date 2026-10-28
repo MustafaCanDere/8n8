@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>8n8</title>
+<title>Auto-Move</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
 /* Layout: navigation rail on the left; each view fills the rest. The editor is a full-bleed canvas
@@ -367,7 +367,7 @@ kbd { font: 500 11px var(--mono); border: 1px solid var(--line); border-bottom-w
 <body>
 <div id="app">
   <nav id="nav" aria-label="Ana menü">
-    <div class="logo">8<b>n</b>8</div>
+    <div class="logo">Auto-<b>Move</b></div>
     <a class="navlink" href="#/akislar" data-nav="akislar"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h6v5H4zM14 13h6v5h-6zM10 8.5h2a2 2 0 0 1 2 2v5"/></svg>Akışlar</a>
     <a class="navlink" href="#/calistirmalar" data-nav="calistirmalar"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h13"/></svg>Çalıştırmalar <span class="badge" id="run-badge" hidden></span></a>
     <a class="navlink" href="#/ozet" data-nav="ozet"><svg class="i" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Özet</a>
@@ -618,7 +618,7 @@ async function openTemplates() {
 }
 function openImport(onWorkflow) {
   openModal(`<div class="mhead"><h2>İçe aktar</h2><button class="icon-btn" data-close aria-label="Kapat">${icon('x')}</button></div>
-    <div class="mbody"><p class="desc">8n8 ya da <b>n8n</b>'den dışa aktarılmış bir .json dosyası seçin veya içeriğini yapıştırın. n8n akışlarındaki yaygın node'lar karşılıklarına çevrilir.</p>
+    <div class="mbody"><p class="desc">Auto-Move ya da <b>n8n</b>'den dışa aktarılmış bir .json dosyası seçin veya içeriğini yapıştırın. n8n akışlarındaki yaygın node'lar karşılıklarına çevrilir.</p>
     <input type="file" id="imp-file" accept=".json,application/json" class="inp">
     <textarea class="inp" id="imp-json" placeholder='{ "name": "…", "nodes": [ … ], "edges": [ … ] }' style="min-height:200px" spellcheck="false"></textarea></div>
     <div class="mfoot"><span class="x" id="imp-err"></span><button class="btn" data-close>Vazgeç</button><button class="btn primary" id="imp-go">İçe aktar</button></div>`);
@@ -1319,11 +1319,11 @@ function triggerInfo(n) {
   }
   if (n.type === 'mcpTrigger') {
     const url = `${G.info?.url || base}/mcp/${String(n.params.path || '').replace(/^\/+|\/+$/g, '')}`;
-    const cfg = JSON.stringify({ mcpServers: { '8n8': { type: 'http', url } } }, null, 2);
+    const cfg = JSON.stringify({ mcpServers: { 'Auto-Move': { type: 'http', url } } }, null, 2);
     return `<div class="info-box"><b>MCP sunucusu</b>
       <div class="urlrow"><code>${esc(url)}</code><button class="btn sm" type="button" data-copy="${esc(url)}">Kopyala</button></div>
       ${ED.wf.active ? '' : '<span class="pill idle">akış kapalı</span> Araç yalnızca akış etkinken listelenir.'}
-      <span class="help">Claude Code'a eklemek için: <code>claude mcp add --transport http 8n8 ${esc(url)}</code></span>
+      <span class="help">Claude Code'a eklemek için: <code>claude mcp add --transport http Auto-Move ${esc(url)}</code></span>
       <span class="help">Uzak MCP sunucusu (http) destekleyen istemcilerin ayarı:</span><pre class="code-snip">${esc(cfg)}</pre>
       <span class="help">Claude aracı çağırınca girdiler bu node'un çıktısında öğenin alanları olarak gelir; son node'un çıktısı Claude'a sonuç olarak döner.</span></div>`;
   }
@@ -1966,7 +1966,7 @@ async function pageAbout() {
   view.innerHTML = `<div class="page"><div class="page-in">
     <div class="page-head"><h1>Ayarlar</h1></div>
     <div class="card" style="padding:16px"><dl class="kvgrid">
-      <dt>Sürüm</dt><dd>8n8 ${esc(info.version)} · Node.js ${esc(info.node)}</dd>
+      <dt>Sürüm</dt><dd>Auto-Move ${esc(info.version)} · Node.js ${esc(info.node)}</dd>
       <dt>Adres</dt><dd>${esc(info.url)}</dd>
       <dt>Veri klasörü</dt><dd>${esc(info.data)}</dd>
       <dt>Dosya klasörü</dt><dd>${esc(info.files)}</dd>

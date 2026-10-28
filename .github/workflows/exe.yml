@@ -1,4 +1,4 @@
-name: Test ve 8n8.exe
+name: Test ve Auto-Move.exe
 
 on:
   push:
@@ -22,7 +22,7 @@ jobs:
       - run: npm test
 
   exe:
-    name: 8n8.exe (Windows)
+    name: Auto-Move.exe (Windows)
     needs: test
     runs-on: windows-latest
     steps:
@@ -37,27 +37,27 @@ jobs:
         shell: pwsh
         run: |
           $env:N8N8_NO_OPEN = '1'; $env:PORT = '5690'; $env:N8N8_DATA = "$env:RUNNER_TEMP\veri"
-          $p = Start-Process -FilePath dist\8n8.exe -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\out.txt" -RedirectStandardError "$env:RUNNER_TEMP\err.txt"
+          $p = Start-Process -FilePath dist\Auto-Move.exe -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\out.txt" -RedirectStandardError "$env:RUNNER_TEMP\err.txt"
           $ok = $false
           for ($i = 0; $i -lt 30 -and -not $ok; $i++) { Start-Sleep 2; try { $r = Invoke-WebRequest http://127.0.0.1:5690/ -UseBasicParsing; $ok = $r.StatusCode -eq 200 } catch {} }
           Get-Content "$env:RUNNER_TEMP\out.txt", "$env:RUNNER_TEMP\err.txt"
           Stop-Process -Id $p.Id -Force
-          if (-not $ok) { throw '8n8.exe açılmadı' }
+          if (-not $ok) { throw 'Auto-Move.exe açılmadı' }
       - name: Bütün testler exe'ye karşı
         continue-on-error: true
         env:
-          N8N8_TEST_EXE: dist\8n8.exe
+          N8N8_TEST_EXE: dist\Auto-Move.exe
         run: npm test
       - name: Paketle
         shell: pwsh
         run: |
-          New-Item -ItemType Directory paket\8n8 | Out-Null
-          Copy-Item dist\8n8.exe, README.md paket\8n8\
-          Compress-Archive -Path paket\8n8 -DestinationPath 8n8-windows.zip
+          New-Item -ItemType Directory paket\Auto-Move | Out-Null
+          Copy-Item dist\Auto-Move.exe, README.md paket\Auto-Move\
+          Compress-Archive -Path paket\Auto-Move -DestinationPath Auto-Move-windows.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: 8n8-windows
-          path: 8n8-windows.zip
+          name: Auto-Move-windows
+          path: Auto-Move-windows.zip
       - name: Sürüm (Release) olarak yayımla
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
@@ -66,5 +66,5 @@ jobs:
         run: |
           $v = 'v' + (node -p "require('./package.json').version")
           gh release view $v 2>$null
-          if ($LASTEXITCODE -eq 0) { gh release upload $v 8n8-windows.zip --clobber }
-          else { gh release create $v 8n8-windows.zip --title "8n8 $v" --notes "Windows: 8n8-windows.zip dosyasını indirip açın ve 8n8.exe'ye çift tıklayın. Node.js kurmanız gerekmez. macOS ve Linux için kaynak kodu indirip baslat.command ya da baslat.sh ile başlatın." }
+          if ($LASTEXITCODE -eq 0) { gh release upload $v Auto-Move-windows.zip --clobber }
+          else { gh release create $v Auto-Move-windows.zip --title "Auto-Move $v" --notes "Windows: Auto-Move-windows.zip dosyasını indirip açın ve Auto-Move.exe'ye çift tıklayın. Node.js kurmanız gerekmez. macOS ve Linux için kaynak kodu indirip baslat.command ya da baslat.sh ile başlatın." }
