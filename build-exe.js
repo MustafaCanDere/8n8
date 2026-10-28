@@ -1,5 +1,5 @@
 'use strict';
-/* Builds 8n8.exe (Windows) as a Node.js single executable application:
+/* Builds Auto-Move.exe (Windows) as a Node.js single executable application:
      npm install --no-save esbuild postject resedit && node build-exe.js
    N8N8_EXE_TARGET=linux builds for this computer instead (used to run the tests against the built program). */
 const fs = require('fs');
@@ -31,16 +31,16 @@ function unsign(buf) {
   return off && off + size === buf.length ? buf.subarray(0, off) : buf;
 }
 
-// 8n8's icon and name in Explorer and the taskbar instead of Node's
+// Auto-Move's icon and name in Explorer and the taskbar instead of Node's
 function brand(buf) {
   const R = require('resedit');
   const pe = R.NtExecutable.from(buf), res = R.NtExecutableResource.from(pe);
-  const icon = R.Data.IconFile.from(fs.readFileSync(path.join(__dirname, 'public', '8n8.ico')));
+  const icon = R.Data.IconFile.from(fs.readFileSync(path.join(__dirname, 'public', 'Auto-Move.ico')));
   R.Resource.IconGroupEntry.replaceIconsForResource(res.entries, 1, 1033, icon.icons.map(i => i.data));
   const vi = R.Resource.VersionInfo.fromEntries(res.entries)[0];
   const [a, b, c] = pkg.version.split('.').map(Number);
   vi.setFileVersion(a, b, c, 0, 1033); vi.setProductVersion(a, b, c, 0, 1033);
-  vi.setStringValues({ lang: 1033, codepage: 1200 }, { CompanyName: '8n8', ProductName: '8n8', FileDescription: '8n8 iş akışı otomasyonu', FileVersion: pkg.version, ProductVersion: pkg.version, OriginalFilename: '8n8.exe', InternalName: '8n8', LegalCopyright: `8n8, MIT license. Node.js ${NODE_VERSION}: Copyright Node.js contributors, MIT license.` });
+  vi.setStringValues({ lang: 1033, codepage: 1200 }, { CompanyName: 'Auto-Move', ProductName: 'Auto-Move', FileDescription: 'Auto-Move iş akışı otomasyonu', FileVersion: pkg.version, ProductVersion: pkg.version, OriginalFilename: 'Auto-Move.exe', InternalName: 'Auto-Move', LegalCopyright: `Auto-Move, MIT license. Node.js ${NODE_VERSION}: Copyright Node.js contributors, MIT license.` });
   vi.outputToResourceEntries(res.entries);
   res.outputResource(pe);
   return Buffer.from(pe.generate());
@@ -48,7 +48,7 @@ function brand(buf) {
 
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
-  const bundle = path.join(OUT, '8n8.cjs');
+  const bundle = path.join(OUT, 'Auto-Move.cjs');
   require('esbuild').buildSync({ entryPoints: [path.join(__dirname, 'exe-main.js')], bundle: true, platform: 'node', target: 'node22', format: 'cjs', outfile: bundle, external: ['cpu-features', '*.node'], logLevel: 'warning' });
 
   const config = path.join(OUT, 'sea-config.json'), blob = path.join(OUT, 'sea-prep.blob');
@@ -60,10 +60,10 @@ function brand(buf) {
   if (TARGET === 'win') {
     const nodeExe = path.join(OUT, `node-${NODE_VERSION}-win-x64.exe`);
     if (!fs.existsSync(nodeExe)) { console.log(`Windows için Node.js ${NODE_VERSION} indiriliyor…`); await download(`https://nodejs.org/dist/${NODE_VERSION}/win-x64/node.exe`, nodeExe); }
-    exe = path.join(OUT, '8n8.exe');
+    exe = path.join(OUT, 'Auto-Move.exe');
     fs.writeFileSync(exe, brand(unsign(fs.readFileSync(nodeExe))));
   } else {
-    exe = path.join(OUT, '8n8');
+    exe = path.join(OUT, 'Auto-Move');
     fs.copyFileSync(process.execPath, exe); fs.chmodSync(exe, 0o755);
   }
   const postject = require.resolve('postject/dist/cli.js');

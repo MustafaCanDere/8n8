@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 8n8'i başlatır. İlk çalıştırmada gerekli paketi kurar.
+# Auto-Move'i başlatır. İlk çalıştırmada gerekli paketi kurar.
 cd "$(dirname "$0")" || exit 1
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js bulunamadı. https://nodejs.org adresinden LTS sürümünü kurup tekrar deneyin."

@@ -641,7 +641,7 @@ test('Yedekle ve geri yükle: akış, tablo, değişken, şifreli kimlik bilgisi
   assert.equal(plain.kimlikBilgileri, null);
   await api('DELETE', `/api/workflows/${w.id}`); await api('DELETE', `/api/credentials/${cred.id}`); await api('DELETE', `/api/tables/${tbl.id}`);
   await assert.rejects(api('POST', '/api/restore', { backup: b, password: 'yanlis-sifre' }), /şifresi yanlış/);
-  await assert.rejects(api('POST', '/api/restore', { backup: { format: 'baska' } }), /8n8 yedeği değil/);
+  await assert.rejects(api('POST', '/api/restore', { backup: { format: 'baska' } }), /Auto-Move yedeği değil/);
   const r = await api('POST', '/api/restore', { backup: b, password: 'uzun-sifre-1' });
   assert.ok(r.akislar >= 1 && r.kimlikBilgileri >= 1 && r.tablolar >= 1, JSON.stringify(r));
   const back = await api('GET', `/api/workflows/${w.id}`);
@@ -2249,7 +2249,7 @@ const fakeGH = { auth: [], issues: [{ number: 7, id: 7, title: 'PR', state: 'ope
 function fakeGithub(req, res, raw) {
   const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
   fakeGH.auth.push(req.headers.authorization);
-  if (req.headers['user-agent'] !== '8n8') return json({ message: 'UA gerekli' }, 403);
+  if (req.headers['user-agent'] !== 'Auto-Move') return json({ message: 'UA gerekli' }, 403);
   const u = new URL(req.url, 'http://x'); const p = u.pathname.replace(/^\/gh/, ''); const body = raw ? JSON.parse(raw) : {};
   if (p === '/user') return json({ login: 'ayse' });
   if (!p.startsWith('/repos/ornek/depo/')) return json({ message: 'Not Found' }, 404);
@@ -2461,7 +2461,7 @@ function fakeBizApi(req, res, raw) {
     return json({ message: 'yok' }, 404);
   }
   if ((m = u.pathname.match(/^\/mc(\/.*)$/))) {
-    if (basic !== '8n8:abc123-us21') return json({ title: 'API Key Invalid', detail: 'Your API key may be invalid' }, 401);
+    if (basic !== 'Auto-Move:abc123-us21') return json({ title: 'API Key Invalid', detail: 'Your API key may be invalid' }, 401);
     const p = m[1]; const M = F.mc;
     if (p === '/ping') return json({ health_status: "Everything's Chimpy!" });
     if (p === '/lists') return json({ lists: [{ id: 'L1', name: 'Bülten', stats: { member_count: Object.keys(M.members).length } }] });

@@ -1,17 +1,17 @@
-# 8n8
+# Auto-Move
 
-8n8, kendi bilgisayarınızda çalışan görsel bir iş akışı otomasyon programıdır. n8n'e benzer: node'ları tuvale sürükler, birbirine bağlar ve akışı çalıştırırsınız. Akışlar zamanlayıcıyla, webhook ile, hazır web formlarıyla, sohbet sayfasıyla, RSS, Telegram ya da klasör değişiklikleriyle kendiliğinden de başlayabilir. Claude'a ne istediğinizi yazarak akışı ona kurdurabilir, n8n akışlarınızı içe aktarabilirsiniz. Bütün veriler bilgisayarınızda kalır.
+Auto-Move, kendi bilgisayarınızda çalışan görsel bir iş akışı otomasyon programıdır. n8n'e benzer: node'ları tuvale sürükler, birbirine bağlar ve akışı çalıştırırsınız. Akışlar zamanlayıcıyla, webhook ile, hazır web formlarıyla, sohbet sayfasıyla, RSS, Telegram ya da klasör değişiklikleriyle kendiliğinden de başlayabilir. Claude'a ne istediğinizi yazarak akışı ona kurdurabilir, n8n akışlarınızı içe aktarabilirsiniz. Bütün veriler bilgisayarınızda kalır.
 
 ## Kurulum
 
-### Windows: tek dosya (8n8.exe)
+### Windows: tek dosya (Auto-Move.exe)
 
-[Sürümler (Releases)](https://github.com/MustafaCanDere/8n8/releases) sayfasından `8n8-windows.zip` dosyasını indirin. İçindeki `8n8.exe` dosyasını istediğiniz bir klasöre çıkarıp çift tıklayın. Node.js kurmanız ya da `baslat.bat` çalıştırmanız gerekmez; her şey bu dosyanın içindedir. Siyah bir pencere açılır ve tarayıcı kendiliğinden 8n8'i gösterir. Programı kapatmak için bu pencereyi kapatın.
+[Sürümler (Releases)](https://github.com/MustafaCanDere/Auto-Move/releases) sayfasından `Auto-Move-windows.zip` dosyasını indirin. İçindeki `Auto-Move.exe` dosyasını istediğiniz bir klasöre çıkarıp çift tıklayın. Node.js kurmanız ya da `baslat.bat` çalıştırmanız gerekmez; her şey bu dosyanın içindedir. Siyah bir pencere açılır ve tarayıcı kendiliğinden Auto-Move'i gösterir. Programı kapatmak için bu pencereyi kapatın.
 
 - İmzasız bir program olduğu için Windows ilk açılışta "Windows bilgisayarınızı korudu" uyarısı gösterebilir. "Ek bilgi"ye, sonra "Yine de çalıştır"a tıklayın.
-- Güvenlik duvarı sorarsa izin vermeniz gerekmez: 8n8 yalnızca bu bilgisayardan erişilecek şekilde açılır.
-- Verileriniz exe'nin yanında değil, kullanıcı klasörünüzdeki `.8n8` klasöründe durur. Yeni sürüme geçerken yalnızca exe'yi değiştirmeniz yeterlidir.
-- Ortam değişkenleri (aşağıda) exe ile de çalışır, örneğin `set PORT=5679 && 8n8.exe`.
+- Güvenlik duvarı sorarsa izin vermeniz gerekmez: Auto-Move yalnızca bu bilgisayardan erişilecek şekilde açılır.
+- Verileriniz exe'nin yanında değil, kullanıcı klasörünüzdeki `.8n8` klasöründe durur (program önceden 8n8 adını taşıdığı için klasör ve `N8N8_` ile başlayan ayarlar eski adıyla kaldı; eski verileriniz olduğu gibi açılır). Yeni sürüme geçerken yalnızca exe'yi değiştirmeniz yeterlidir.
+- Ortam değişkenleri (aşağıda) exe ile de çalışır, örneğin `set PORT=5679 && Auto-Move.exe`.
 
 ### Node.js ile (Windows, macOS, Linux)
 
@@ -80,14 +80,14 @@ Programı kapatmak için açılan siyah pencerede `Ctrl+C` tuşlarına basın ya
 **Google hesabı ve OAuth:** Gmail, Drive, Takvim ve E-Tablolar için Kimlik bilgileri sayfasında "Google hesabı" ekleyin:
 1. [Google Cloud Console](https://console.cloud.google.com)'da bir proje açın; Gmail, Drive, Calendar ve Sheets API'lerini etkinleştirin.
 2. "OAuth izin ekranı"nı ayarlayın (Harici; kendinizi test kullanıcısı olarak ekleyin).
-3. "Kimlik bilgileri → OAuth istemci kimliği → Web uygulaması" oluşturun ve 8n8'in gösterdiği yönlendirme adresini (`http://localhost:5678/oauth/callback`) ekleyin.
-4. İstemci kimliğini ve gizli anahtarı 8n8'e girip "Hesaba bağlan"a basın. Oturum süresi dolunca 8n8 kendiliğinden yeniler.
+3. "Kimlik bilgileri → OAuth istemci kimliği → Web uygulaması" oluşturun ve Auto-Move'un gösterdiği yönlendirme adresini (`http://localhost:5678/oauth/callback`) ekleyin.
+4. İstemci kimliğini ve gizli anahtarı Auto-Move'a girip "Hesaba bağlan"a basın. Oturum süresi dolunca Auto-Move kendiliğinden yeniler.
 
 **Microsoft hesabı (Outlook, OneDrive):** Kimlik bilgileri sayfasında "Microsoft hesabı" ekleyin:
 1. [Azure portalı](https://portal.azure.com)'nda Microsoft Entra ID → Uygulama kayıtları → Yeni kayıt açın. Hesap türü olarak "herhangi bir kuruluş dizini ve kişisel Microsoft hesapları"nı seçin.
-2. Yönlendirme adresi olarak platform "Web" ile 8n8'in gösterdiği adresi ekleyin.
+2. Yönlendirme adresi olarak platform "Web" ile Auto-Move'un gösterdiği adresi ekleyin.
 3. Sertifikalar ve gizli diziler → Yeni istemci gizli dizisi oluşturun ve "Değer"i kopyalayın.
-4. Uygulama (istemci) kimliğini ve gizli diziyi 8n8'e girip "Hesaba bağlan"a basın. Outlook node'u e-posta gönderir, okur, yanıtlar, okundu işaretler ve siler; OneDrive node'u dosya yükler (büyük dosyalar parça parça), indirir, listeler, siler ve paylaşım bağlantısı oluşturur. HTTP isteği node'unda da bu kimlik bilgisiyle Microsoft Graph'a istek atabilirsiniz. Bu sürümden önce bağladığınız Microsoft hesabıyla OneDrive'ı kullanmak için kimlik bilgisinde "Hesaba bağlan"a bir kez daha basın; dosya izni yeni eklendi.
+4. Uygulama (istemci) kimliğini ve gizli diziyi Auto-Move'a girip "Hesaba bağlan"a basın. Outlook node'u e-posta gönderir, okur, yanıtlar, okundu işaretler ve siler; OneDrive node'u dosya yükler (büyük dosyalar parça parça), indirir, listeler, siler ve paylaşım bağlantısı oluşturur. HTTP isteği node'unda da bu kimlik bilgisiyle Microsoft Graph'a istek atabilirsiniz. Bu sürümden önce bağladığınız Microsoft hesabıyla OneDrive'ı kullanmak için kimlik bilgisinde "Hesaba bağlan"a bir kez daha basın; dosya izni yeni eklendi.
 
 **Slack:** [api.slack.com/apps](https://api.slack.com/apps)'te bir uygulama açın, OAuth & Permissions'ta `chat:write`, `channels:read`, `channels:history`, `reactions:write` izinlerini ekleyip çalışma alanına kurun ve "Bot User OAuth Token"ı (`xoxb-…`) kimlik bilgisi olarak girin. Botu kanala `/invite @bot` ile ekleyin. Kanalı `#genel` gibi adıyla yazabilirsiniz. Slack node'u mesaj gönderir (konuya yanıt dahil), günceller, tepki ekler, kanal mesajlarını ve kanalları listeler; "Slack'e mesaj gelince" tetikleyicisi kanaldaki yeni insan mesajlarında akışı başlatır.
 
@@ -155,7 +155,7 @@ Aynı yolla "OAuth2 (başka servisler)" türüyle Spotify gibi servislere bağla
 
 **Veritabanında yeni satır:** Tabloyu düzenli kontrol eder ve otomatik artan kimlik ya da oluşturma zamanı gibi hep büyüyen bir sütuna göre yeni satırları bulur. İlk kontrol yalnızca şimdiki en büyük değeri hatırlar; sonra eklenen her satır akışı bir kez çalıştırır. Güncellenen satırları görmez.
 
-**Dropbox:** [dropbox.com/developers/apps](https://www.dropbox.com/developers/apps)'te "Scoped access" uygulaması açın; Permissions sekmesinde `files.content.write`, `files.content.read` ve `sharing.write` izinlerini işaretleyin, Settings'te 8n8'in gösterdiği yönlendirme adresini ekleyin. App key ve App secret'ı 8n8'e girip "Hesaba bağlan"a basın. Tek seferde en fazla 150 MB yüklenebilir.
+**Dropbox:** [dropbox.com/developers/apps](https://www.dropbox.com/developers/apps)'te "Scoped access" uygulaması açın; Permissions sekmesinde `files.content.write`, `files.content.read` ve `sharing.write` izinlerini işaretleyin, Settings'te Auto-Move'un gösterdiği yönlendirme adresini ekleyin. App key ve App secret'ı Auto-Move'a girip "Hesaba bağlan"a basın. Tek seferde en fazla 150 MB yüklenebilir.
 
 **Pipedrive, Asana, ClickUp, Zendesk, DeepL:** Hepsi kişisel API anahtarıyla çalışır; nereden alınacağı kimlik bilgisi formunda yazar. Pipedrive'da "Kişiyi bul ya da ekle" e-postaya göre arar, varsa yeni kişi açmaz. Asana'da proje ya da görev için tarayıcıdaki adresi yapıştırmanız yeterlidir. DeepL'in ücretsiz anahtarları (`:fx` ile biten) kendiliğinden ücretsiz sunucuya gider.
 
@@ -165,7 +165,7 @@ Aynı yolla "OAuth2 (başka servisler)" türüyle Spotify gibi servislere bağla
 
 **İş günü ve tatiller:** Türkiye resmî tatilleri, Ramazan ve Kurban bayramları ve arifeler (yarım gün) hesaba katılır. Bayram tarihleri Ümmü'l-Kurâ takviminden hesaplanır; 2024–2026 için Diyanet'in ilan ettiği tarihlerle aynıdır, sonraki yıllarda bir gün fark olabilir. Köprü izinleri ve şirket tatilleri "Ek tatil günleri" alanına yazılabilir.
 
-**MCP aracı (akışlarınızı Claude'a araç olarak verin):** Akışa "MCP aracı" tetikleyicisi koyun, araç adını, açıklamasını ve girdilerini yazıp akışı etkinleştirin. Araç `http://localhost:5678/mcp/<adres>` adresinde yayınlanır; aynı adresteki bütün etkin araçlar tek sunucuda görünür. Claude Code'a eklemek için `claude mcp add --transport http 8n8 http://localhost:5678/mcp/araclar` yazın; uzak (http) MCP sunucusu destekleyen diğer istemcilere de aynı adresi verin. Claude aracı çağırınca akış çalışır ve son node'un çıktısı sonuç olarak döner. Program başka bilgisayarlardan erişilebiliyorsa tetikleyicide kimlik doğrulamayı açın.
+**MCP aracı (akışlarınızı Claude'a araç olarak verin):** Akışa "MCP aracı" tetikleyicisi koyun, araç adını, açıklamasını ve girdilerini yazıp akışı etkinleştirin. Araç `http://localhost:5678/mcp/<adres>` adresinde yayınlanır; aynı adresteki bütün etkin araçlar tek sunucuda görünür. Claude Code'a eklemek için `claude mcp add --transport http Auto-Move http://localhost:5678/mcp/araclar` yazın; uzak (http) MCP sunucusu destekleyen diğer istemcilere de aynı adresi verin. Claude aracı çağırınca akış çalışır ve son node'un çıktısı sonuç olarak döner. Program başka bilgisayarlardan erişilebiliyorsa tetikleyicide kimlik doğrulamayı açın.
 
 **Aynı anda çalışma sınırı:** Akış ayarlarında "Aynı anda en fazla çalıştırma"yı örneğin 1 yaparsanız webhook, zamanlayıcı, form ve diğer otomatik tetiklemeler sıraya girer ve birbirini beklemeden üst üste çalışmaz. Bekleme süresi zaman aşımına sayılmaz.
 
@@ -187,7 +187,7 @@ Aynı yolla "OAuth2 (başka servisler)" türüyle Spotify gibi servislere bağla
 - `{{ $json.urunler.map(u => u.fiyat).reduce((a, b) => a + b, 0) }}` ok fonksiyonlarıyla liste işlemleri
 
 **Güvenlik**
-- Editör ve API yalnızca bu bilgisayarın adresiyle gelen isteklere yanıt verir; kötü niyetli bir web sitesi tarayıcınız üzerinden 8n8'e ulaşamaz.
+- Editör ve API yalnızca bu bilgisayarın adresiyle gelen isteklere yanıt verir; kötü niyetli bir web sitesi tarayıcınız üzerinden Auto-Move'a ulaşamaz.
 - İfadeler (`{{ }}`) kod çalıştıramaz; yalnızca veri okuma ve hesaplama yapabilir.
 - API anahtarları ve şifreler AES-256-GCM ile şifrelenerek saklanır ve tarayıcıya geri gönderilmez.
 - Program varsayılan olarak yalnızca bu bilgisayardan erişilebilir (127.0.0.1).
@@ -262,7 +262,7 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 - MongoDB node'u MongoDB 3.6 ve sonrasıyla, kullanıcı adı/şifre (SCRAM) girişiyle çalışır; X.509, LDAP ve Kerberos girişi desteklenmez. MQTT tetikleyicisi program açıkken bağlı kalır, kapalıyken gelen mesajları almaz.
 - Özet sayfası saklanan çalıştırma kayıtlarından hesaplanır (`N8N8_MAX_EXECUTIONS`, varsayılan son 1000).
 - Tek kullanıcı içindir; ekip hesabı ve yetki yönetimi yoktur.
-- `8n8.exe` gerçek bir Windows bilgisayarda denenmedi; Linux üzerinde Wine 9 ile açıldı, editör hatasız yüklendi ve internet isteği gerektirmeyen testler (Kod node'unun kısıtlı süreci, SQLite, IMAP, RabbitMQ, PDF, şablonlar dahil 32 test) geçti. İnternet isteği yapan testler Wine'da geçmedi, çünkü Node.js'in kendi `node.exe` dosyası da Wine altında `fetch` ile bağlantı kuramıyor; bu Wine'ın bir eksiği, gerçek Windows'ta beklenmez. 67 testin tamamı aynı yolla üretilen Linux tek dosya sürümüne karşı ayrıca çalıştırıldı ve geçti.
+- `Auto-Move.exe` GitHub'ın Windows Server makinesinde oluşturulup 67 testin tamamı exe'ye karşı çalıştırıldı ve geçti. Kişisel bir Windows 10/11 bilgisayarda (SmartScreen, antivirüs) ayrıca denenmedi.
 
 ## Test
 
@@ -271,16 +271,16 @@ npm test
 ONLY=mongo npm test   # yalnız adında "mongo" geçen testler
 ```
 
-Aynı testleri derlenmiş tek dosya programa karşı çalıştırmak için: `N8N8_TEST_EXE=dist/8n8 npm test`.
+Aynı testleri derlenmiş tek dosya programa karşı çalıştırmak için: `N8N8_TEST_EXE=dist/Auto-Move npm test`.
 
-### 8n8.exe'yi yeniden oluşturmak
+### Auto-Move.exe'yi yeniden oluşturmak
 
-GitHub'da `main` dalına her gönderimde testler çalışır, Windows'ta `8n8.exe` oluşturulur, açıldığı denenir ve `package.json`'daki sürüm numarasıyla Sürümler sayfasına yüklenir (`.github/workflows/exe.yml`). Kendi bilgisayarınızda oluşturmak için:
+GitHub'da `main` dalına her gönderimde testler çalışır, Windows'ta `Auto-Move.exe` oluşturulur, açıldığı denenir ve `package.json`'daki sürüm numarasıyla Sürümler sayfasına yüklenir (`.github/workflows/exe.yml`). Kendi bilgisayarınızda oluşturmak için:
 
 ```
 npm install --no-save esbuild postject resedit
-node build-exe.js                       # dist/8n8.exe (Windows)
-N8N8_EXE_TARGET=linux node build-exe.js # dist/8n8 (bu bilgisayar için)
+node build-exe.js                       # dist/Auto-Move.exe (Windows)
+N8N8_EXE_TARGET=linux node build-exe.js # dist/Auto-Move (bu bilgisayar için)
 ```
 
 Komut, çalıştığı Node.js sürümünün Windows karşılığını nodejs.org'dan indirir, programı tek dosyada toplar ve Node.js'in "tek dosya uygulaması" (SEA) özelliğiyle exe'nin içine yerleştirir.

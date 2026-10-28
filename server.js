@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
-/* 8n8 — local workflow automation server.
+/* Auto-Move — local workflow automation server.
    Serves the editor, the REST API, live events, webhooks, hosted forms and the scheduler. */
-if (Number(process.versions.node.split('.')[0]) < 20) { console.error(`\n  8n8 için Node.js 20 ya da daha yeni bir sürüm gerekir (şu an ${process.version}). https://nodejs.org adresinden LTS sürümünü kurun.\n`); process.exit(1); }
+if (Number(process.versions.node.split('.')[0]) < 20) { console.error(`\n  Auto-Move için Node.js 20 ya da daha yeni bir sürüm gerekir (şu an ${process.version}). https://nodejs.org adresinden LTS sürümünü kurun.\n`); process.exit(1); }
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -146,7 +146,7 @@ function credAuthError(req, params) {
     ? (() => { const a = String(h.authorization || ''); if (!a.startsWith('Basic ')) return false; const [u, ...rest] = Buffer.from(a.slice(6), 'base64').toString().split(':'); return safeEqual(u, cred.data.user) && safeEqual(rest.join(':'), cred.data.password); })()
     : cred.type === 'httpHeader' ? safeEqual(h[String(cred.data.name || '').toLowerCase()] || '', cred.data.value || '')
     : cred.type === 'httpBearer' ? safeEqual(h.authorization || '', `Bearer ${cred.data.token}`) : false;
-  return ok ? null : { status: 401, message: 'Yetkisiz', headers: cred.type === 'httpBasic' ? { 'WWW-Authenticate': 'Basic realm="8n8"' } : {} };
+  return ok ? null : { status: 401, message: 'Yetkisiz', headers: cred.type === 'httpBasic' ? { 'WWW-Authenticate': 'Basic realm="Auto-Move"' } : {} };
 }
 async function handleWebhook(req, res, p, test) {
   const hit = findTriggerNode('webhook', p, req.method, test);
@@ -385,7 +385,7 @@ route('PUT', '/api/notify', ({ body }) => notify.set(body));
 route('POST', '/api/notify/test', async ({ body }) => {
   const s = { ...notify.get(), ...body };
   if (!s.kanal) throw new HttpError(400, 'Önce bir kanal seçin');
-  try { await notify.send('✅ 8n8 deneme bildirimi: hata bildirimleri bu kanala gelecek.', '8n8 deneme bildirimi', s); } catch (e) { throw new HttpError(400, e.message); }
+  try { await notify.send('✅ Auto-Move deneme bildirimi: hata bildirimleri bu kanala gelecek.', 'Auto-Move deneme bildirimi', s); } catch (e) { throw new HttpError(400, e.message); }
   return { ok: true };
 });
 route('GET', '/api/trash', () => store.listTrash());
@@ -562,8 +562,8 @@ route('POST', '/api/ai/build', async ({ body }) => {
 });
 route('POST', '/api/import/convert', ({ body }) => {
   if (n8n.isN8n(body)) return { source: 'n8n', ...n8n.convertN8n(body) };
-  if (Array.isArray(body.nodes) && Array.isArray(body.edges)) return { source: '8n8', workflow: body, notes: [] };
-  throw new HttpError(400, 'Bu dosya bir 8n8 ya da n8n akışı gibi görünmüyor');
+  if (Array.isArray(body.nodes) && Array.isArray(body.edges)) return { source: 'Auto-Move', workflow: body, notes: [] };
+  throw new HttpError(400, 'Bu dosya bir Auto-Move ya da n8n akışı gibi görünmüyor');
 });
 
 route('GET', '/api/templates', () => templates.LIST);
@@ -591,7 +591,7 @@ const STATIC = {
   '/favicon.svg': ['public/favicon.svg', 'image/svg+xml'],
 };
 
-/* DNS-rebinding guard: while 8n8 listens only on this computer, the editor and API answer only to
+/* DNS-rebinding guard: while Auto-Move listens only on this computer, the editor and API answer only to
    requests addressed to this computer (or to N8N8_URL / N8N8_ALLOWED_HOSTS). Public webhook, form and
    chat addresses are not affected, so tunnels keep working. */
 const LOOPBACK = ['127.0.0.1', 'localhost', '::1'].includes(HOST);
@@ -629,7 +629,7 @@ textarea{width:100%;box-sizing:border-box;min-height:70px;border:1px solid var(-
 <form method="post"><label for="not" class="m">Not (isteğe bağlı)</label><textarea id="not" name="not"></textarea><div class="b"><button class="y" name="karar" value="evet">Onayla</button><button class="n" name="karar" value="hayir">Reddet</button></div></form>`);
 }
 async function oauthCallback(res, url) {
-  const page = (ok, msg) => send(res, ok ? 200 : 400, `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>8n8 · Hesap bağlantısı</title>
+  const page = (ok, msg) => send(res, ok ? 200 : 400, `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Auto-Move · Hesap bağlantısı</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;padding:16px;box-sizing:border-box;background:#eef1f4;color:#15202b}@media(prefers-color-scheme:dark){body{background:#0d1217;color:#e2e8ee}}div{max-width:420px;text-align:center}b{color:${ok ? '#15803d' : '#c62828'}}</style></head>
 <body><div><p><b>${ok ? 'Bağlandı' : 'Bağlanamadı'}</b></p><p>${esc(msg)}</p><p>Bu pencereyi kapatabilirsiniz.</p></div>
 <script>try{window.opener&&window.opener.postMessage({type:'8n8-oauth',ok:${ok}},'*')}catch(e){}${ok ? 'setTimeout(()=>window.close(),1200)' : ''}</script></body></html>`, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -639,7 +639,7 @@ async function oauthCallback(res, url) {
   catch (e) { return page(false, e.message); }
 }
 /* MCP server (Streamable HTTP, JSON responses): every active workflow with an "MCP aracı" trigger on this
-   address is one tool. Claude Code: claude mcp add --transport http 8n8 <url> */
+   address is one tool. Claude Code: claude mcp add --transport http Auto-Move <url> */
 const MCP_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 async function handleMcp(req, res, p) {
   const o = req.headers.origin; // browsers send Origin: a web page must not drive local tools (DNS rebinding)
@@ -665,7 +665,7 @@ async function handleMcp(req, res, p) {
     const ok = result => ({ jsonrpc: '2.0', id: m.id, result });
     if (m.method === 'initialize') {
       const want = m.params?.protocolVersion;
-      return ok({ protocolVersion: MCP_VERSIONS.includes(want) ? want : MCP_VERSIONS[0], capabilities: { tools: { listChanged: false } }, serverInfo: { name: '8n8', title: `8n8 · ${p}`, version: pkg.version }, instructions: '8n8 iş akışlarını araç olarak çalıştırır. Her araç bir akışı başlatır ve sonucunu döndürür.' });
+      return ok({ protocolVersion: MCP_VERSIONS.includes(want) ? want : MCP_VERSIONS[0], capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'Auto-Move', title: `Auto-Move · ${p}`, version: pkg.version }, instructions: 'Auto-Move iş akışlarını araç olarak çalıştırır. Her araç bir akışı başlatır ve sonucunu döndürür.' });
     }
     if (m.method === 'ping') return ok({});
     if (m.method === 'tools/list') return ok({ tools: visible.map(t => t.tool) });
@@ -694,7 +694,7 @@ async function handleMcp(req, res, p) {
   if (!out) { res.writeHead(202); return res.end(); }
   return send(res, 200, out);
 }
-const UNAUTH = res => send(res, 401, 'Giriş gerekli', { 'WWW-Authenticate': 'Basic realm="8n8"' });
+const UNAUTH = res => send(res, 401, 'Giriş gerekli', { 'WWW-Authenticate': 'Basic realm="Auto-Move"' });
 
 const server = http.createServer(async (req, res) => {
   let url, p;
@@ -753,12 +753,12 @@ function openBrowser(u) {
 }
 
 server.on('error', e => {
-  if (e.code === 'EADDRINUSE') { console.error(`\n  ${PORT} portu kullanımda. 8n8 zaten açık olabilir: ${PUBLIC_URL}\n  Başka port için: PORT=5679 npm start\n`); openBrowser(PUBLIC_URL); setTimeout(() => process.exit(1), 300); }
+  if (e.code === 'EADDRINUSE') { console.error(`\n  ${PORT} portu kullanımda. Auto-Move zaten açık olabilir: ${PUBLIC_URL}\n  Başka port için: PORT=5679 npm start\n`); openBrowser(PUBLIC_URL); setTimeout(() => process.exit(1), 300); }
   throw e;
 });
 server.listen(PORT, HOST, () => {
   if (!store.listWorkflows().length) store.saveWorkflow({ ...templates.TEMPLATES.siparis(), active: false });
-  console.log(`\n  8n8 ${pkg.version} çalışıyor → ${PUBLIC_URL}`);
+  console.log(`\n  Auto-Move ${pkg.version} çalışıyor → ${PUBLIC_URL}`);
   console.log(`  Veri klasörü: ${store.DATA}`);
   if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !PASSWORD) console.log('  UYARI: Ağa açıksınız ama şifre yok. N8N8_PASSWORD ayarlayın.');
   console.log('  Kapatmak için bu pencerede Ctrl+C\n');
@@ -766,6 +766,6 @@ server.listen(PORT, HOST, () => {
 });
 // one failed background save or a stray promise must not take every workflow down with it
 process.on('unhandledRejection', e => console.error('Beklenmeyen hata:', e));
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { console.log('\n  8n8 kapatılıyor…'); for (const id of engine.runningIds()) engine.stop(id); setTimeout(() => process.exit(0), 300); });
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { console.log('\n  Auto-Move kapatılıyor…'); for (const id of engine.runningIds()) engine.stop(id); setTimeout(() => process.exit(0), 300); });
 
 module.exports = { server };
