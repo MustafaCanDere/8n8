@@ -4,6 +4,17 @@
 
 ## Kurulum
 
+### Windows: tek dosya (8n8.exe)
+
+`8n8-windows.zip` içindeki `8n8.exe` dosyasını istediğiniz bir klasöre çıkarıp çift tıklayın. Node.js kurmanız ya da `baslat.bat` çalıştırmanız gerekmez; her şey bu dosyanın içindedir. Siyah bir pencere açılır ve tarayıcı kendiliğinden 8n8'i gösterir. Programı kapatmak için bu pencereyi kapatın.
+
+- İmzasız bir program olduğu için Windows ilk açılışta "Windows bilgisayarınızı korudu" uyarısı gösterebilir. "Ek bilgi"ye, sonra "Yine de çalıştır"a tıklayın.
+- Güvenlik duvarı sorarsa izin vermeniz gerekmez: 8n8 yalnızca bu bilgisayardan erişilecek şekilde açılır.
+- Verileriniz exe'nin yanında değil, kullanıcı klasörünüzdeki `.8n8` klasöründe durur. Yeni sürüme geçerken yalnızca exe'yi değiştirmeniz yeterlidir.
+- Ortam değişkenleri (aşağıda) exe ile de çalışır, örneğin `set PORT=5679 && 8n8.exe`.
+
+### Node.js ile (Windows, macOS, Linux)
+
 1. [Node.js](https://nodejs.org) kurun. Sürüm 20 ya da daha yenisi gerekir (SQLite için 22.5+); "LTS" sürümü yeterlidir.
 2. Bu klasördeki başlatma dosyasını çalıştırın:
    - **Windows:** `baslat.bat` dosyasına çift tıklayın.
@@ -251,6 +262,7 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 - MongoDB node'u MongoDB 3.6 ve sonrasıyla, kullanıcı adı/şifre (SCRAM) girişiyle çalışır; X.509, LDAP ve Kerberos girişi desteklenmez. MQTT tetikleyicisi program açıkken bağlı kalır, kapalıyken gelen mesajları almaz.
 - Özet sayfası saklanan çalıştırma kayıtlarından hesaplanır (`N8N8_MAX_EXECUTIONS`, varsayılan son 1000).
 - Tek kullanıcı içindir; ekip hesabı ve yetki yönetimi yoktur.
+- `8n8.exe` gerçek bir Windows bilgisayarda denenmedi; Linux üzerinde Wine 9 ile açıldı, editör hatasız yüklendi ve internet isteği gerektirmeyen testler (Kod node'unun kısıtlı süreci, SQLite, IMAP, RabbitMQ, PDF, şablonlar dahil 32 test) geçti. İnternet isteği yapan testler Wine'da geçmedi, çünkü Node.js'in kendi `node.exe` dosyası da Wine altında `fetch` ile bağlantı kuramıyor; bu Wine'ın bir eksiği, gerçek Windows'ta beklenmez. 67 testin tamamı aynı yolla üretilen Linux tek dosya sürümüne karşı ayrıca çalıştırıldı ve geçti.
 
 ## Test
 
@@ -258,5 +270,17 @@ Claude node'u için [console.anthropic.com](https://console.anthropic.com) adres
 npm test
 ONLY=mongo npm test   # yalnız adında "mongo" geçen testler
 ```
+
+Aynı testleri derlenmiş tek dosya programa karşı çalıştırmak için: `N8N8_TEST_EXE=dist/8n8 npm test`.
+
+### 8n8.exe'yi yeniden oluşturmak
+
+```
+npm install --no-save esbuild postject resedit
+node build-exe.js                       # dist/8n8.exe (Windows)
+N8N8_EXE_TARGET=linux node build-exe.js # dist/8n8 (bu bilgisayar için)
+```
+
+Komut, çalıştığı Node.js sürümünün Windows karşılığını nodejs.org'dan indirir, programı tek dosyada toplar ve Node.js'in "tek dosya uygulaması" (SEA) özelliğiyle exe'nin içine yerleştirir.
 
 Testler (67 adet) geçici bir klasörde gerçek bir sunucu başlatır. Webhook, form, zamanlayıcı, alt akış, hata akışı, yeniden deneme, döngü, veri tabloları, sohbet ve Claude ajanı, Claude ile akış oluşturma, n8n içe aktarma, RSS ve klasör izleyici, Kod node'unun kısıtlı süreci, SQLite, Google E-Tablolar, Telegram tetikleyicisi, Google OAuth girişi ve token yenileme, Gmail, Drive, Takvim, Notion, Slack ve Slack tetikleyicisi, Microsoft girişi ve Outlook, GitHub, Airtable, Discord ve tetikleyicileri, yedekleme ve geri yükleme, Claude ile sınıflandırma ve bilgi çıkarma, bilgi tabanı (.docx ve PDF dahil belge yükleme, web sayfası, arama, belgelere dayalı cevap), Excel okuma/yazma ve tablo içe/dışa aktarma, form ve webhook ile dosya yükleme, IMAP e-posta tetikleyicisi, WhatsApp, Claude'a PDF ve resim gönderme, hata bildirimleri, çöp kutusu, şablonlar, MCP sunucusu, aynı anda çalışma sınırı, editörde hata ayıklama, Özet istatistikleri, onay bekleme, Stripe, Shopify, WooCommerce ve tetikleyicileri, Trello, Jira, HubSpot, Mailchimp, Netgsm ve Twilio SMS, TCMB döviz kuru, hava durumu, QR kod, doğrulama, Claude metin araçları, PDF oluşturma, ZIP, takvim daveti, e-posta ekleri, S3 imzası, FTP, Redis, komut çalıştırma, web sayfası okuma, GraphQL, ntfy, Pushover, iyzico, iş günü hesabı, MongoDB, MQTT ve tetikleyicisi, Elasticsearch, Supabase, Odoo, Trendyol ve tetikleyicisi, Paraşüt, JWT, TOTP, ağ kontrolü, Ollama, RabbitMQ ve tetikleyicisi, veritabanı tetikleyicisi, Dropbox ve OneDrive (OAuth girişi, büyük dosya yükleme dahil), Pipedrive, Asana, ClickUp, DeepL, Zendesk ve tetikleyicisi, Facebook ve Instagram, SSH ve SFTP, OpenAI uyumlu model, Teams, Brevo, Todoist, NocoDB, Google Dokümanlar, Jotform ve Typeform tetikleyicileri ve bozuk isteklere dayanıklılık denenir. Claude, Google, Microsoft, Notion, Slack, GitHub, Airtable, Discord, Telegram, WhatsApp, IMAP, SMTP, RSS, Stripe, Shopify, WooCommerce, Trello, Jira, HubSpot, Mailchimp, Netgsm, Twilio, TCMB, Open-Meteo, S3, FTP, Redis, iyzico, ntfy, Pushover, MongoDB, MQTT, Elasticsearch, Supabase, Odoo, Trendyol, Paraşüt, Ollama, RabbitMQ, Dropbox, OneDrive, Pipedrive, Asana, ClickUp, DeepL, Zendesk, Meta, SSH/SFTP, OpenAI uyumlu API, Teams, Brevo, Todoist, Jotform, Typeform, NocoDB ve Google Dokümanlar için sahte yerel sunucular kullanılır; internet ve API anahtarı gerekmez.

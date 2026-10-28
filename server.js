@@ -21,6 +21,7 @@ const templates = require('./lib/templates');
 const aiBuilder = require('./lib/ai-builder');
 const n8n = require('./lib/n8n-import');
 const pkg = require('./package.json');
+const { readAsset } = require('./lib/sea');
 
 const PORT = Number(process.env.PORT || process.env.N8N8_PORT || 5678);
 const HOST = process.env.N8N8_HOST || '127.0.0.1';
@@ -717,7 +718,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/oauth/start') { res.writeHead(302, { Location: oauth.startUrl(url.searchParams.get('cred'), OAUTH_REDIRECT), 'Cache-Control': 'no-store' }); return res.end(); }
     if ((req.method === 'GET' || req.method === 'HEAD') && STATIC[p]) {
       const [file, type] = STATIC[p];
-      return send(res, 200, fs.readFileSync(path.join(__dirname, file)), { 'Content-Type': type });
+      return send(res, 200, readAsset(file), { 'Content-Type': type });
     }
     if (p === '/api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
