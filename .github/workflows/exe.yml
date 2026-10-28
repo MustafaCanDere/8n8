@@ -1,0 +1,70 @@
+name: Test ve 8n8.exe
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Testler (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+      - run: npm ci
+      - run: npm test
+
+  exe:
+    name: 8n8.exe (Windows)
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+      - run: npm ci
+      - run: npm install --no-save esbuild postject resedit
+      - run: node build-exe.js
+      - name: exe açılıyor mu
+        shell: pwsh
+        run: |
+          $env:N8N8_NO_OPEN = '1'; $env:PORT = '5690'; $env:N8N8_DATA = "$env:RUNNER_TEMP\veri"
+          $p = Start-Process -FilePath dist\8n8.exe -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\out.txt" -RedirectStandardError "$env:RUNNER_TEMP\err.txt"
+          $ok = $false
+          for ($i = 0; $i -lt 30 -and -not $ok; $i++) { Start-Sleep 2; try { $r = Invoke-WebRequest http://127.0.0.1:5690/ -UseBasicParsing; $ok = $r.StatusCode -eq 200 } catch {} }
+          Get-Content "$env:RUNNER_TEMP\out.txt", "$env:RUNNER_TEMP\err.txt"
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { throw '8n8.exe açılmadı' }
+      - name: Bütün testler exe'ye karşı
+        continue-on-error: true
+        env:
+          N8N8_TEST_EXE: dist\8n8.exe
+        run: npm test
+      - name: Paketle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory paket\8n8 | Out-Null
+          Copy-Item dist\8n8.exe, README.md paket\8n8\
+          Compress-Archive -Path paket\8n8 -DestinationPath 8n8-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 8n8-windows
+          path: 8n8-windows.zip
+      - name: Sürüm (Release) olarak yayımla
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = 'v' + (node -p "require('./package.json').version")
+          gh release view $v 2>$null
+          if ($LASTEXITCODE -eq 0) { gh release upload $v 8n8-windows.zip --clobber }
+          else { gh release create $v 8n8-windows.zip --title "8n8 $v" --notes "Windows: 8n8-windows.zip dosyasını indirip açın ve 8n8.exe'ye çift tıklayın. Node.js kurmanız gerekmez. macOS ve Linux için kaynak kodu indirip baslat.command ya da baslat.sh ile başlatın." }
