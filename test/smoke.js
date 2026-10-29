@@ -2112,6 +2112,169 @@ test('Pazaryerleri: Hepsiburada, N11 ve Amazon (sipariş, paketleme, onay, stok/
   assert.deepEqual(got, [['4080009', 'Yeni Müşteri', 150, 1], ['205000009', 'Yeni N11', 50, 0], ['407-9999999-9999999', 'Yeni Amazon', 75, 1]]);
 });
 
+test('Sosyal medya ve reklam: YouTube (+ tetikleyici), Analytics, Google Ads, Meta reklamları, LinkedIn ve X (OAuth) (sahte API)', async () => {
+  const g = await api('POST', '/api/credentials', { type: 'googleOAuth', name: 'g-soc', data: { clientId: 'g', clientSecret: 'g', services: 'youtube,analytics,ads', access_token: 'g-soc' } });
+  fs.mkdirSync(path.join(DATA, 'dosyalar'), { recursive: true }); fs.writeFileSync(path.join(DATA, 'dosyalar', 'tanitim.mp4'), 'VIDEO-BAYTLARI');
+  const yw = await api('POST', '/api/workflows', wf('yt', [
+    ['manual', {}],
+    ['youtube', { credential: g.id, op: 'channel', channelId: '' }, { name: 'kanal' }],
+    ['youtube', { credential: g.id, op: 'videos', channelId: '', max: 10 }, { name: 'videolar' }],
+    ['limit', { max: 1 }],
+    ['youtube', { credential: g.id, op: 'update', videoId: 'vid00000001', title: 'Yeni başlık', description: '', tags: 'a, b' }, { name: 'guncelle' }],
+    ['youtube', { credential: g.id, op: 'upload', file: 'tanitim.mp4', title: 'Tanıtım', description: 'Açıklama', tags: 'kupa', privacy: 'unlisted' }, { name: 'yukle' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]));
+  let e = await waitExec((await api('POST', `/api/workflows/${yw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(outOf(e, 'kanal')[0], { id: 'UCbenim', ad: 'Kanalım', url: 'https://www.youtube.com/channel/UCbenim', abone: 1200, goruntulenme: 50000, videoSayisi: 2, olusturma: '2020-01-01T00:00:00Z' });
+  const v = outOf(e, 'videolar');
+  assert.deepEqual(v.map(x => [x.id, x.baslik, x.goruntulenme, x.sureSn]), [['vid00000002', 'İkinci video', 320, 253], ['vid00000001', 'İlk video', 1500, 253]]);
+  assert.deepEqual(fakeSoc.updates[0], { id: 'vid00000001', snippet: { title: 'Yeni başlık', description: '', categoryId: '27', tags: ['a', 'b'] } });
+  assert.equal(outOf(e, 'guncelle')[0].baslik, 'Yeni başlık');
+  assert.deepEqual(fakeSoc.uploadMeta, { body: { snippet: { title: 'Tanıtım', description: 'Açıklama', tags: ['kupa'], categoryId: '22' }, status: { privacyStatus: 'unlisted', selfDeclaredMadeForKids: false } }, type: 'video/mp4', len: '14' });
+  assert.deepEqual(fakeSoc.uploaded, [{ bytes: 'VIDEO-BAYTLARI', type: 'video/mp4' }]);
+  assert.deepEqual([outOf(e, 'yukle')[0].id, outOf(e, 'yukle')[0].gizlilik], ['vidYENI00001', 'unlisted']);
+  const cw = await api('POST', '/api/workflows', wf('ytc', [
+    ['manual', { data: '[{"id":"vid00000001"}]' }],
+    ['youtube', { credential: g.id, op: 'comments', videoId: 'https://youtu.be/{{ $json.id }}' }, { name: 'yorumlar' }],
+    ['youtube', { credential: g.id, op: 'reply', commentId: '{{ $json.yorumId }}', text: 'Teşekkürler {{ $json.yazar }}!' }, { name: 'yanit' }],
+    ['youtube', { credential: g.id, op: 'video', videoId: 'vidYOK000001' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  e = await waitExec((await api('POST', `/api/workflows/${cw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'error'); assert.match(e.error, /Video bulunamadı: vidYOK000001/);
+  assert.deepEqual(outOf(e, 'yorumlar').map(x => [x.id, x.yorumId, x.yazar, x.metin]), [['th1', 'th1-c', 'Ayşe', 'Çok faydalı oldu']]);
+  assert.deepEqual(fakeSoc.replies, [{ snippet: { parentId: 'th1-c', textOriginal: 'Teşekkürler Ayşe!' } }]);
+
+  // Analytics
+  const aw = await api('POST', '/api/workflows', wf('ga', [
+    ['manual', {}],
+    ['googleAnalytics', { credential: g.id, op: 'report', property: '123456', dates: 'custom', start: '2026-10-27', end: '2026-10-28', dimensions: 'date', metrics: 'activeUsers, sessions', max: 50 }, { name: 'rapor' }],
+    ['googleAnalytics', { credential: g.id, op: 'realtime', property: 'properties/123456', dimensions: 'country', metrics: 'activeUsers' }, { name: 'simdi' }],
+  ], [[0, 1], [1, 2]]));
+  e = await waitExec((await api('POST', `/api/workflows/${aw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(outOf(e, 'rapor'), [{ date: '2026-10-27', activeUsers: 12, sessions: 15 }, { date: '2026-10-28', activeUsers: 20, sessions: 26 }]);
+  assert.deepEqual(fakeSoc.ga[0], ['/v1beta/properties/123456:runReport', { dateRanges: [{ startDate: '2026-10-27', endDate: '2026-10-28' }], dimensions: [{ name: 'date' }], metrics: [{ name: 'activeUsers' }, { name: 'sessions' }], limit: '50', orderBys: [{ dimension: { dimensionName: 'date' } }] }]);
+  assert.deepEqual(outOf(e, 'simdi'), [{ country: 'Turkey', activeUsers: 7 }, { country: 'Turkey', activeUsers: 7 }]);
+
+  // Google Ads
+  const ga = await api('POST', '/api/credentials', { type: 'googleAdsApi', name: 'ads', data: { customerId: '123-456-7890', developerToken: 'dev-tok', loginCustomerId: '111-222-3333', version: 'v26' } });
+  const gw = await api('POST', '/api/workflows', wf('ads', [
+    ['manual', {}],
+    ['googleAds', { credential: g.id, adsCredential: ga.id, op: 'campaigns', dates: 'last7' }, { name: 'kamp' }],
+    ['limit', { max: 1 }],
+    ['googleAds', { credential: g.id, adsCredential: ga.id, op: 'status', campaignId: '{{ $json.kampanyaId }}', status: 'PAUSED' }, { name: 'durdur' }],
+    ['googleAds', { credential: g.id, adsCredential: ga.id, op: 'query', gaql: 'SELECT ad_group.name, metrics.clicks FROM ad_group' }, { name: 'gaql' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4]]));
+  e = await waitExec((await api('POST', `/api/workflows/${gw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const k = outOf(e, 'kamp');
+  assert.equal(k.length, 2, 'iki sayfa');
+  const { baslangic, bitis, ...k0 } = k[0];
+  assert.match(baslangic, /^\d{4}-\d{2}-\d{2}$/); assert.ok(baslangic < bitis);
+  assert.deepEqual(k0, { kampanyaId: '111', kampanya: 'Marka', durum: 'ENABLED', gosterim: 1000, tiklama: 50, harcama: 125.5, donusum: 3, donusumDegeri: 900, tiklamaOrani: 5, ortalamaTbm: 2.51, paraBirimi: 'TRY', platform: 'Google Ads' });
+  assert.equal(k[1].harcama, 8);
+  assert.match(fakeSoc.ads[0].body.query, new RegExp(`BETWEEN '${baslangic}' AND '${bitis}'`));
+  assert.equal(fakeSoc.ads[0].cid, '1234567890'); assert.equal(fakeSoc.ads[0].login, '1112223333');
+  assert.deepEqual(fakeSoc.adsMutate[0], { operations: [{ update: { resourceName: 'customers/1234567890/campaigns/111', status: 'PAUSED' }, updateMask: 'status' }] });
+  assert.deepEqual(outOf(e, 'gaql'), [{ 'adGroup.resourceName': 'customers/1/adGroups/9', 'adGroup.name': 'G1', 'metrics.clicks': 7, 'metrics.costMicros': 1000000 }]);
+  const bad = await api('POST', '/api/credentials', { type: 'googleAdsApi', name: 'ads-bad', data: { customerId: '1234567890', developerToken: 'yanlis' } });
+  const bw = await api('POST', '/api/workflows', wf('adsbad', [['manual', {}], ['googleAds', { credential: g.id, adsCredential: bad.id, op: 'campaigns', dates: 'yesterday' }]], [[0, 1]]));
+  e = await waitExec((await api('POST', `/api/workflows/${bw.id}/run`, {})).executionId);
+  assert.match(e.error, /Google Ads \(401\).*developer token is not valid/);
+
+  // Meta ads
+  const ma = await api('POST', '/api/credentials', { type: 'metaAds', name: 'meta-ads', data: { adAccountId: 'act_555', token: 'meta-ads' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'metaAds', id: ma.id, data: { adAccountId: '555' } })).message, 'Reklam hesabı: Mağaza Reklam (TRY)');
+  const mw = await api('POST', '/api/workflows', wf('meta', [
+    ['manual', {}],
+    ['metaAds', { credential: ma.id, op: 'insights', level: 'campaign', dates: 'last7' }, { name: 'rapor' }],
+    ['limit', { max: 1 }],
+    ['metaAds', { credential: ma.id, op: 'status', campaignId: '{{ $json.kampanyaId }}', status: 'PAUSED' }, { name: 'durdur' }],
+    ['metaAds', { credential: ma.id, op: 'campaigns' }, { name: 'kamp' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4]]));
+  e = await waitExec((await api('POST', `/api/workflows/${mw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const r0 = outOf(e, 'rapor');
+  assert.equal(r0.length, 2, 'sayfalama');
+  assert.deepEqual([r0[0].kampanya, r0[0].harcama, r0[0].tiklama, r0[0].satinAlma, r0[0].satisDegeri, r0[0].roas, r0[0].eylemler.link_click, r0[1].harcama], ['Kupa kampanyası', 450.5, 120, 6, 1800, 4, 110, 150]);
+  const ins = fakeSoc.meta.find(x => x[1] === '/meta/act_555/insights');
+  assert.equal(ins[2].level, 'campaign'); assert.equal(ins[2].time_increment, 'all_days'); assert.match(ins[2].time_range, /"since":"\d{4}-\d{2}-\d{2}"/);
+  assert.deepEqual(fakeSoc.meta.find(x => x[0] === 'POST').slice(1).filter((_, i) => i !== 1), ['/meta/777001', 'status=PAUSED']);
+  assert.deepEqual(outOf(e, 'kamp')[0], { kampanyaId: '777001', kampanya: 'Kupa kampanyası', durum: 'ACTIVE', etkinDurum: 'ACTIVE', amac: 'OUTCOME_SALES', gunlukButce: 150, toplamButce: null, baslangic: null, bitis: null });
+
+  // LinkedIn: OpenID sign-in, text, link and image posts, delete
+  const li = await api('POST', '/api/credentials', { type: 'linkedinOAuth', name: 'li', data: { clientId: 'li-app', clientSecret: 'li-sec', pages: 'false' } });
+  let r = await fetch(`${B}/oauth/start?cred=${li.id}`, { redirect: 'manual' });
+  let loc = new URL(r.headers.get('location'));
+  assert.equal(loc.pathname, '/li-auth'); assert.equal(loc.searchParams.get('scope'), 'openid profile email w_member_social');
+  r = await fetch(`${B}/oauth/callback?code=likod&state=${loc.searchParams.get('state')}`); assert.match(await r.text(), /Bağlandı/);
+  assert.equal((await api('GET', `/api/credentials/${li.id}`)).account, 'ayse@ornek.com');
+  fs.writeFileSync(path.join(DATA, 'dosyalar', 'kupa.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
+  const lw = await api('POST', '/api/workflows', wf('li', [
+    ['manual', {}],
+    ['linkedin', { credential: li.id, op: 'post', as: 'me', text: 'Yeni ürün (kupa) #indirim @herkes', visibility: 'PUBLIC' }, { name: 'metin' }],
+    ['linkedin', { credential: li.id, op: 'post', as: 'org', orgId: '9876', text: 'Sitemiz', link: 'https://ornek.com', linkTitle: 'Ornek' }, { name: 'baglanti' }],
+    ['linkedin', { credential: li.id, op: 'post', as: 'me', text: 'Resimli', image: 'kupa.png', visibility: 'CONNECTIONS' }, { name: 'resim' }],
+    ['linkedin', { credential: li.id, op: 'delete', postId: '{{ $json.id }}' }, { name: 'sil' }],
+    ['linkedin', { credential: li.id, op: 'me' }, { name: 'ben' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]));
+  e = await waitExec((await api('POST', `/api/workflows/${lw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const [p1, p2, p3] = fakeSoc.li.posts;
+  assert.deepEqual(p1, { author: 'urn:li:person:abc123', commentary: 'Yeni ürün \\(kupa\\) \\#indirim \\@herkes', visibility: 'PUBLIC', distribution: { feedDistribution: 'MAIN_FEED', targetEntities: [], thirdPartyDistributionChannels: [] }, lifecycleState: 'PUBLISHED', isReshareDisabledByAuthor: false });
+  assert.deepEqual([p2.author, p2.visibility, p2.content], ['urn:li:organization:9876', 'PUBLIC', { article: { source: 'https://ornek.com', title: 'Ornek' } }]);
+  assert.deepEqual([p3.visibility, p3.content], ['CONNECTIONS', { media: { id: 'urn:li:image:img1', altText: '' } }]);
+  assert.deepEqual(fakeSoc.li.images, [{ len: 8, type: 'image/png' }]);
+  assert.deepEqual(outOf(e, 'metin')[0], { id: 'urn:li:share:7001', url: 'https://www.linkedin.com/feed/update/urn:li:share:7001', yazar: 'urn:li:person:abc123', metin: 'Yeni ürün (kupa) #indirim @herkes' });
+  assert.deepEqual(fakeSoc.li.deleted, ['urn:li:share:7003']);
+  assert.equal(outOf(e, 'ben')[0].eposta, 'ayse@ornek.com');
+
+  // X: OAuth 2.0 with PKCE and Basic client auth, post with image, reply, delete, search, timeline
+  const xc = await api('POST', '/api/credentials', { type: 'xOAuth', name: 'x', data: { clientId: 'x-app', clientSecret: 'x-sec' } });
+  r = await fetch(`${B}/oauth/start?cred=${xc.id}`, { redirect: 'manual' });
+  loc = new URL(r.headers.get('location'));
+  assert.equal(loc.pathname, '/x-auth'); assert.match(loc.searchParams.get('scope'), /tweet\.write.*offline\.access/); assert.equal(loc.searchParams.get('code_challenge_method'), 'S256');
+  r = await fetch(`${B}/oauth/callback?code=xkod&state=${loc.searchParams.get('state')}`); assert.match(await r.text(), /Bağlandı/);
+  assert.equal((await api('GET', `/api/credentials/${xc.id}`)).account, '@automove');
+  assert.deepEqual(fakeSoc.x.tokenAuth[0], ['Basic ' + Buffer.from('x-app:x-sec').toString('base64'), null], 'gizli anahtar gövdede değil Basic başlığında gider');
+  const xw = await api('POST', '/api/workflows', wf('x', [
+    ['manual', {}],
+    ['x', { credential: xc.id, op: 'post', text: 'Merhaba dünya', image: 'kupa.png' }, { name: 'gonder' }],
+    ['x', { credential: xc.id, op: 'post', text: 'Ek bilgi', replyTo: '{{ $json.id }}' }, { name: 'yanit' }],
+    ['x', { credential: xc.id, op: 'delete', postId: '{{ $json.id }}' }, { name: 'sil' }],
+    ['x', { credential: xc.id, op: 'search', query: 'kupa', max: 10 }, { name: 'ara' }],
+    ['x', { credential: xc.id, op: 'timeline', username: '@baska', max: 5 }, { name: 'akis' }],
+    ['x', { credential: xc.id, op: 'me' }, { name: 'ben' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6]]));
+  e = await waitExec((await api('POST', `/api/workflows/${xw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(fakeSoc.x.media.map(m => [m.hasFile, m.category]), [[true, 'tweet_image']]);
+  assert.deepEqual(fakeSoc.x.tweets, [{ text: 'Merhaba dünya', media: { media_ids: ['m-1'] } }, { text: 'Ek bilgi', reply: { in_reply_to_tweet_id: '1801' } }]);
+  assert.deepEqual(outOf(e, 'gonder')[0], { id: '1801', metin: 'Merhaba dünya', url: 'https://x.com/i/web/status/1801' });
+  assert.deepEqual(fakeSoc.x.deleted, ['1802']);
+  assert.deepEqual(outOf(e, 'ara').map(t => [t.id, t.yazar, t.begeni, t.url]), [['901', 'baska', 3, 'https://x.com/baska/status/901']]);
+  assert.deepEqual(outOf(e, 'akis').map(t => t.id), ['902', '903']);
+  assert.deepEqual(outOf(e, 'ben')[0].takipci, 10);
+
+  // templates
+  const st = await api('POST', '/api/templates/sosyalPaylas', {});
+  assert.deepEqual(st.nodes.map(n => n.type).sort(), ['facebook', 'form', 'linkedin', 'table', 'x']);
+  const rt = await api('POST', '/api/templates/reklamRaporu', {});
+  assert.deepEqual(rt.nodes.map(n => n.type), ['schedule', 'googleAds', 'metaAds', 'merge', 'table', 'aggregate', 'push']);
+
+  // trigger: a video uploaded after the first check starts the workflow
+  const t = await api('POST', '/api/workflows', wf('ytt', [['youtubeTrigger', { credential: g.id, event: 'video', channelId: 'UCbaska', every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${t.id}`, { active: true });
+  await sleep(1300);
+  fakeSoc.uploads.UUbaska.unshift('vidBASKA002');
+  await sleep(4500);
+  await api('PUT', `/api/workflows/${t.id}`, { active: false });
+  const { items } = await api('GET', `/api/executions?workflowId=${t.id}`);
+  assert.equal(items.length, 1, 'yalnız yeni video akışı başlatmalı');
+  const x = outOf(await waitExec(items[0].id), 'son')[0];
+  assert.deepEqual([x.id, x.kanal, x.url], ['vidBASKA002', 'Başka Kanal', 'https://www.youtube.com/watch?v=vidBASKA002']);
+});
+
 test('Masaüstü: bilgisayar açılınca başlat, güncellemeyi denetle ve kur (sahte GitHub)', async () => {
   let d = await api('GET', '/api/desktop');
   assert.equal(d.autostart.on, false); assert.equal(d.tray, false);
@@ -2479,6 +2642,112 @@ function fakeTelegramApi(req, res) {
   }
   return json({ ok: true, result: {} });
 }
+const fakeSoc = {
+  vids: { vid00000001: { title: 'İlk video', views: '1500', tags: ['tanıtım'] }, vid00000002: { title: 'İkinci video', views: '320', tags: [] } },
+  uploads: { UUbenim: ['vid00000002', 'vid00000001'], UUbaska: ['vidBASKA001'] },
+  threads: [{ id: 'th1', videoId: 'vid00000001', author: 'Ayşe', text: 'Çok faydalı oldu' }],
+  replies: [], updates: [], uploaded: [], ga: [], ads: [], adsMutate: [], meta: [], li: { posts: [], images: [], deleted: [] }, x: { tweets: [], media: [], deleted: [], tokenAuth: [] },
+};
+function fakeSocialApi(req, res, raw) {
+  const u = new URL(req.url, 'http://x'); const p = u.pathname; let m; const qs = Object.fromEntries(u.searchParams);
+  const base = `http://127.0.0.1:${fakeClaude.port}`;
+  const json = (d, s = 200, h = {}) => { res.writeHead(s, { 'Content-Type': 'application/json', ...h }); res.end(d === null ? '' : JSON.stringify(d)); };
+  const auth = req.headers.authorization || '';
+  let body = null; if (raw.length && String(req.headers['content-type'] || '').includes('json')) body = JSON.parse(raw.toString());
+  const vid = id => { const v = fakeSoc.vids[id] || { title: id, views: '0', tags: [] }; return { id, snippet: { title: v.title, description: v.description || '', publishedAt: '2026-10-20T10:00:00Z', channelTitle: id.startsWith('vidBASKA') ? 'Başka Kanal' : 'Kanalım', channelId: id.startsWith('vidBASKA') ? 'UCbaska' : 'UCbenim', tags: v.tags, categoryId: '27' }, statistics: { viewCount: v.views, likeCount: '10', commentCount: '2' }, contentDetails: { duration: 'PT4M13S' }, status: { privacyStatus: v.privacy || 'public' } }; };
+  if (p.startsWith('/youtube/') || p.startsWith('/upload/youtube/') || p.startsWith('/v1beta/') || /^\/v\d+\/customers\//.test(p)) {
+    if (auth !== 'Bearer g-soc') return json({ error: { code: 401, message: 'Request had invalid authentication credentials.' } }, 401);
+  }
+  if (p === '/youtube/v3/channels') {
+    const id = qs.id || (qs.mine === 'true' ? 'UCbenim' : '');
+    if (id !== 'UCbenim' && id !== 'UCbaska') return json({ items: [] });
+    return json({ items: [{ id, snippet: { title: id === 'UCbenim' ? 'Kanalım' : 'Başka Kanal', publishedAt: '2020-01-01T00:00:00Z' }, statistics: { subscriberCount: '1200', viewCount: '50000', videoCount: String(fakeSoc.uploads[id === 'UCbenim' ? 'UUbenim' : 'UUbaska'].length) }, contentDetails: { relatedPlaylists: { uploads: id === 'UCbenim' ? 'UUbenim' : 'UUbaska' } } }] });
+  }
+  if (p === '/youtube/v3/playlistItems') return json({ items: (fakeSoc.uploads[qs.playlistId] || []).slice(0, Number(qs.maxResults)).map(videoId => ({ contentDetails: { videoId } })) });
+  if (p === '/youtube/v3/videos' && req.method === 'GET') return json({ items: qs.id.split(',').filter(id => fakeSoc.vids[id] || id.startsWith('vidBASKA')).map(vid) });
+  if (p === '/youtube/v3/videos' && req.method === 'PUT') { fakeSoc.updates.push(body); Object.assign(fakeSoc.vids[body.id], { title: body.snippet.title, description: body.snippet.description, tags: body.snippet.tags }); return json(vid(body.id)); }
+  if (p === '/youtube/v3/commentThreads') {
+    const list = fakeSoc.threads.filter(t => qs.videoId ? t.videoId === qs.videoId : qs.allThreadsRelatedToChannelId === 'UCbenim');
+    return json({ items: list.map(t => ({ id: t.id, snippet: { videoId: t.videoId, totalReplyCount: 0, topLevelComment: { id: t.id + '-c', snippet: { videoId: t.videoId, authorDisplayName: t.author, textOriginal: t.text, publishedAt: '2026-10-28T08:00:00Z', likeCount: 1 } } } })) });
+  }
+  if (p === '/youtube/v3/comments' && req.method === 'POST') { fakeSoc.replies.push(body); return json({ id: 'rep-1', snippet: { ...body.snippet, publishedAt: '2026-10-29T08:00:00Z' } }); }
+  if (p === '/upload/youtube/v3/videos' && qs.uploadType === 'resumable') {
+    fakeSoc.uploadMeta = { body, type: req.headers['x-upload-content-type'], len: req.headers['x-upload-content-length'] };
+    res.writeHead(200, { Location: `${base}/upload/youtube/v3/videos?upload_id=up-1` }); return res.end();
+  }
+  if (p === '/upload/youtube/v3/videos' && qs.upload_id === 'up-1') {
+    fakeSoc.uploaded.push({ bytes: raw.toString(), type: req.headers['content-type'] });
+    const m = fakeSoc.uploadMeta.body; fakeSoc.vids.vidYENI00001 = { title: m.snippet.title, description: m.snippet.description, tags: m.snippet.tags, views: '0', privacy: m.status.privacyStatus };
+    fakeSoc.uploads.UUbenim.unshift('vidYENI00001'); return json(vid('vidYENI00001'));
+  }
+  // Google Analytics Data API
+  if (/^\/v1beta\/properties\/\d+:run(Realtime)?Report$/.test(p)) {
+    fakeSoc.ga.push([p, body]);
+    if (p.endsWith('runRealtimeReport')) return json({ dimensionHeaders: [{ name: 'country' }], metricHeaders: [{ name: 'activeUsers', type: 'TYPE_INTEGER' }], rows: [{ dimensionValues: [{ value: 'Turkey' }], metricValues: [{ value: '7' }] }] });
+    return json({ dimensionHeaders: [{ name: 'date' }], metricHeaders: [{ name: 'activeUsers', type: 'TYPE_INTEGER' }, { name: 'sessions', type: 'TYPE_INTEGER' }], rows: [{ dimensionValues: [{ value: '20261027' }], metricValues: [{ value: '12' }, { value: '15' }] }, { dimensionValues: [{ value: '20261028' }], metricValues: [{ value: '20' }, { value: '26' }] }] });
+  }
+  // Google Ads API
+  if ((m = p.match(/^\/v26\/customers\/(\d+)\/(googleAds:search|campaigns:mutate)$/))) {
+    if (req.headers['developer-token'] !== 'dev-tok') return json({ error: { code: 401, message: 'Request is missing required authentication credential.', details: [{ errors: [{ message: 'The developer token is not valid.' }] }] } }, 401);
+    fakeSoc.ads.push({ cid: m[1], login: req.headers['login-customer-id'] || null, body });
+    if (m[2] === 'campaigns:mutate') { fakeSoc.adsMutate.push(body); return json({ results: [{ resourceName: body.operations[0].update.resourceName }] }); }
+    if (/FROM campaign/.test(body.query)) {
+      const r1 = { campaign: { resourceName: 'customers/1234567890/campaigns/111', id: '111', name: 'Marka', status: 'ENABLED' }, customer: { currencyCode: 'TRY' }, metrics: { impressions: '1000', clicks: '50', costMicros: '125500000', conversions: 3, conversionsValue: 900, ctr: 0.05, averageCpc: '2510000' } };
+      const r2 = { campaign: { resourceName: 'customers/1234567890/campaigns/222', id: '222', name: 'Genel', status: 'PAUSED' }, customer: { currencyCode: 'TRY' }, metrics: { impressions: '200', clicks: '4', costMicros: '8000000' } };
+      return json(body.pageToken === 'p2' ? { results: [r2] } : { results: [r1], nextPageToken: 'p2' });
+    }
+    return json({ results: [{ adGroup: { resourceName: 'customers/1/adGroups/9', name: 'G1' }, metrics: { clicks: '7', costMicros: '1000000' } }] });
+  }
+  // Meta Marketing API
+  if (p.startsWith('/meta/act_') || p === '/meta/777001') {
+    if (auth !== 'Bearer meta-ads' && qs.access_token !== 'meta-ads') return json({ error: { message: 'Invalid OAuth access token.', type: 'OAuthException', code: 190 } }, 401);
+    fakeSoc.meta.push([req.method, p, qs, raw.toString()]);
+    if (p === '/meta/act_555') return json({ name: 'Mağaza Reklam', currency: 'TRY', account_status: 1, id: 'act_555' });
+    if (p === '/meta/act_555/insights') {
+      if (qs.after === 'c2') return json({ data: [{ campaign_id: '777002', campaign_name: 'Yeniden hedefleme', impressions: '800', reach: '500', clicks: '20', spend: '150.00', ctr: '2.5', cpc: '7.5', cpm: '187.5', account_currency: 'TRY', date_start: '2026-10-22', date_stop: '2026-10-28' }], paging: {} });
+      return json({ data: [{ campaign_id: '777001', campaign_name: 'Kupa kampanyası', impressions: '5000', reach: '3200', clicks: '120', spend: '450.50', ctr: '2.4', cpc: '3.754167', cpm: '90.1', account_currency: 'TRY', actions: [{ action_type: 'link_click', value: '110' }, { action_type: 'purchase', value: '6' }], action_values: [{ action_type: 'purchase', value: '1800' }], date_start: '2026-10-22', date_stop: '2026-10-28' }], paging: { next: `${base}/meta/act_555/insights?access_token=meta-ads&after=c2` } });
+    }
+    if (p === '/meta/act_555/campaigns') return json({ data: [{ id: '777001', name: 'Kupa kampanyası', status: 'ACTIVE', effective_status: 'ACTIVE', objective: 'OUTCOME_SALES', daily_budget: '15000' }] });
+    if (p === '/meta/777001' && req.method === 'POST') return json({ success: true });
+  }
+  // LinkedIn
+  if (p === '/li-token') {
+    const b = Object.fromEntries(new URLSearchParams(raw.toString()));
+    if (b.client_id !== 'li-app' || b.client_secret !== 'li-sec' || b.code !== 'likod') return json({ error: 'invalid_request' }, 400);
+    const idt = ['{"alg":"none"}', JSON.stringify({ sub: 'abc123', email: 'ayse@ornek.com' })].map(x => Buffer.from(x).toString('base64url')).join('.') + '.x';
+    return json({ access_token: 'li-at', expires_in: 5184000, id_token: idt, scope: 'openid,profile,email,w_member_social' });
+  }
+  if (p.startsWith('/li/') || p.startsWith('/li-up/')) {
+    if (auth !== 'Bearer li-at') return json({ message: 'Invalid access token', status: 401 }, 401);
+    if (p.startsWith('/li/rest/') && (!/^\d{6}$/.test(req.headers['linkedin-version'] || '') || req.headers['x-restli-protocol-version'] !== '2.0.0')) return json({ message: 'missing version', status: 426 }, 426);
+    if (p === '/li/v2/userinfo') return json({ sub: 'abc123', name: 'Ayşe Yılmaz', email: 'ayse@ornek.com' });
+    if (p === '/li/rest/images' && qs.action === 'initializeUpload') return json({ value: { uploadUrl: `${base}/li-up/img1`, image: 'urn:li:image:img1' } });
+    if (p === '/li-up/img1') { fakeSoc.li.images.push({ len: raw.length, type: req.headers['content-type'] }); return json(null, 201); }
+    if (p === '/li/rest/posts' && req.method === 'POST') { fakeSoc.li.posts.push(body); return json(null, 201, { 'x-restli-id': `urn:li:share:700${fakeSoc.li.posts.length}` }); }
+    if (p.startsWith('/li/rest/posts/') && req.method === 'DELETE') { fakeSoc.li.deleted.push(decodeURIComponent(p.slice(15))); return json(null, 204); }
+  }
+  // X
+  if (p === '/x-token') {
+    const b = Object.fromEntries(new URLSearchParams(raw.toString()));
+    fakeSoc.x.tokenAuth.push([auth, b.client_secret || null]);
+    if (auth !== 'Basic ' + Buffer.from('x-app:x-sec').toString('base64') || b.client_id !== 'x-app') return json({ error: 'unauthorized_client' }, 401);
+    if (b.grant_type === 'authorization_code' && (b.code !== 'xkod' || !b.code_verifier)) return json({ error: 'invalid_request' }, 400);
+    return json({ access_token: 'x-at', refresh_token: 'x-rt', expires_in: 7200, token_type: 'bearer', scope: 'tweet.read tweet.write users.read media.write offline.access' });
+  }
+  if (p.startsWith('/xapi/')) {
+    if (auth !== 'Bearer x-at') return json({ title: 'Unauthorized', detail: 'Unauthorized', status: 401 }, 401);
+    if (p === '/xapi/2/users/me') return json({ data: { id: '42', username: 'automove', name: 'Auto Move', description: 'otomasyon', public_metrics: { followers_count: 10, following_count: 3, tweet_count: 5 } } });
+    if (p === '/xapi/2/media/upload') { const t = raw.toString('latin1'); fakeSoc.x.media.push({ hasFile: /name="media"; filename=/.test(t), category: (t.match(/name="media_category"\r\n\r\n([^\r]+)/) || [])[1], len: raw.length }); return json({ data: { id: 'm-1', media_key: '3_1' } }); }
+    if (p === '/xapi/2/tweets' && req.method === 'POST') { fakeSoc.x.tweets.push(body); if (body.text && body.text.length > 280) return json({ title: 'Invalid Request', detail: 'Tweet text is too long.' }, 400); return json({ data: { id: String(1800 + fakeSoc.x.tweets.length), text: body.text || '' } }, 201); }
+    if (p.startsWith('/xapi/2/tweets/') && req.method === 'DELETE') { fakeSoc.x.deleted.push(p.slice(15)); return json({ data: { deleted: true } }); }
+    const tw = (id, text, a) => ({ id, text, author_id: a, created_at: '2026-10-28T10:00:00.000Z', lang: 'tr', public_metrics: { like_count: 3, reply_count: 1, retweet_count: 0, impression_count: 90 } });
+    if (p === '/xapi/2/tweets/search/recent') return json({ data: [tw('901', `${qs.query} harika`, '77')], includes: { users: [{ id: '77', username: 'baska', name: 'Başka' }] } });
+    if (p === '/xapi/2/users/by/username/baska') return json({ data: { id: '77', username: 'baska' } });
+    if (p === '/xapi/2/users/77/tweets') return json({ data: [tw('902', 'Merhaba', '77'), tw('903', 'Yeni ürün', '77')], includes: { users: [{ id: '77', username: 'baska', name: 'Başka' }] } });
+  }
+  return json({ error: { message: 'yok: ' + p } }, 404);
+}
+
 const fakeUpd = { tag: 'v1.0.0', asset: true, downloads: 0 };
 function fakeUpdApi(req, res) {
   const u = `http://127.0.0.1:${fakeClaude.port}`;
@@ -2492,6 +2761,7 @@ function fakeUpdApi(req, res) {
 
 const fakeServer = require('http').createServer((req, res) => {
   if (req.url.startsWith('/upd/')) return fakeUpdApi(req, res);
+  if (/^\/(youtube|upload\/youtube|v1beta|v\d+\/customers|li|li-up|li-token|x-token|xapi)(\/|$)|^\/meta\/(act_|777001)/.test(req.url.split('?')[0])) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeSocialApi(req, res, Buffer.concat(ch))); }
   if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
   const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp], [/^\/(stripe|shop|woo|trello|jira|hubspot|mc|twilio|netgsm|tcmb|geo|meteo)\//, fakeBizApi], [/^\/(pushover\/|ntfy|iyzico\/|graphql|urun\.html)/, fakeMiscApi], [/^\/(es|supa|odoo|ty|parasut|ollama)(\/|$)/, fakeMoreApi]];
   if (req.url.startsWith('/s3/')) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeS3Api(req, res, Buffer.concat(ch))); }
@@ -3439,7 +3709,7 @@ function fakeMoreApi(req, res, raw) {
   await new Promise(r => sshServer.listen(0, '127.0.0.1', r)); fakeSsh.port = sshServer.address().port;
   await new Promise(r => amqpServer.listen(0, '127.0.0.1', r)); fakeAmqp.port = amqpServer.address().port;
   // N8N8_TEST_EXE=<path> runs the same tests against a built 8n8 executable
-  const srv = spawn(process.env.N8N8_TEST_EXE || process.execPath, process.env.N8N8_TEST_EXE ? [] : [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, N8N8_DROPBOX_CONTENT: `http://127.0.0.1:${fakeClaude.port}/dbxc`, N8N8_DROPBOX_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-auth`, N8N8_DROPBOX_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-token`, N8N8_AMAZON_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/amz-auth`, N8N8_UPDATE_API: `http://127.0.0.1:${fakeClaude.port}/upd`, N8N8_UPDATE_TARGET: path.join(DATA, 'Auto-Move.exe'), N8N8_NO_RESTART: '1', N8N8_AUTOSTART_DIR: path.join(DATA, 'autostart'), N8N8_TRAY: '0', N8N8_NO_UPDATE_CHECK: '1', N8N8_CONSOLE: '1', ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut', DROPBOX: 'dbx', PIPEDRIVE: 'pd', ASANA: 'asana', CLICKUP: 'cu', DEEPL: 'deepl', ZENDESK: 'zd', META: 'meta', BREVO: 'brevo', TODOIST: 'todoist', JOTFORM: 'jotform', TYPEFORM: 'typeform', HEPSIBURADA: 'hb', N11: 'n11', AMAZON: 'amz' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const srv = spawn(process.env.N8N8_TEST_EXE || process.execPath, process.env.N8N8_TEST_EXE ? [] : [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, N8N8_DROPBOX_CONTENT: `http://127.0.0.1:${fakeClaude.port}/dbxc`, N8N8_DROPBOX_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-auth`, N8N8_DROPBOX_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-token`, N8N8_AMAZON_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/amz-auth`, N8N8_LINKEDIN_API: `http://127.0.0.1:${fakeClaude.port}/li`, N8N8_LINKEDIN_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/li-auth`, N8N8_LINKEDIN_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/li-token`, N8N8_X_API: `http://127.0.0.1:${fakeClaude.port}/xapi`, N8N8_X_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/x-auth`, N8N8_X_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/x-token`, N8N8_UPDATE_API: `http://127.0.0.1:${fakeClaude.port}/upd`, N8N8_UPDATE_TARGET: path.join(DATA, 'Auto-Move.exe'), N8N8_NO_RESTART: '1', N8N8_AUTOSTART_DIR: path.join(DATA, 'autostart'), N8N8_TRAY: '0', N8N8_NO_UPDATE_CHECK: '1', N8N8_CONSOLE: '1', ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut', DROPBOX: 'dbx', PIPEDRIVE: 'pd', ASANA: 'asana', CLICKUP: 'cu', DEEPL: 'deepl', ZENDESK: 'zd', META: 'meta', BREVO: 'brevo', TODOIST: 'todoist', JOTFORM: 'jotform', TYPEFORM: 'typeform', HEPSIBURADA: 'hb', N11: 'n11', AMAZON: 'amz' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0, ran = 0;
