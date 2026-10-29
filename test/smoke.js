@@ -2275,6 +2275,104 @@ test('Sosyal medya ve reklam: YouTube (+ tetikleyici), Analytics, Google Ads, Me
   assert.deepEqual([x.id, x.kanal, x.url], ['vidBASKA002', 'Başka Kanal', 'https://www.youtube.com/watch?v=vidBASKA002']);
 });
 
+test('Ekip kullanımı: yönetici, düzenleyici ve izleyici; akış ve kimlik bilgisi paylaşımı, giriş, etkinlik kaydı (ayrı sunucu)', async () => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'am-ekip-')); const port = PORT + 1; const B2 = `http://127.0.0.1:${port}`;
+  const srv = spawn(process.env.N8N8_TEST_EXE || process.execPath, process.env.N8N8_TEST_EXE ? [] : [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: data, PORT: String(port), N8N8_NO_OPEN: '1', N8N8_TRAY: '0', N8N8_NO_UPDATE_CHECK: '1', N8N8_CONSOLE: '1', N8N8_PASSWORD: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
+  try {
+    await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('ikinci sunucu kapandı: ' + c))); });
+    const call = async (who, method, url, body) => {
+      const r = await fetch(B2 + url, { method, headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(who ? (who.startsWith('Basic ') ? { Authorization: who } : { Cookie: who }) : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
+      const t = await r.text(); let d; try { d = JSON.parse(t); } catch { d = t; }
+      const ck = (r.headers.get('set-cookie') || '').match(/am_oturum=([^;]*)/);
+      return { status: r.status, data: d, cookie: ck ? `am_oturum=${ck[1]}` : null, www: r.headers.get('www-authenticate') };
+    };
+    const ok = async (...a) => { const r = await call(...a); assert.ok(r.status === 200, `${a[1]} ${a[2]} → ${r.status} ${JSON.stringify(r.data)}`); return r; };
+    assert.deepEqual((await ok(null, 'GET', '/api/me')).data.ekip, false);
+    const starter = (await ok(null, 'GET', '/api/workflows')).data[0];
+    const s = await ok(null, 'POST', '/api/setup', { kullanici: 'Admin', ad: 'Yönetici', sifre: 'yonetici-sifre' });
+    const admin = s.cookie; assert.ok(admin);
+    assert.equal(s.data.kullanici.rol, 'yonetici'); assert.equal(s.data.kullanici.kullanici, 'admin');
+    assert.equal((await call(null, 'POST', '/api/setup', { kullanici: 'x', sifre: '12345678' })).status, 401);
+    // signed out: the page loads (login screen), data does not, and the browser's password box does not pop up
+    let r = await call(null, 'GET', '/api/workflows'); assert.equal(r.status, 401); assert.equal(r.data.giris, true); assert.equal(r.www, null);
+    assert.equal((await fetch(B2 + '/')).status, 200);
+    assert.deepEqual((await ok(null, 'GET', '/api/me')).data.kullanici, null);
+    assert.equal((await ok(admin, 'GET', '/api/workflows')).data[0].sahip, (await ok(admin, 'GET', '/api/me')).data.kullanici.id, 'eski akışlar ilk yöneticinin');
+    const ali = (await ok(admin, 'POST', '/api/users', { kullanici: 'ali', ad: 'Ali Kaya', sifre: 'ali-sifre-1', rol: 'duzenleyici' })).data;
+    const veli = (await ok(admin, 'POST', '/api/users', { kullanici: 'veli', ad: 'Veli', sifre: 'veli-sifre-1', rol: 'izleyici' })).data;
+    assert.equal((await call(admin, 'POST', '/api/users', { kullanici: 'ali', sifre: 'baska-sifre' })).status, 409);
+    assert.equal((await call(admin, 'POST', '/api/users', { kullanici: 'k', sifre: 'kisa' })).status, 400);
+    assert.equal((await call(null, 'POST', '/api/login', { kullanici: 'ali', sifre: 'yanlis' })).status, 401);
+    const a = (await ok(null, 'POST', '/api/login', { kullanici: 'ALI', sifre: 'ali-sifre-1' })).cookie;
+    const v = (await ok(null, 'POST', '/api/login', { kullanici: 'veli', sifre: 'veli-sifre-1' })).cookie;
+
+    // the editor sees only their own work; the admin's workflow is hidden
+    assert.deepEqual((await ok(a, 'GET', '/api/workflows')).data, []);
+    assert.equal((await call(a, 'GET', `/api/workflows/${starter.id}`)).status, 404);
+    const aw = (await ok(a, 'POST', '/api/workflows', { name: 'Ali akışı', nodes: [{ id: 'm', type: 'manual', name: 'Başla', x: 0, y: 0, params: { data: '[{"x":1}]' } }, { id: 'n', type: 'noop', name: 'son', x: 300, y: 0, params: {} }], edges: [{ id: 'e', from: 'm', fromPort: 0, to: 'n', toPort: 0 }] })).data;
+    assert.equal(aw.sahip, ali.id);
+    // credentials: own ones, and others only once shared
+    const ac = (await ok(admin, 'POST', '/api/credentials', { type: 'httpHeader', name: 'Yönetici anahtarı', data: { name: 'X-Key', value: 'gizli' } })).data;
+    const mine = (await ok(a, 'POST', '/api/credentials', { type: 'httpHeader', name: 'Ali anahtarı', data: { name: 'X-Key', value: 'ali' } })).data;
+    assert.deepEqual((await ok(a, 'GET', '/api/credentials')).data.map(c => [c.name, c.erisim]), [['Ali anahtarı', 'sahip']]);
+    const withCred = id => ({ ...aw, nodes: [...aw.nodes.slice(0, 2), { id: 'h', type: 'http', name: 'istek', x: 600, y: 0, params: { url: 'http://127.0.0.1:1/', auth: 'cred', credential: id } }] });
+    r = await call(a, 'PUT', `/api/workflows/${aw.id}`, withCred(ac.id)); assert.equal(r.status, 403); assert.match(r.data.hata, /Yönetici anahtarı.*izniniz yok/);
+    await ok(a, 'PUT', `/api/workflows/${aw.id}`, withCred(mine.id));
+    assert.equal((await call(a, 'GET', `/api/credentials/${ac.id}`)).status, 404);
+    assert.equal((await call(a, 'DELETE', `/api/credentials/${ac.id}`)).status, 404);
+    assert.deepEqual((await ok(admin, 'PUT', `/api/credentials/${ac.id}/share`, { paylasim: [ali.id, veli.id, 'yok'] })).data.paylasim, [ali.id], 'izleyiciyle kimlik bilgisi paylaşılmaz');
+    await ok(a, 'PUT', `/api/workflows/${aw.id}`, withCred(ac.id));
+    assert.equal((await call(a, 'GET', `/api/credentials/${ac.id}`)).status, 403, 'kullanabilir ama göremez');
+    assert.equal((await call(a, 'POST', `/api/credentials/test`, { type: 'httpHeader', id: ac.id, data: {} })).status, 200);
+
+    // sharing a workflow with a viewer: they can look, not change or run
+    assert.equal((await call(v, 'GET', `/api/workflows/${aw.id}`)).status, 404);
+    await ok(a, 'PUT', `/api/workflows/${aw.id}/share`, { paylasim: { [veli.id]: 'duzenle', [ali.id]: 'gor' } });
+    assert.deepEqual((await ok(a, 'GET', `/api/workflows/${aw.id}`)).data.paylasim, { [veli.id]: 'gor' }, 'izleyici düzenleyemez, sahip listeye girmez');
+    assert.deepEqual((await ok(v, 'GET', '/api/workflows')).data.map(w => [w.name, w.erisim]), [['Ali akışı', 'gor']]);
+    assert.equal((await call(v, 'PUT', `/api/workflows/${aw.id}`, { name: 'değişti' })).status, 403);
+    assert.equal((await call(v, 'POST', `/api/workflows/${aw.id}/run`, {})).status, 403);
+    assert.equal((await call(v, 'POST', '/api/workflows', { name: 'x', nodes: [], edges: [] })).status, 403);
+    assert.equal((await call(v, 'GET', '/api/credentials')).data.length, 0);
+    assert.equal((await call(a, 'DELETE', `/api/workflows/${starter.id}`)).status, 404);
+    assert.equal((await call(a, 'POST', '/api/users', { kullanici: 'x1', sifre: '12345678' })).status, 403);
+    assert.equal((await call(a, 'POST', '/api/backup', {})).status, 403);
+    // runs: the editor runs their workflow, the viewer sees that run, nobody sees the admin's runs
+    const run = (await ok(a, 'POST', `/api/workflows/${aw.id}/run`, { destinationId: 'n' })).data.executionId;
+    for (let i = 0; i < 50 && (await ok(a, 'GET', `/api/executions/${run}`)).data.status === 'running'; i++) await sleep(100);
+    const adminRun = (await ok(admin, 'POST', `/api/workflows/${starter.id}/run`, {})).data.executionId;
+    await sleep(500);
+    assert.deepEqual((await ok(v, 'GET', '/api/executions')).data.items.map(e => e.id), [run]);
+    assert.equal((await call(v, 'GET', `/api/executions/${adminRun}`)).status, 404);
+    assert.equal((await call(v, 'DELETE', `/api/executions/${run}`)).status, 403);
+    assert.equal((await ok(v, 'GET', '/api/stats')).data.toplam, 1);
+    assert.ok((await ok(admin, 'GET', '/api/executions')).data.items.length >= 2);
+    // passwords, Basic auth for scripts, sign-out
+    assert.equal((await call(a, 'PUT', '/api/me/password', { eski: 'yanlis', yeni: 'ali-yeni-sifre' })).status, 400);
+    await ok(a, 'PUT', '/api/me/password', { eski: 'ali-sifre-1', yeni: 'ali-yeni-sifre' });
+    assert.equal((await ok(a, 'GET', '/api/me')).data.kullanici.kullanici, 'ali', 'şifreyi değiştiren oturum açık kalır');
+    assert.equal((await call('Basic ' + Buffer.from('ali:ali-sifre-1').toString('base64'), 'GET', '/api/workflows')).status, 401);
+    assert.equal((await ok('Basic ' + Buffer.from('ali:ali-yeni-sifre').toString('base64'), 'GET', '/api/workflows')).data.length, 1);
+    assert.equal((await call(admin, 'PUT', `/api/users/${(await ok(admin, 'GET', '/api/me')).data.kullanici.id}`, { rol: 'izleyici' })).status, 400, 'son yönetici');
+    await ok(admin, 'PUT', `/api/users/${veli.id}`, { rol: 'duzenleyici' });
+    assert.equal((await ok(v, 'GET', '/api/workflows')).data[0].erisim, 'gor');
+    const out = await ok(v, 'POST', '/api/logout', {});
+    assert.equal(out.cookie, 'am_oturum=');
+    assert.equal((await call(v, 'GET', '/api/workflows')).status, 401);
+    await ok(admin, 'DELETE', `/api/users/${veli.id}`);
+    assert.deepEqual((await ok(a, 'GET', `/api/workflows/${aw.id}`)).data.paylasim, {});
+    // activity log
+    const log = (await ok(admin, 'GET', '/api/audit')).data;
+    const has = (k, e) => log.some(x => x.kullanici === k && x.eylem === e);
+    assert.ok(has('admin', 'Ekip kullanımını açtı') && has('ali', 'Akış oluşturdu') && has('ali', 'Akışın paylaşımını değiştirdi') && has('ali', 'Şifresini değiştirdi') && has('ali', 'Hatalı giriş denemesi') && has('admin', 'Kullanıcıyı sildi'), JSON.stringify(log.slice(0, 5)));
+    assert.equal(log.find(x => x.eylem === 'Akış oluşturdu').ayrinti, 'Ali akışı');
+    assert.equal((await call(a, 'GET', '/api/audit')).status, 403);
+    // sessions survive a restart (for example after an update)
+    assert.ok(fs.readFileSync(path.join(data, 'oturumlar.json'), 'utf8').length > 10);
+    assert.ok(!fs.readFileSync(path.join(data, 'kullanicilar.json'), 'utf8').includes('ali-yeni-sifre'));
+  } finally { srv.kill(); await sleep(200); fs.rmSync(data, { recursive: true, force: true }); }
+});
+
 test('Masaüstü: bilgisayar açılınca başlat, güncellemeyi denetle ve kur (sahte GitHub)', async () => {
   let d = await api('GET', '/api/desktop');
   assert.equal(d.autostart.on, false); assert.equal(d.tray, false);
