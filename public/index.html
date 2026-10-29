@@ -1960,7 +1960,7 @@ function parseCSVText(text) {
 
 /* ================= about / settings ================= */
 async function pageAbout() {
-  const [info, files, nt, creds] = await Promise.all([api('GET', '/api/info'), api('GET', '/api/files'), api('GET', '/api/notify'), api('GET', '/api/credentials')]);
+  const [info, files, nt, creds, dk] = await Promise.all([api('GET', '/api/info'), api('GET', '/api/files'), api('GET', '/api/notify'), api('GET', '/api/credentials'), api('GET', '/api/desktop')]);
   const NK = { telegram: ['telegramApi', 'Telegram sohbet kimliği', '123456789'], email: ['smtp', 'Gidecek e-posta adresi', 'siz@ornek.com'], webhook: ['webhookUrl', '', ''] };
   const theme = (() => { try { return localStorage.getItem('8n8.theme') || ''; } catch { return ''; } })();
   view.innerHTML = `<div class="page"><div class="page-in">
@@ -1972,6 +1972,13 @@ async function pageAbout() {
       <dt>Dosya klasörü</dt><dd>${esc(info.files)}</dd>
       <dt>Şifre koruması</dt><dd>${info.password ? 'Açık' : 'Kapalı (yalnızca bu bilgisayardan erişilebilir)'}</dd>
     </dl></div>
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><b>Bilgisayar ve güncellemeler</b>
+      <label class="help" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="dk-oto"${dk.autostart.on ? ' checked' : ''}>${dk.platform === 'win32' ? 'Windows' : 'Bilgisayar'} açılınca Auto-Move'u arka planda başlat</label>
+      <label class="help" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="dk-den"${dk.guncellemeDenetle ? ' checked' : ''}>Yeni sürümleri günde bir kez denetle${dk.tray ? ' ve saatin yanında haber ver' : ''}</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn" id="dk-check">Güncellemeleri denetle</button><span id="dk-up" class="help"></span></div>
+      ${dk.tray ? '<span class="help">Auto-Move saatin yanındaki simgede çalışıyor. Simgeye sağ tıklayıp açabilir ya da kapatabilirsiniz. Akışlar hata verince orada da haber verilir.</span>' : ''}
+      ${dk.log ? `<span class="help">Program kayıtları: ${esc(dk.log)}</span>` : ''}
+      <div id="dk-msg" role="status"></div></div>
     <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><b>Yedekleme</b>
       <span class="help">Akışlar, veri tabloları, bilgi tabanları ve değişkenler tek bir dosyaya kaydedilir. Kimlik bilgilerini de almak için bir şifre girin; bilgiler bu şifreyle şifrelenir ve dosyayı başka bir bilgisayara taşıyabilirsiniz. Çalıştırma kayıtları ve dosya klasörü yedeğe girmez.</span>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input class="inp" id="bk-pass" type="password" autocomplete="new-password" placeholder="Şifre (isteğe bağlı, en az 8 karakter)" style="flex:1;min-width:220px"><button class="btn primary" id="bk-make">${icon('download')}Yedeği indir</button></div>
@@ -1996,6 +2003,26 @@ async function pageAbout() {
     <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:8px;line-height:1.55"><b>Ortam değişkenleri</b>
       <span class="help"><code>PORT</code> (varsayılan 5678), <code>N8N8_HOST</code> (ağa açmak için 0.0.0.0), <code>N8N8_PASSWORD</code> (giriş şifresi), <code>N8N8_URL</code> (dışarıdan erişilen adres, webhook bağlantıları için), <code>N8N8_DATA</code> (veri klasörü), <code>N8N8_NO_OPEN=1</code> (tarayıcıyı otomatik açma).</span></div>
   </div></div>`;
+  const dkMsg = (h, err) => { $('#dk-msg').innerHTML = h ? `<div class="${err ? 'err-box' : 'info-box'}">${h}</div>` : ''; };
+  const dkPut = async body => { try { Object.assign(dk, await api('PUT', '/api/desktop', body)); dkMsg('Kaydedildi.'); } catch (e) { dkMsg(esc(e.message), true); } $('#dk-oto').checked = dk.autostart.on; };
+  $('#dk-oto').addEventListener('change', e => dkPut({ autostart: e.target.checked }));
+  $('#dk-den').addEventListener('change', e => dkPut({ guncellemeDenetle: e.target.checked }));
+  const dkShow = u => {
+    if (!u) return;
+    if (!u.newer) { $('#dk-up').textContent = `En yeni sürümü kullanıyorsunuz (${u.current}).`; return; }
+    $('#dk-up').innerHTML = `Yeni sürüm var: <b>${esc(u.latest)}</b> (şu an ${esc(u.current)}). ${u.canInstall ? '<button class="btn primary" id="dk-install">Şimdi güncelle</button>' : `<a href="${esc(u.page)}" target="_blank" rel="noopener">İndirme sayfası</a>`}`;
+    $('#dk-install')?.addEventListener('click', async e => {
+      if (!confirm(`Auto-Move ${u.latest} sürümüne güncellensin mi? Program kapanıp yeni sürümle yeniden açılır; çalışan akışlar durur.`)) return;
+      e.target.disabled = true; dkMsg('Yeni sürüm indiriliyor…');
+      try {
+        const r = await api('POST', '/api/desktop/update/install', {});
+        dkMsg(r.restarting ? `Auto-Move ${esc(r.version)} kuruldu, program yeniden başlıyor. Sayfa birkaç saniye içinde yenilenecek.` : `Auto-Move ${esc(r.version)} kuruldu. Programı kapatıp yeniden açın.`);
+        if (r.restarting) setTimeout(function wait() { fetch('/api/info').then(x => x.ok ? location.reload() : setTimeout(wait, 1500), () => setTimeout(wait, 1500)); }, 3000);
+      } catch (err) { dkMsg(esc(err.message), true); e.target.disabled = false; }
+    });
+  };
+  dkShow(dk.update);
+  $('#dk-check').addEventListener('click', async e => { e.target.disabled = true; dkMsg(''); try { dkShow(await api('POST', '/api/desktop/update/check', {})); } catch (err) { dkMsg(esc(err.message), true); } finally { e.target.disabled = false; } });
   $('#theme').addEventListener('click', e => { const b = e.target.closest('[data-th]'); if (!b) return; setTheme(b.dataset.th); pageAbout(); });
   const ntDraw = () => {
     const k = $('#nt-kanal').value, [type, lab, ph] = NK[k] || [];

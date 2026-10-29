@@ -1989,6 +1989,161 @@ test('Google Dokümanlar: şablondan sözleşme + PDF, yeni belge, metin ekle, d
   assert.deepEqual(to, { cevapId: 'r-new', tarih: '2026-10-22T10:00:00Z', 'Adınız nedir?': 'Ayşe', 'e-posta adresiniz?': 'ayse@ornek.com', 'Bizi nereden duydunuz?': 'Instagram', 'İlgi alanları': ['Mutfak', 'Bahçe'], gizli: { kaynak: 'instagram' }, puan: 7 });
 });
 
+test('Pazaryerleri: Hepsiburada, N11 ve Amazon (sipariş, paketleme, onay, stok/fiyat, sonuç) + tetikleyiciler ve stok eşitleme şablonu (sahte API)', async () => {
+  // Hepsiburada
+  const hb = await api('POST', '/api/credentials', { type: 'hepsiburadaApi', name: 'hb', data: { merchantId: 'mid-1', secretKey: 'hb-secret', userAgent: 'magaza_dev', stage: 'false' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'hepsiburadaApi', id: hb.id, data: { merchantId: 'mid-1', userAgent: 'magaza_dev', stage: 'false' } })).message, 'Bağlanıldı (canlı); 2 ürün');
+  assert.match((await api('POST', '/api/credentials/test', { type: 'hepsiburadaApi', data: { merchantId: 'mid-1', secretKey: 'yanlis' } })).message, /Merchant ID ya da servis anahtarı yanlış/);
+  const w = await api('POST', '/api/workflows', wf('hb', [
+    ['manual', {}],
+    ['hepsiburada', { credential: hb.id, op: 'orders', max: 10 }, { name: 'hsip' }],
+    ['filter', { conditions: [{ left: '{{ $json.siparisNo }}', op: 'eq', right: '4080001' }] }],
+    ['hepsiburada', { credential: hb.id, op: 'pack', lines: '{{ $json.urunler }}' }, { name: 'hpaket' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  let e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const hs = outOf(e, 'hsip');
+  assert.deepEqual(hs.map(o => [o.siparisNo, o.musteri, o.tutar, o.urunler.length, o.adres?.il, o.pazaryeri]), [['4080001', 'Ayşe Yılmaz', 399.9, 2, 'İstanbul', 'Hepsiburada'], ['4080002', 'Can Demir', 150, 1, 'Ankara', 'Hepsiburada']]);
+  assert.deepEqual(hs[0].urunler[0], { satirId: 'L1', ad: 'Seramik Kupa', barkod: '869001', stokKodu: 'KUP-1', hepsiburadaSku: 'HBV0000001', adet: 2, fiyat: 150, tutar: 300 });
+  assert.deepEqual(fakeMarket.hb.packs, [{ lineItemRequests: [{ id: 'L1', quantity: 2 }, { id: 'L2', quantity: 1 }] }]);
+  assert.deepEqual([outOf(e, 'hpaket')[0].paketId, outOf(e, 'hpaket')[0].takipNo], ['HB-PKG-1', 'HBX123']);
+  assert.ok(fakeMarket.hb.ua.every(x => x === 'magaza_dev'), 'User-Agent entegratör adı olmalı');
+  const w2 = await api('POST', '/api/workflows', wf('hb2', [
+    ['manual', { data: '[{"stokKodu":"KUP-1","stok":"12","fiyat":"1.250,50"},{"stokKodu":"YOK-1","stok":"3","fiyat":""}]' }],
+    ['hepsiburada', { credential: hb.id, op: 'stock', sku: '{{ $json.stokKodu }}', quantity: '{{ $json.stok }}', price: '{{ $json.fiyat }}' }, { name: 'hstok' }],
+    ['hepsiburada', { credential: hb.id, op: 'upload', uploadId: '{{ $json.islemNo }}' }, { name: 'hsonuc' }],
+    ['hepsiburada', { credential: hb.id, op: 'listings', max: 5 }, { name: 'hurun' }],
+    ['hepsiburada', { credential: hb.id, op: 'packages', max: 5 }, { name: 'hpkt' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4]]));
+  e = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(fakeMarket.hb.uploads, [[{ merchantSku: 'KUP-1', availableStock: 12, price: 1250.5 }, { merchantSku: 'YOK-1', availableStock: 3 }]]);
+  assert.deepEqual(outOf(e, 'hsonuc')[0], { islemNo: 'up-1', durum: 'Done', toplam: 2, hatali: 1, hatalar: [{ stokKodu: 'YOK-1', neden: 'Ürün bulunamadı' }] });
+  assert.deepEqual(outOf(e, 'hurun').map(x => [x.stokKodu, x.stok, x.fiyat, x.satista]), [['KUP-1', 7, 150, true], ['TAB-1', 0, 99.9, false]]);
+  assert.deepEqual([outOf(e, 'hpkt')[0].paketId, outOf(e, 'hpkt')[0].takipNo, outOf(e, 'hpkt')[0].urunler[0].satirId], ['HB-PKG-0', 'HBX000', 'L0']);
+
+  // N11
+  const n1 = await api('POST', '/api/credentials', { type: 'n11Api', name: 'n11', data: { appKey: 'n11-key', appSecret: 'n11-secret' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'n11Api', id: n1.id, data: { appKey: 'n11-key' } })).message, 'Bağlanıldı; 1 ürün');
+  assert.match((await api('POST', '/api/credentials/test', { type: 'n11Api', data: { appKey: 'n11-key', appSecret: 'x' } })).message, /App Key ya da App Secret yanlış/);
+  const w3 = await api('POST', '/api/workflows', wf('n11', [
+    ['manual', {}],
+    ['n11', { credential: n1.id, op: 'orders', status: 'Created', days: 7, max: 10 }, { name: 'nsip' }],
+    ['n11', { credential: n1.id, op: 'accept', lines: '{{ $json.urunler }}' }, { name: 'nonay' }],
+    ['n11', { credential: n1.id, op: 'products', productCode: '{{ $json.urunler[0].stokKodu }}' }, { name: 'nurun' }],
+    ['n11', { credential: n1.id, op: 'stock', sku: '{{ $json.urun.stokKodu }}', quantity: '5', price: '449,90', listPrice: '499,90' }, { name: 'nstok' }],
+    ['n11', { credential: n1.id, op: 'task', taskId: '{{ $json.islemNo }}' }, { name: 'nsonuc' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]));
+  e = await waitExec((await api('POST', `/api/workflows/${w3.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const ns = outOf(e, 'nsip')[0];
+  assert.deepEqual([ns.paketId, ns.siparisNo, ns.musteri, ns.tutar, ns.adres.ilce, ns.urunler[0].satirId, ns.tarih, ns.pazaryeri], [2100001, '205000001', 'Ece Kaya', 449.9, 'Konak', 991, '2025-10-28T10:00:00.000Z', 'N11']);
+  assert.deepEqual(fakeMarket.n11.updates, [{ lines: [{ lineId: 991 }], status: 'Picking' }]);
+  assert.equal(outOf(e, 'nonay')[0].durum, 'Picking');
+  assert.equal(outOf(e, 'nurun')[0].urun.stok, 4);
+  assert.deepEqual(fakeMarket.n11.tasks, [{ payload: { integrator: 'Auto-Move', skus: [{ stockCode: 'KUP-1', quantity: 5, salePrice: 449.9, listPrice: 499.9, currencyType: 'TL' }] } }]);
+  assert.deepEqual(outOf(e, 'nsonuc')[0], { islemNo: '9001', durum: 'PROCESSED', toplam: 2, hatali: 1, hatalar: [{ stokKodu: 'YOK-1', neden: 'Ürün bulunamadı' }] });
+
+  // Amazon
+  const am = await api('POST', '/api/credentials', { type: 'amazonSpApi', name: 'amz', data: { sellerId: 'SELLER1', marketplace: 'A33AVAJ2PDY3EV', clientId: 'amzn1.application-oa2-client.x', clientSecret: 'lwa-secret', refreshToken: 'Atzr|ok' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'amazonSpApi', id: am.id, data: { sellerId: 'SELLER1', marketplace: 'A33AVAJ2PDY3EV', clientId: 'amzn1.application-oa2-client.x' } })).message, 'Bağlanıldı; Türkiye (amazon.com.tr) mağazası açık');
+  assert.match((await api('POST', '/api/credentials/test', { type: 'amazonSpApi', data: { sellerId: 'SELLER1', clientId: 'amzn1.application-oa2-client.x', clientSecret: 'lwa-secret', refreshToken: 'Atzr|eski' } })).message, /refresh token geçersiz/);
+  const tok0 = fakeMarket.amz.tokens;
+  const w4 = await api('POST', '/api/workflows', wf('amz', [
+    ['manual', {}],
+    ['amazon', { credential: am.id, op: 'orders', status: 'Unshipped,PartiallyShipped', days: 7, max: 10, withItems: true }, { name: 'asip' }],
+    ['amazon', { credential: am.id, op: 'ship', orderId: '{{ $json.siparisNo }}', lines: '{{ $json.urunler }}', carrier: 'Yurtiçi Kargo', tracking: 'YK123456' }, { name: 'agonder' }],
+    ['amazon', { credential: am.id, op: 'listing', productSku: '{{ $json.urunler[0].stokKodu }}' }, { name: 'aurun' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  e = await waitExec((await api('POST', `/api/workflows/${w4.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const as = outOf(e, 'asip');
+  assert.equal(as.length, 1, 'yalnız gönderilmeyi bekleyen sipariş');
+  assert.deepEqual([as[0].siparisNo, as[0].musteri, as[0].tutar, as[0].paraBirimi, as[0].adres.il, as[0].gonderim, as[0].urunler[0]], ['407-1111111-2222222', 'Mert Can', 599.8, 'TRY', 'Bursa', 'Satıcı', { satirId: '55511122233344', ad: 'Seramik Kupa', asin: 'B0TEST0001', stokKodu: 'KUP-1', adet: 2, fiyat: 299.9, tutar: 599.8 }]);
+  const [shipId, ship] = fakeMarket.amz.ships[0];
+  assert.equal(shipId, '407-1111111-2222222');
+  assert.deepEqual([ship.marketplaceId, ship.packageDetail.carrierName, ship.packageDetail.trackingNumber, ship.packageDetail.orderItems], ['A33AVAJ2PDY3EV', 'Yurtiçi Kargo', 'YK123456', [{ orderItemId: '55511122233344', quantity: 2 }]]);
+  assert.deepEqual([outOf(e, 'aurun')[0].urun.asin, outOf(e, 'aurun')[0].urun.stok, outOf(e, 'aurun')[0].urun.fiyat], ['B0TEST0001', 12, 299.9]);
+  const w5 = await api('POST', '/api/workflows', wf('amz2', [['manual', { data: '[{"stokKodu":"KUP-1","stok":"9","fiyat":"299,90"}]' }], ['amazon', { credential: am.id, op: 'stock', sku: '{{ $json.stokKodu }}', quantity: '{{ $json.stok }}', price: '{{ $json.fiyat }}' }, { name: 'astok' }]], [[0, 1]]));
+  e = await waitExec((await api('POST', `/api/workflows/${w5.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(fakeMarket.amz.patches[0], ['KUP-1', 'A33AVAJ2PDY3EV', { productType: 'PRODUCT', patches: [{ op: 'replace', path: '/attributes/fulfillment_availability', value: [{ fulfillment_channel_code: 'DEFAULT', quantity: 9 }] }, { op: 'replace', path: '/attributes/purchasable_offer', value: [{ marketplace_id: 'A33AVAJ2PDY3EV', currency: 'TRY', our_price: [{ schedule: [{ value_with_tax: 299.9 }] }] }] }] }]);
+  assert.deepEqual(outOf(e, 'astok')[0], { stokKodu: 'KUP-1', durum: 'ACCEPTED', islemNo: 'sub-1', stok: 9, fiyat: 299.9, paraBirimi: 'TRY' });
+  const w6 = await api('POST', '/api/workflows', wf('amz3', [['manual', { data: '[{"stokKodu":"YOK-1","stok":"1"}]' }], ['amazon', { credential: am.id, op: 'stock', sku: '{{ $json.stokKodu }}', quantity: '{{ $json.stok }}', price: '' }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${w6.id}/run`, {})).executionId)).error, /YOK-1.*SKU bulunamadı/);
+  assert.equal(fakeMarket.amz.tokens - tok0, 0, 'Amazon jetonu önbellekten kullanılmalı');
+
+  // template: one stock change goes to every marketplace
+  const ty = await api('POST', '/api/credentials', { type: 'trendyolApi', name: 'ty-stok', data: { sellerId: '555', apiKey: 'ty-key', apiSecret: 'ty-secret', stage: 'false' } });
+  const tw = await api('POST', '/api/templates/stokEsitle', {});
+  const credOf = { trendyol: ty.id, hepsiburada: hb.id, n11: n1.id, amazon: am.id };
+  for (const n of tw.nodes) if (credOf[n.type]) n.params.credential = credOf[n.type];
+  await api('PUT', `/api/workflows/${tw.id}`, { ...tw, active: true });
+  const hook = await fetch(`${B}/webhook/stok`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stokKodu: 'KUP-1', barkod: '869001', stok: 4, fiyat: '' }) });
+  assert.equal(hook.status, 200);
+  await sleep(1500);
+  await api('PUT', `/api/workflows/${tw.id}`, { active: false });
+  { const { items } = await api('GET', `/api/executions?workflowId=${tw.id}`); const ex = items[0] && await waitExec(items[0].id); assert.equal(ex?.status, 'success', JSON.stringify(ex && { error: ex.error, items: items.length })); }
+  assert.deepEqual(fakeMore.ty.stock.at(-1), { barcode: '869001', quantity: 4 });
+  assert.deepEqual(fakeMarket.hb.uploads.at(-1), [{ merchantSku: 'KUP-1', availableStock: 4 }]);
+  assert.deepEqual(fakeMarket.n11.tasks.at(-1).payload.skus, [{ stockCode: 'KUP-1', quantity: 4, currencyType: 'TL' }]);
+  assert.deepEqual(fakeMarket.amz.patches.at(-1)[2].patches, [{ op: 'replace', path: '/attributes/fulfillment_availability', value: [{ fulfillment_channel_code: 'DEFAULT', quantity: 4 }] }]);
+  assert.ok((await api('POST', '/api/templates/pazaryeriSiparis', {})).nodes.length === 7);
+
+  // triggers: only orders added after the first check start the workflows
+  const trig = [];
+  for (const [type, cred] of [['hepsiburadaTrigger', hb.id], ['n11Trigger', n1.id], ['amazonTrigger', am.id]]) {
+    const t = await api('POST', '/api/workflows', wf(`${type}-t`, [[type, { credential: cred, every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+    await api('PUT', `/api/workflows/${t.id}`, { active: true }); trig.push(t);
+  }
+  await sleep(1300);
+  fakeMarket.hb.lines.unshift({ id: 'L9', orderNumber: '4080009', orderDate: '2026-10-29T09:00:00Z', merchantSku: 'KUP-1', productName: 'Seramik Kupa', quantity: 1, totalPrice: { amount: 150, currency: 'TRY' }, customerName: 'Yeni Müşteri' });
+  fakeMarket.n11.orders.unshift({ id: 2100009, orderNumber: '205000009', shipmentPackageStatus: 'Created', customerfullName: 'Yeni N11', totalAmount: 50, lines: [] });
+  fakeMarket.amz.orders.unshift({ AmazonOrderId: '407-9999999-9999999', OrderStatus: 'Unshipped', OrderTotal: { CurrencyCode: 'TRY', Amount: '75.00' }, ShippingAddress: { Name: 'Yeni Amazon', City: 'Adana' } });
+  fakeMarket.amz.items['407-9999999-9999999'] = [{ OrderItemId: '1', SellerSKU: 'KUP-1', Title: 'Seramik Kupa', QuantityOrdered: 1, ItemPrice: { Amount: '75.00' } }];
+  await sleep(4500);
+  const got = [];
+  for (const t of trig) {
+    await api('PUT', `/api/workflows/${t.id}`, { active: false });
+    const { items } = await api('GET', `/api/executions?workflowId=${t.id}`);
+    assert.equal(items.length, 1, `${t.name}: yalnız yeni sipariş akışı başlatmalı`);
+    const x = outOf(await waitExec(items[0].id), 'son')[0]; got.push([x.siparisNo, x.musteri, x.tutar, x.urunler.length]);
+  }
+  assert.deepEqual(got, [['4080009', 'Yeni Müşteri', 150, 1], ['205000009', 'Yeni N11', 50, 0], ['407-9999999-9999999', 'Yeni Amazon', 75, 1]]);
+});
+
+test('Masaüstü: bilgisayar açılınca başlat, güncellemeyi denetle ve kur (sahte GitHub)', async () => {
+  let d = await api('GET', '/api/desktop');
+  assert.equal(d.autostart.on, false); assert.equal(d.tray, false);
+  const entry = path.join(DATA, 'autostart', 'auto-move.desktop');
+  d = await api('PUT', '/api/desktop', { autostart: true });
+  assert.equal(d.autostart.on, true);
+  const f = fs.readFileSync(entry, 'utf8');
+  assert.match(f, /--arka-plan/); assert.match(f, /N8N8_DATA=/); assert.match(f, /^Exec=/m);
+  d = await api('PUT', '/api/desktop', { autostart: false, guncellemeDenetle: false });
+  assert.equal(d.autostart.on, false); assert.equal(d.guncellemeDenetle, false); assert.ok(!fs.existsSync(entry));
+  await api('PUT', '/api/desktop', { guncellemeDenetle: true });
+
+  fakeUpd.tag = 'v1.0.0';
+  let u = await api('POST', '/api/desktop/update/check', {});
+  assert.equal(u.newer, false); assert.equal(u.latest, '1.0.0');
+  await assert.rejects(api('POST', '/api/desktop/update/install', {}), /en yeni sürüm/);
+  fakeUpd.tag = 'v99.1.0';
+  u = await api('POST', '/api/desktop/update/check', {});
+  assert.equal(u.newer, true); assert.equal(u.latest, '99.1.0'); assert.equal(u.canInstall, true); assert.match(u.notes, /Yenilikler/);
+  const exe = path.join(DATA, 'Auto-Move.exe');
+  fs.writeFileSync(exe, 'MZ eski sürüm');
+  const r = await api('POST', '/api/desktop/update/install', {});
+  assert.deepEqual(r, { ok: true, version: '99.1.0', restarting: false });
+  assert.equal(fs.readFileSync(exe, 'utf8'), 'MZ yeni sürüm'); assert.equal(fs.readFileSync(exe + '.old', 'utf8'), 'MZ eski sürüm');
+  assert.equal(fakeUpd.downloads, 1);
+  fakeUpd.asset = false;
+  u = await api('POST', '/api/desktop/update/check', {});
+  assert.equal(u.canInstall, false);
+  await assert.rejects(api('POST', '/api/desktop/update/install', {}), /Windows paketi yok/);
+  assert.equal((await api('GET', '/api/desktop')).update.latest, '99.1.0');
+});
+
 test('MCP aracı: Claude istemcisi akışı araç olarak listeler ve çağırır', async () => {
   const tok = await api('POST', '/api/credentials', { type: 'httpBearer', name: 'mcp-token', data: { token: 'mcp-gizli' } });
   const w = await api('POST', '/api/workflows', wf('mcp', [
@@ -2324,11 +2479,24 @@ function fakeTelegramApi(req, res) {
   }
   return json({ ok: true, result: {} });
 }
+const fakeUpd = { tag: 'v1.0.0', asset: true, downloads: 0 };
+function fakeUpdApi(req, res) {
+  const u = `http://127.0.0.1:${fakeClaude.port}`;
+  if (req.url === '/upd/repos/MustafaCanDere/AutoHook/releases/latest') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ tag_name: fakeUpd.tag, body: '## Yenilikler\n- daha hızlı', html_url: 'https://github.com/MustafaCanDere/AutoHook/releases/tag/' + fakeUpd.tag, assets: fakeUpd.asset ? [{ name: 'Auto-Move-windows.zip', browser_download_url: `${u}/upd/dl/Auto-Move-windows.zip` }] : [] }));
+  }
+  if (req.url === '/upd/dl/Auto-Move-windows.zip') { fakeUpd.downloads++; res.writeHead(200, { 'Content-Type': 'application/zip' }); return res.end(require('../lib/zip').zip({ 'Auto-Move/README.md': 'oku', 'Auto-Move/Auto-Move.exe': 'MZ yeni sürüm' })); }
+  res.writeHead(404); res.end();
+}
+
 const fakeServer = require('http').createServer((req, res) => {
+  if (req.url.startsWith('/upd/')) return fakeUpdApi(req, res);
   if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
   const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp], [/^\/(stripe|shop|woo|trello|jira|hubspot|mc|twilio|netgsm|tcmb|geo|meteo)\//, fakeBizApi], [/^\/(pushover\/|ntfy|iyzico\/|graphql|urun\.html)/, fakeMiscApi], [/^\/(es|supa|odoo|ty|parasut|ollama)(\/|$)/, fakeMoreApi]];
   if (req.url.startsWith('/s3/')) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeS3Api(req, res, Buffer.concat(ch))); }
   if (/^\/(dbx|graph-upload\/|graph\/me\/drive|pd\/|asana\/|cu\/|deepl\/|zd\/|meta\/)/.test(req.url)) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeWorkApi(req, res, Buffer.concat(ch))); }
+  if (/^\/(hb|n11|amz)\/|^\/amz-auth$/.test(req.url.split('?')[0])) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeMarketApi(req, res, raw)); }
   if (/^\/(oai|teams|brevo|todoist|jotform|typeform|noco)\/|^\/v1\/documents\/|^\/drive\/v3\/files\/doc\w+\/(copy|export)|^\/drive\/v3\/files\?fields=id,name,webViewLink$/.test(req.url)) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeMore3Api(req, res, Buffer.concat(ch))); }
   for (const [re, fn] of routes) if (re.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fn(req, res, raw)); }
   if (/^\/(oauth-token|gmail\/|drive\/|upload\/|calendar\/)/.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleOAuth(req, res, raw)); }
@@ -3012,6 +3180,62 @@ const sshServer = (() => {
 })();
 
 /* OpenAI-compatible model, Teams webhook, Brevo, Todoist, Jotform, Typeform, NocoDB, Google Docs */
+/* Hepsiburada (OMS + listing), N11 (REST) and Amazon SP-API (LWA token + orders/listings) */
+const fakeMarket = {
+  hb: { ua: [], packs: [], uploads: [], lines: [
+    { id: 'L1', orderNumber: '4080001', orderDate: '2026-10-28T09:15:00Z', merchantSku: 'KUP-1', hepsiburadaSku: 'HBV0000001', productName: 'Seramik Kupa', productBarcode: '869001', quantity: 2, unitPrice: { amount: 150, currency: 'TRY' }, totalPrice: { amount: 300, currency: 'TRY' }, customerName: 'Ayşe Yılmaz', shippingAddress: { name: 'Ayşe Yılmaz', phoneNumber: '05321112233', email: 'ayse@ornek.com', city: 'İstanbul', town: 'Kadıköy', address: 'Moda Cd. 1' }, cargoCompany: 'HepsiJet' },
+    { id: 'L2', orderNumber: '4080001', orderDate: '2026-10-28T09:15:00Z', merchantSku: 'TAB-1', hepsiburadaSku: 'HBV0000002', productName: 'Tabak', quantity: 1, unitPrice: { amount: 99.9, currency: 'TRY' }, totalPrice: { amount: 99.9, currency: 'TRY' }, customerName: 'Ayşe Yılmaz', shippingAddress: { name: 'Ayşe Yılmaz', city: 'İstanbul', town: 'Kadıköy', address: 'Moda Cd. 1' } },
+    { id: 'L3', orderNumber: '4080002', orderDate: '2026-10-28T10:00:00Z', merchantSku: 'KUP-1', productName: 'Seramik Kupa', quantity: 1, unitPrice: { amount: 150, currency: 'TRY' }, totalPrice: { amount: 150, currency: 'TRY' }, customerName: 'Can Demir', shippingAddress: { name: 'Can Demir', city: 'Ankara', town: 'Çankaya', address: 'Tunalı 3' } },
+  ] },
+  n11: { updates: [], tasks: [], orders: [{ id: 2100001, orderNumber: '205000001', shipmentPackageStatus: 'Created', customerfullName: 'Ece Kaya', customerEmail: 'ece@ornek.com', totalAmount: 449.9, createdDate: 1761645600000, cargoProviderName: 'Yurtiçi Kargo', shippingAddress: { fullName: 'Ece Kaya', gsm: '05330001122', city: 'İzmir', district: 'Konak', address: 'Alsancak 7' }, lines: [{ orderLineId: 991, productName: 'Seramik Kupa', barcode: '869001', stockCode: 'KUP-1', quantity: 1, price: 449.9 }] }, { id: 2100000, orderNumber: '205000000', shipmentPackageStatus: 'Shipped', customerfullName: 'Eski', totalAmount: 10, lines: [] }] },
+  amz: { tokens: 0, ships: [], patches: [], orders: [{ AmazonOrderId: '407-1111111-2222222', PurchaseDate: '2026-10-28T08:00:00Z', OrderStatus: 'Unshipped', FulfillmentChannel: 'MFN', OrderTotal: { CurrencyCode: 'TRY', Amount: '599.80' }, ShipServiceLevel: 'Std TR Dom', LatestShipDate: '2026-10-30T20:59:59Z', ShippingAddress: { Name: 'Mert Can', City: 'Bursa', County: 'Nilüfer', AddressLine1: 'FSM Blv. 10', PostalCode: '16110', CountryCode: 'TR' }, BuyerInfo: { BuyerEmail: 'x@marketplace.amazon.com.tr' } }, { AmazonOrderId: '407-0000000-0000000', OrderStatus: 'Shipped', OrderTotal: { CurrencyCode: 'TRY', Amount: '10' } }],
+    items: { '407-1111111-2222222': [{ OrderItemId: '55511122233344', ASIN: 'B0TEST0001', SellerSKU: 'KUP-1', Title: 'Seramik Kupa', QuantityOrdered: 2, ItemPrice: { CurrencyCode: 'TRY', Amount: '599.80' } }] } },
+};
+function fakeMarketApi(req, res, raw) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(o === undefined ? '' : JSON.stringify(o)); };
+  const u = new URL(req.url, 'http://x'); const p = u.pathname; const q = u.searchParams; const body = (() => { try { return JSON.parse(raw || 'null'); } catch { return null; } })();
+  let m;
+  if (p.startsWith('/hb/')) {
+    if (req.headers.authorization !== `Basic ${Buffer.from('mid-1:hb-secret').toString('base64')}`) return json({ message: 'Unauthorized' }, 401);
+    fakeMarket.hb.ua.push(req.headers['user-agent']);
+    if (p === '/hb/oms/orders/merchantid/mid-1') return json({ totalCount: fakeMarket.hb.lines.length, limit: Number(q.get('limit')), offset: 0, items: fakeMarket.hb.lines });
+    if (p === '/hb/oms/packages/merchantid/mid-1' && req.method === 'GET') return json([{ packageNumber: 'HB-PKG-0', status: 'Packaged', recipientName: 'Ali Veli', barcode: 'HBX000', cargoCompany: 'HepsiJet', totalPrice: { amount: 75, currency: 'TRY' }, items: [{ lineItemId: 'L0', orderNumber: '4079999', merchantSku: 'KUP-1', quantity: 1, price: { amount: 75 } }] }]);
+    if (p === '/hb/oms/packages/merchantid/mid-1' && req.method === 'POST') { fakeMarket.hb.packs.push(body); return json({ packageNumber: `HB-PKG-${fakeMarket.hb.packs.length}`, barcode: 'HBX123', cargoCompany: 'HepsiJet' }); }
+    if (p === '/hb/listing/listings/merchantid/mid-1') return json({ totalCount: 2, listings: [{ hepsiburadaSku: 'HBV0000001', merchantSku: 'KUP-1', availableStock: 7, price: 150, isSalable: true, dispatchTime: 1 }, { hepsiburadaSku: 'HBV0000002', merchantSku: 'TAB-1', availableStock: 0, price: 99.9, isSalable: false }] });
+    if (p === '/hb/listing/listings/merchantid/mid-1/inventory-uploads') { fakeMarket.hb.uploads.push(body); return json({ id: 'up-1' }); }
+    if (p === '/hb/listing/listings/merchantid/mid-1/inventory-uploads/id/up-1') return json({ id: 'up-1', status: 'Done', total: 2, errors: [{ merchantSku: 'YOK-1', message: 'Ürün bulunamadı' }] });
+    return json({ message: `no route ${p}` }, 404);
+  }
+  if (p.startsWith('/n11/')) {
+    if (req.headers.appkey !== 'n11-key' || req.headers.appsecret !== 'n11-secret') return json({ message: 'Unauthorized' }, 401);
+    if (p === '/n11/rest/delivery/v1/shipmentPackages') { const list = fakeMarket.n11.orders.filter(o => !q.get('status') || o.shipmentPackageStatus === q.get('status')); return json({ content: list, totalPages: 1, totalElements: list.length }); }
+    if (p === '/n11/rest/order/v1/update' && req.method === 'PUT') { fakeMarket.n11.updates.push(body); return json({ content: [{ lineId: body.lines[0].lineId, status: 'SUCCESS' }] }); }
+    if (p === '/n11/ms/product-query') return json({ totalElements: 1, content: [{ n11ProductId: 7001, title: 'Seramik Kupa', stockCode: 'KUP-1', quantity: 4, salePrice: 449.9, listPrice: 499.9, status: 'Active' }].filter(x => !q.get('stockCode') || x.stockCode === q.get('stockCode')) });
+    if (p === '/n11/ms/product/tasks/price-stock-update') { fakeMarket.n11.tasks.push(body); return json({ id: 9001, type: 'SKU_UPDATE', status: 'IN_QUEUE' }); }
+    if (p === '/n11/ms/product/task-details/page-query') return body?.taskId === 9001 ? json({ taskId: 9001, status: 'PROCESSED', skus: { content: [{ itemCode: 'KUP-1', status: 'SUCCESS', reasons: [] }, { itemCode: 'YOK-1', status: 'FAIL', reasons: ['Ürün bulunamadı'] }] } }) : json({ message: 'task yok' }, 404);
+    return json({ message: `no route ${p}` }, 404);
+  }
+  if (p === '/amz-auth') {
+    const f = new URLSearchParams(raw); fakeMarket.amz.tokens++;
+    if (f.get('client_id') !== 'amzn1.application-oa2-client.x' || f.get('client_secret') !== 'lwa-secret') return json({ error: 'invalid_client', error_description: 'Client authentication failed' }, 401);
+    if (f.get('grant_type') !== 'refresh_token' || f.get('refresh_token') !== 'Atzr|ok') return json({ error: 'invalid_grant', error_description: 'The request has an invalid grant parameter' }, 400);
+    return json({ access_token: 'Atza|amz-at', token_type: 'bearer', expires_in: 3600 });
+  }
+  if (p.startsWith('/amz/')) {
+    if (req.headers['x-amz-access-token'] !== 'Atza|amz-at') return json({ errors: [{ code: 'Unauthorized', message: 'Access to requested resource is denied.' }] }, 403);
+    if (p === '/amz/sellers/v1/marketplaceParticipations') return json({ payload: [{ marketplace: { id: 'A33AVAJ2PDY3EV', name: 'Amazon.com.tr' }, participation: { isParticipating: true } }] });
+    if (p === '/amz/orders/v0/orders') { if (q.get('MarketplaceIds') !== 'A33AVAJ2PDY3EV' || !q.get('CreatedAfter')) return json({ errors: [{ code: 'InvalidInput', message: 'bad query' }] }, 400); const st = q.get('OrderStatuses')?.split(','); return json({ payload: { Orders: fakeMarket.amz.orders.filter(o => !st || st.includes(o.OrderStatus)) } }); }
+    if ((m = p.match(/^\/amz\/orders\/v0\/orders\/([\d-]+)\/orderItems$/))) return json({ payload: { AmazonOrderId: m[1], OrderItems: fakeMarket.amz.items[m[1]] || [] } });
+    if ((m = p.match(/^\/amz\/orders\/v0\/orders\/([\d-]+)\/shipmentConfirmation$/))) { fakeMarket.amz.ships.push([m[1], body]); res.writeHead(204); return res.end(); }
+    if ((m = p.match(/^\/amz\/listings\/2021-08-01\/items\/SELLER1\/([^/]+)$/))) {
+      const sku = decodeURIComponent(m[1]);
+      if (req.method === 'PATCH') { fakeMarket.amz.patches.push([sku, q.get('marketplaceIds'), body]); return sku === 'YOK-1' ? json({ sku, status: 'INVALID', submissionId: 'sub-x', issues: [{ code: '4000003', message: 'SKU bulunamadı', severity: 'ERROR' }] }) : json({ sku, status: 'ACCEPTED', submissionId: 'sub-1', issues: [] }); }
+      return json({ sku, summaries: [{ marketplaceId: 'A33AVAJ2PDY3EV', asin: 'B0TEST0001', itemName: 'Seramik Kupa', status: ['BUYABLE', 'DISCOVERABLE'] }], offers: [{ marketplaceId: 'A33AVAJ2PDY3EV', offerType: 'B2C', price: { currencyCode: 'TRY', amount: '299.90' } }], fulfillmentAvailability: [{ fulfillmentChannelCode: 'DEFAULT', quantity: 12 }], issues: [] });
+    }
+    return json({ errors: [{ message: `no route ${p}` }] }, 404);
+  }
+  json({ message: 'no route' }, 404);
+}
 const fakeMore3 = { bodies: [], teams: [], docs: new Map([['docTEMPLATE0000000000000001', { title: 'Sözleşme şablonu', text: 'SÖZLEŞME\nMüşteri: {{ad}}\nTutar: {{tutar}} TL\nTarih: {{tarih}}\n' }]]), todo: [], noco: [{ Id: 1, Ad: 'Ayşe', Durum: 'yeni', Tutar: 120 }, { Id: 2, Ad: 'Can', Durum: 'eski', Tutar: 80 }, { Id: 3, Ad: 'Ece', Durum: 'yeni', Tutar: 300 }], jf: [{ id: '5900000000000000001', created_at: '2026-10-22 09:00:00', status: 'ACTIVE', answers: { 3: { name: 'adSoyad', text: 'Ad Soyad', type: 'control_fullname', answer: { first: 'Eski', last: 'Kayıt' } } } }], tf: [{ response_id: 'r-old', submitted_at: '2026-10-22T08:00:00Z', answers: [{ field: { id: 'f1', type: 'short_text' }, type: 'text', text: 'Eski' }] }] };
 function fakeMore3Api(req, res, rawBuf) {
   const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(o === undefined ? '' : JSON.stringify(o)); };
@@ -3215,7 +3439,7 @@ function fakeMoreApi(req, res, raw) {
   await new Promise(r => sshServer.listen(0, '127.0.0.1', r)); fakeSsh.port = sshServer.address().port;
   await new Promise(r => amqpServer.listen(0, '127.0.0.1', r)); fakeAmqp.port = amqpServer.address().port;
   // N8N8_TEST_EXE=<path> runs the same tests against a built 8n8 executable
-  const srv = spawn(process.env.N8N8_TEST_EXE || process.execPath, process.env.N8N8_TEST_EXE ? [] : [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, N8N8_DROPBOX_CONTENT: `http://127.0.0.1:${fakeClaude.port}/dbxc`, N8N8_DROPBOX_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-auth`, N8N8_DROPBOX_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-token`, ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut', DROPBOX: 'dbx', PIPEDRIVE: 'pd', ASANA: 'asana', CLICKUP: 'cu', DEEPL: 'deepl', ZENDESK: 'zd', META: 'meta', BREVO: 'brevo', TODOIST: 'todoist', JOTFORM: 'jotform', TYPEFORM: 'typeform' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const srv = spawn(process.env.N8N8_TEST_EXE || process.execPath, process.env.N8N8_TEST_EXE ? [] : [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, N8N8_DROPBOX_CONTENT: `http://127.0.0.1:${fakeClaude.port}/dbxc`, N8N8_DROPBOX_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-auth`, N8N8_DROPBOX_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-token`, N8N8_AMAZON_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/amz-auth`, N8N8_UPDATE_API: `http://127.0.0.1:${fakeClaude.port}/upd`, N8N8_UPDATE_TARGET: path.join(DATA, 'Auto-Move.exe'), N8N8_NO_RESTART: '1', N8N8_AUTOSTART_DIR: path.join(DATA, 'autostart'), N8N8_TRAY: '0', N8N8_NO_UPDATE_CHECK: '1', N8N8_CONSOLE: '1', ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut', DROPBOX: 'dbx', PIPEDRIVE: 'pd', ASANA: 'asana', CLICKUP: 'cu', DEEPL: 'deepl', ZENDESK: 'zd', META: 'meta', BREVO: 'brevo', TODOIST: 'todoist', JOTFORM: 'jotform', TYPEFORM: 'typeform', HEPSIBURADA: 'hb', N11: 'n11', AMAZON: 'amz' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0, ran = 0;
