@@ -6,7 +6,6 @@ if (Number(process.versions.node.split('.')[0]) < 20) { console.error(`\n  Auto-
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 const store = require('./lib/store');
 const engine = require('./lib/engine');
 const { AI, MAIL, NODES, describe, defaults, CREDENTIAL_TYPES, testCredential } = require('./lib/nodes');
@@ -22,6 +21,8 @@ const aiBuilder = require('./lib/ai-builder');
 const n8n = require('./lib/n8n-import');
 const pkg = require('./package.json');
 const { readAsset } = require('./lib/sea');
+const desktop = require('./lib/desktop');
+const users = require('./lib/users');
 
 const PORT = Number(process.env.PORT || process.env.N8N8_PORT || 5678);
 const HOST = process.env.N8N8_HOST || '127.0.0.1';
@@ -287,9 +288,12 @@ async function handleChat(req, res, p, test) {
 }
 
 /* ---------------- live events (SSE) ---------------- */
-const clients = new Set();
-engine.events.on('event', ev => { const line = `data: ${JSON.stringify(ev)}\n\n`; for (const c of clients) c.write(line); });
-setInterval(() => { for (const c of clients) c.write(': ping\n\n'); }, 25000).unref();
+const clients = new Map(); // response -> signed-in user (null: single-user mode)
+engine.events.on('event', ev => {
+  const line = `data: ${JSON.stringify(ev)}\n\n`; const wf = ev.workflowId ? store.getWorkflow(ev.workflowId) : null;
+  for (const [c, u] of clients) if (!u || !ev.workflowId || users.canWf(u, wf, 'gor')) c.write(line);
+});
+setInterval(() => { for (const c of clients.keys()) c.write(': ping\n\n'); }, 25000).unref();
 
 /* ---------------- API ---------------- */
 function workflowSummary(wf) {
@@ -331,29 +335,41 @@ function validateActivation(wf) {
 }
 
 const routes = [];
-const route = (method, pattern, fn) => routes.push({ method, re: new RegExp(`^${pattern.replace(/:(\w+)/g, '(?<$1>[^/]+)')}$`), fn });
+const route = (method, pattern, fn) => routes.push({ method, pattern, re: new RegExp(`^${pattern.replace(/:(\w+)/g, '(?<$1>[^/]+)')}$`), fn });
 
-route('GET', '/api/approvals', () => [...engine.approvals.entries()].map(([token, a]) => ({ url: `${PUBLIC_URL}/onay/${token}`, execId: a.execId, workflow: a.workflow, node: a.node, message: a.message, since: a.since })));
+route('GET', '/api/approvals', ({ user }) => [...engine.approvals.entries()].filter(([, a]) => !a.workflowId || users.canWf(user, store.getWorkflow(a.workflowId), 'gor')).map(([token, a]) => ({ url: `${PUBLIC_URL}/onay/${token}`, execId: a.execId, workflow: a.workflow, node: a.node, message: a.message, since: a.since })));
 route('GET', '/api/info', () => ({ version: pkg.version, url: PUBLIC_URL, oauthRedirect: OAUTH_REDIRECT, data: store.DATA, files: store.DIRS.files, password: !!PASSWORD, host: HOST, node: process.version }));
 route('GET', '/api/node-types', () => describe());
-route('GET', '/api/workflows', () => store.listWorkflows().map(workflowSummary));
+route('GET', '/api/workflows', ({ user }) => store.listWorkflows().filter(w => users.canWf(user, w, 'gor')).map(w => ({ ...workflowSummary(w), sahip: w.sahip, sahipAd: users.get(w.sahip)?.ad || '', erisim: users.wfLevel(user, w) })));
 function checkTypes(nodes) {
   const unknown = (Array.isArray(nodes) ? nodes : []).find(n => n && !NODES[n.type]);
   if (unknown) throw new HttpError(400, `Bilinmeyen node türü: ${String(unknown.type).slice(0, 60)} ("${String(unknown.name || '').slice(0, 60)}")`);
 }
-route('POST', '/api/workflows', async ({ body }) => {
-  checkTypes(body.nodes);
-  const wf = store.saveWorkflow({ ...body, id: undefined, active: false });
+/* a team member may only put credentials they can use into a workflow; ones already in it stay */
+function checkCreds(user, nodes, before = []) {
+  if (!user || user.rol === 'yonetici') return;
+  const ids = ns => new Set((Array.isArray(ns) ? ns : []).flatMap(n => Object.entries(n?.params || {}).filter(([k, v]) => /credential$/i.test(k) && typeof v === 'string' && v).map(([, v]) => v)));
+  const old = ids(before); const all = store.listCredentials();
+  for (const id of ids(nodes)) {
+    if (old.has(id)) continue;
+    const c = all.find(x => x.id === id);
+    if (c && !users.canCred(user, c)) throw new HttpError(403, `"${c.name}" kimlik bilgisini kullanma izniniz yok`);
+  }
+}
+const owned = (user, wf) => ({ ...wf, sahip: user ? user.id : wf.sahip ?? null, paylasim: user ? {} : wf.paylasim || {} });
+route('POST', '/api/workflows', async ({ body, user }) => {
+  checkTypes(body.nodes); checkCreds(user, body.nodes);
+  const wf = store.saveWorkflow(owned(user, { ...body, id: undefined, active: false }));
   return wf;
 });
-route('GET', '/api/workflows/:id', ({ params }) => {
+route('GET', '/api/workflows/:id', ({ params, user }) => {
   const wf = store.getWorkflow(params.id); if (!wf) throw new HttpError(404, 'Akış bulunamadı');
-  return { ...wf, nextRuns: nextRuns(wf.id) };
+  return { ...wf, nextRuns: nextRuns(wf.id), erisim: users.wfLevel(user, wf) };
 });
-route('PUT', '/api/workflows/:id', ({ params, body }) => {
+route('PUT', '/api/workflows/:id', ({ params, body, user }) => {
   const cur = store.getWorkflow(params.id); if (!cur) throw new HttpError(404, 'Akış bulunamadı');
-  checkTypes(body.nodes);
-  const next = { ...cur, ...body, id: cur.id };
+  checkTypes(body.nodes); checkCreds(user, body.nodes, cur.nodes);
+  const next = { ...cur, ...body, id: cur.id, sahip: cur.sahip, paylasim: cur.paylasim }; // owner and sharing change only through /share
   if (next.active) validateActivation(next);
   const wf = store.saveWorkflow(next);
   arm(wf);
@@ -379,8 +395,22 @@ route('POST', '/api/restore', ({ body }) => {
 });
 route('DELETE', '/api/workflows/:id', ({ params }) => { disarm(params.id); store.deleteWorkflow(params.id); return { ok: true }; });
 /* error notifications (settings page) */
-engine.onEnd((wf, exec) => notify.onEnd(wf, exec, PUBLIC_URL));
+engine.onEnd((wf, exec) => { notify.onEnd(wf, exec, PUBLIC_URL); desktop.onEnd(wf, exec, PUBLIC_URL); });
 route('GET', '/api/notify', () => notify.get());
+/* desktop: start with the computer, updates */
+route('GET', '/api/desktop', () => desktop.info());
+route('PUT', '/api/desktop', async ({ body }) => {
+  if ('guncellemeDenetle' in body) desktop.saveSettings({ guncellemeDenetle: !!body.guncellemeDenetle });
+  if ('autostart' in body) await desktop.setAutostart(!!body.autostart);
+  return desktop.info();
+});
+route('POST', '/api/desktop/update/check', () => desktop.checkUpdate());
+route('POST', '/api/desktop/update/install', async () => {
+  const r = await desktop.installUpdate();
+  r.restarting = require('./lib/sea').inSea && !process.env.N8N8_NO_RESTART;
+  if (r.restarting) setTimeout(() => shutdown(true), 500);
+  return r;
+});
 route('PUT', '/api/notify', ({ body }) => notify.set(body));
 route('POST', '/api/notify/test', async ({ body }) => {
   const s = { ...notify.get(), ...body };
@@ -392,9 +422,17 @@ route('GET', '/api/trash', () => store.listTrash());
 route('POST', '/api/trash/:id/restore', ({ params }) => store.restoreTrash(params.id));
 route('DELETE', '/api/trash/:id', ({ params }) => { store.purgeTrash(params.id); return { ok: true }; });
 route('DELETE', '/api/trash', () => { store.purgeTrash(); return { ok: true }; });
-route('POST', '/api/workflows/:id/duplicate', ({ params }) => {
+route('POST', '/api/workflows/:id/duplicate', ({ params, user }) => {
   const wf = store.getWorkflow(params.id); if (!wf) throw new HttpError(404, 'Akış bulunamadı');
-  return store.saveWorkflow({ ...JSON.parse(JSON.stringify(wf)), id: undefined, name: `${wf.name} (kopya)`, active: false });
+  if (user && !users.atLeast(user, 'duzenleyici')) throw new HttpError(403, 'Bu işlem için düzenleyici rolü gerekir');
+  return store.saveWorkflow(owned(user, { ...JSON.parse(JSON.stringify(wf)), id: undefined, name: `${wf.name} (kopya)`, active: false }));
+});
+/* team use: who else may see or edit this workflow */
+route('PUT', '/api/workflows/:id/share', ({ params, body }) => {
+  const wf = store.getWorkflow(params.id); if (!wf) throw new HttpError(404, 'Akış bulunamadı');
+  if (!users.enabled()) throw new HttpError(400, 'Paylaşım için önce Ayarlar sayfasından ekip kullanımını açın');
+  const sahip = body.sahip !== undefined && users.get(body.sahip) ? body.sahip : wf.sahip;
+  return store.saveWorkflow({ ...wf, sahip, paylasim: users.cleanShare(body.paylasim, sahip) }, { version: false });
 });
 route('POST', '/api/workflows/:id/run', ({ params, body }) => {
   const wf = store.getWorkflow(params.id); if (!wf) throw new HttpError(404, 'Akış bulunamadı');
@@ -408,13 +446,18 @@ route('POST', '/api/workflows/:id/versions/:vid/restore', ({ params }) => {
   const saved = store.saveWorkflow({ ...wf, nodes: v.nodes, edges: v.edges, name: v.name }, { forceVersion: true });
   arm(saved); return saved;
 });
-route('GET', '/api/executions', ({ query }) => ({ items: store.listExecutions({ workflowId: query.workflowId, status: query.status, limit: query.limit }), running: engine.runningIds() }));
+const seesExec = user => { if (!user || user.rol === 'yonetici') return () => true; const m = new Map(); return e => { if (!m.has(e.workflowId)) m.set(e.workflowId, users.canWf(user, store.getWorkflow(e.workflowId), 'gor')); return m.get(e.workflowId); }; };
+route('GET', '/api/executions', ({ query, user }) => {
+  const ok = seesExec(user); const limit = Number(query.limit) || undefined;
+  const items = user && user.rol !== 'yonetici' ? store.listExecutions({ workflowId: query.workflowId, status: query.status, all: true }).filter(ok).slice(0, Math.min(limit || 50, 500)) : store.listExecutions({ workflowId: query.workflowId, status: query.status, limit: query.limit });
+  return { items, running: engine.runningIds().filter(id => { const e = store.getExecution(id); return !e || ok(e); }) };
+});
 /* "Özet" page: counts, success rate, per-day chart, per-workflow table and most frequent errors, from the kept execution records */
-route('GET', '/api/stats', ({ query }) => {
+route('GET', '/api/stats', ({ query, user }) => {
   const days = Math.min(365, Math.max(1, Number(query.days) || 7));
   const dayKey = d => new Date(d).toLocaleDateString('sv');
   const from = new Date(); from.setHours(0, 0, 0, 0); from.setDate(from.getDate() - days + 1);
-  const list = store.listExecutions({ all: true }).filter(e => e.startedAt >= from.toISOString());
+  const list = store.listExecutions({ all: true }).filter(e => e.startedAt >= from.toISOString()).filter(seesExec(user));
   const byDay = new Map(); for (let i = 0; i < days; i++) { const d = new Date(from); d.setDate(d.getDate() + i); byDay.set(dayKey(d), { gun: dayKey(d), basarili: 0, hatali: 0, diger: 0 }); }
   const byWf = new Map(), errors = new Map(), modes = {};
   const done = list.filter(e => e.status === 'success' || e.status === 'error');
@@ -441,7 +484,7 @@ route('GET', '/api/stats', ({ query }) => {
     basariOrani: done.length ? Math.round(success / done.length * 1000) / 10 : null,
     ortSure: durs.length ? Math.round(durs.reduce((a, b) => a + b, 0) / durs.length) : null,
     p95Sure: durs.length ? durs[Math.min(durs.length - 1, Math.floor(durs.length * 0.95))] : null,
-    etkinAkis: store.listWorkflows().filter(w => w.active).length, akisSayisi: store.listWorkflows().length, bekleyenOnay: engine.approvals.size,
+    etkinAkis: store.listWorkflows().filter(w => w.active && users.canWf(user, w, 'gor')).length, akisSayisi: store.listWorkflows().filter(w => users.canWf(user, w, 'gor')).length, bekleyenOnay: engine.approvals.size,
     gunluk: [...byDay.values()], sekiller: modes,
     akislar: [...byWf.values()].map(({ sure, sureSay, ...w }) => ({ ...w, ortSure: sureSay ? Math.round(sure / sureSay) : null })).sort((a, b) => b.toplam - a.toplam),
     hatalar: [...errors.values()].sort((a, b) => b.sayi - a.sayi || b.son.localeCompare(a.son)).slice(0, 10),
@@ -470,12 +513,13 @@ route('POST', '/api/executions/:id/retry', ({ params, body }) => {
   const { exec } = engine.start(source, { triggerId: e.triggerId, triggerData: e.triggerData, mode: 'yeniden deneme', retryOf: e.id });
   return { executionId: exec.id };
 });
-route('DELETE', '/api/executions', ({ query }) => {
+route('DELETE', '/api/executions', ({ query, user }) => {
+  if (user && user.rol !== 'yonetici' && !(query.workflowId && users.canWf(user, store.getWorkflow(query.workflowId), 'duzenle'))) throw new HttpError(403, 'Bütün çalıştırma kayıtlarını yalnızca yönetici silebilir');
   const running = new Set(engine.runningIds()); let n = 0;
   for (const e of store.listExecutions({ workflowId: query.workflowId || undefined, status: query.status || undefined, all: true })) if (!running.has(e.id)) { store.deleteExecution(e.id); n++; }
   return { ok: true, silinen: n };
 });
-route('GET', '/api/credentials', () => store.listCredentials());
+route('GET', '/api/credentials', ({ user }) => store.listCredentials().filter(c => users.canCred(user, c)).map(c => ({ ...c, sahipAd: users.get(c.sahip)?.ad || '', erisim: users.canCred(user, c, 'sahip') ? 'sahip' : 'kullan' })));
 route('GET', '/api/credentials/:id', ({ params }) => {
   const c = store.getCredentialData(params.id); if (!c) throw new HttpError(404, 'Kimlik bilgisi bulunamadı');
   const t = describe().credentialTypes[c.type];
@@ -483,17 +527,23 @@ route('GET', '/api/credentials/:id', ({ params }) => {
   const filled = Object.fromEntries((t?.fields || []).filter(f => f.secret).map(f => [f.key, !!c.data[f.key]]));
   return { id: c.id, name: c.name, type: c.type, data, filled, ...(oauth.isOAuth(c.type) ? { connected: !!c.data.access_token, account: c.data.account || '' } : {}) };
 });
-route('POST', '/api/credentials', ({ body }) => { if (!describe().credentialTypes[body.type]) throw new HttpError(400, 'Bilinmeyen kimlik bilgisi türü'); return store.saveCredential(body); });
-route('POST', '/api/credentials/test', async ({ body }) => {
+route('POST', '/api/credentials', ({ body, user }) => { if (!describe().credentialTypes[body.type]) throw new HttpError(400, 'Bilinmeyen kimlik bilgisi türü'); return store.saveCredential({ name: body.name, type: body.type, data: body.data, sahip: user ? user.id : null, paylasim: [] }); });
+route('PUT', '/api/credentials/:id/share', ({ params, body }) => {
+  const c = store.listCredentials().find(x => x.id === params.id); if (!c) throw new HttpError(404, 'Kimlik bilgisi bulunamadı');
+  if (!users.enabled()) throw new HttpError(400, 'Paylaşım için önce Ayarlar sayfasından ekip kullanımını açın');
+  const r = store.saveCredential({ id: c.id, type: c.type, data: {}, paylasim: users.cleanCredShare(body.paylasim, c.sahip) });
+  return { ...r, paylasim: store.listCredentials().find(x => x.id === c.id).paylasim };
+});
+route('POST', '/api/credentials/test', async ({ body, user }) => {
   const t = describe().credentialTypes[body.type]; if (!t) throw new HttpError(400, 'Bilinmeyen kimlik bilgisi türü');
-  const saved = body.id ? store.getCredentialData(body.id) : null;
+  const saved = body.id && users.canCred(user, store.listCredentials().find(c => c.id === body.id), 'sahip') ? store.getCredentialData(body.id) : null;
   const data = Object.fromEntries(t.fields.map(f => [f.key, body.data?.[f.key] || (f.secret && saved?.type === body.type ? saved.data[f.key] : '') || '']));
   try { const msg = await testCredential(body.type, data); return { ok: true, message: msg || 'Bu tür için deneme yok' }; }
   catch (e) { return { ok: false, message: e.message }; }
 });
 route('PUT', '/api/credentials/:id', ({ params, body }) => {
   const cur = store.listCredentials().find(c => c.id === params.id); if (!cur) throw new HttpError(404, 'Kimlik bilgisi bulunamadı');
-  return store.saveCredential({ ...body, id: params.id, type: cur.type });
+  return store.saveCredential({ name: body.name, data: body.data, id: params.id, type: cur.type });
 });
 route('DELETE', '/api/credentials/:id', ({ params }) => { store.deleteCredential(params.id); return { ok: true }; });
 route('GET', '/api/variables', () => store.getVariables());
@@ -551,13 +601,14 @@ route('DELETE', '/api/kb/:id/docs/:docId', ({ params }) => { kb.removeDoc(params
 route('GET', '/api/kb/:id/search', ({ params, query }) => kb.search(params.id, query.q || '', query.k || 5));
 
 /* AI builder and n8n import */
-route('POST', '/api/ai/build', async ({ body }) => {
-  const credId = body.credential || store.listCredentials().find(c => c.type === 'anthropicApi')?.id;
+route('POST', '/api/ai/build', async ({ body, user }) => {
+  const credId = body.credential || store.listCredentials().find(c => c.type === 'anthropicApi' && users.canCred(user, c))?.id;
+  if (credId && !users.canCred(user, store.listCredentials().find(c => c.id === credId))) throw new HttpError(403, 'Bu kimlik bilgisini kullanma izniniz yok');
   if (!credId) throw new HttpError(400, 'Önce Kimlik bilgileri sayfasından bir Anthropic (Claude) API anahtarı ekleyin');
   const cred = store.getCredentialData(credId);
   if (!cred || cred.type !== 'anthropicApi') throw new HttpError(400, 'Seçilen kimlik bilgisi bir Anthropic API anahtarı değil');
   if (!String(body.prompt || '').trim()) throw new HttpError(400, 'Ne yapmak istediğinizi yazın');
-  const current = body.workflowId ? store.getWorkflow(body.workflowId) : null;
+  const current = body.workflowId && users.canWf(user, store.getWorkflow(body.workflowId), 'gor') ? store.getWorkflow(body.workflowId) : null;
   return aiBuilder.build({ prompt: String(body.prompt).slice(0, 8000), apiKey: cred.data.apiKey, model: body.model || 'claude-opus-5-5', current });
 });
 route('POST', '/api/import/convert', ({ body }) => {
@@ -567,17 +618,125 @@ route('POST', '/api/import/convert', ({ body }) => {
 });
 
 route('GET', '/api/templates', () => templates.LIST);
-route('POST', '/api/templates/:key', ({ params }) => {
+route('POST', '/api/templates/:key', ({ params, user }) => {
   const t = templates.TEMPLATES[params.key]; if (!t) throw new HttpError(404, 'Şablon bulunamadı');
-  return store.saveWorkflow({ ...t(), active: false });
+  return store.saveWorkflow(owned(user, { ...t(), active: false }));
 });
 route('GET', '/api/files', () => {
   const walk = (dir, base = '') => fs.readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? walk(path.join(dir, d.name), path.join(base, d.name)) : [{ ad: path.join(base, d.name), boyut: fs.statSync(path.join(dir, d.name)).size, degisti: fs.statSync(path.join(dir, d.name)).mtime }]);
   return walk(store.DIRS.files);
 });
+/* ---------- team use: accounts, sign-in, activity log ---------- */
+const COOKIE = 'am_oturum';
+const cookieOf = req => { const m = String(req.headers.cookie || '').match(/(?:^|;\s*)am_oturum=([^;]+)/); return m ? decodeURIComponent(m[1]) : ''; };
+const sessionCookie = (token, maxAge) => `${COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${PUBLIC_URL.startsWith('https:') ? '; Secure' : ''}`;
+const clientIp = req => req.socket.remoteAddress || '';
+route('GET', '/api/me', ({ user }) => ({ ekip: users.enabled(), kullanici: user ? users.pub(user) : null, roller: users.ROLES }));
+route('POST', '/api/login', ({ body, req, cookies }) => {
+  if (!users.enabled()) throw new HttpError(400, 'Ekip kullanımı açık değil');
+  const u = users.verify(body.kullanici, body.sifre, clientIp(req));
+  if (!u) { users.audit({ kullanici: String(body.kullanici || '').slice(0, 60) }, 'Hatalı giriş denemesi', clientIp(req)); throw new HttpError(401, 'Kullanıcı adı ya da şifre yanlış'); }
+  cookies.push(sessionCookie(users.login(u), 30 * 86400)); users.audit(u, 'Giriş yaptı', clientIp(req));
+  return { kullanici: users.pub(u) };
+});
+route('POST', '/api/logout', ({ req, user, cookies }) => { users.logout(cookieOf(req)); cookies.push(sessionCookie('', 0)); if (user) users.audit(user, 'Çıkış yaptı'); return { ok: true }; });
+/* the first administrator turns team use on; from then on the editor asks everyone to sign in */
+route('POST', '/api/setup', ({ body, cookies }) => {
+  if (users.enabled()) throw new HttpError(409, 'Ekip kullanımı zaten açık');
+  const u = users.create({ ...body, rol: 'yonetici' }); const full = users.get(u.id);
+  for (const w of store.listWorkflows()) if (!w.sahip) store.saveWorkflow({ ...w, sahip: u.id }, { version: false }); // existing work belongs to the first administrator
+  for (const c of store.listCredentials()) if (!c.sahip) store.saveCredential({ id: c.id, type: c.type, data: {}, sahip: u.id });
+  cookies.push(sessionCookie(users.login(full), 30 * 86400)); users.audit(full, 'Ekip kullanımını açtı');
+  return { kullanici: u };
+});
+route('GET', '/api/users', () => users.list());
+route('POST', '/api/users', ({ body }) => users.create(body));
+route('PUT', '/api/users/:id', ({ params, body, req }) => users.update(params.id, { ad: body.ad, rol: body.rol, sifre: body.sifre }, users.sha(cookieOf(req))));
+route('DELETE', '/api/users/:id', ({ params, user }) => {
+  if (user && params.id === user.id) throw new HttpError(400, 'Kendi hesabınızı silemezsiniz');
+  users.remove(params.id);
+  for (const w of store.listWorkflows()) if (w.paylasim?.[params.id]) { const p = { ...w.paylasim }; delete p[params.id]; store.saveWorkflow({ ...w, paylasim: p }, { version: false }); }
+  return { ok: true };
+});
+route('PUT', '/api/me/password', ({ body, user, req }) => {
+  if (!user) throw new HttpError(400, 'Ekip kullanımı açık değil');
+  if (!users.verify(user.kullanici, body.eski, clientIp(req))) throw new HttpError(400, 'Mevcut şifre yanlış');
+  return users.update(user.id, { sifre: body.yeni }, users.sha(cookieOf(req)));
+});
+route('GET', '/api/audit', ({ query }) => users.auditLog(Number(query.limit) || 200));
 route('GET', '/api/expr-check', ({ query }) => { try { require('./lib/expr').parse(query.e || ''); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; } });
 
+/* ---------------- permissions (team use) ----------------
+   Every API route needs a rule here; a route without one is for administrators only. In single-user mode
+   (no accounts) everything is allowed. wf / exec / cred: access to the workflow, execution or credential in :id. */
+const PERMS = {
+  'GET /api/me': 'acik', 'POST /api/login': 'acik', 'POST /api/logout': 'acik',
+  'GET /api/info': 'herkes', 'GET /api/node-types': 'herkes', 'GET /api/approvals': 'herkes', 'GET /api/workflows': 'herkes', 'GET /api/executions': 'herkes', 'GET /api/stats': 'herkes',
+  'GET /api/notify': 'herkes', 'GET /api/desktop': 'herkes', 'GET /api/variables': 'herkes', 'GET /api/templates': 'herkes', 'GET /api/files': 'herkes', 'GET /api/expr-check': 'herkes',
+  'GET /api/tables': 'herkes', 'GET /api/tables/:id': 'herkes', 'GET /api/tables/:id/xlsx': 'herkes', 'GET /api/kb': 'herkes', 'GET /api/kb/:id': 'herkes', 'GET /api/kb/:id/search': 'herkes',
+  'PUT /api/me/password': 'herkes', 'GET /api/users': 'duzenleyici', 'GET /api/credentials': 'herkes',
+  'POST /api/workflows': 'duzenleyici', 'POST /api/templates/:key': 'duzenleyici', 'POST /api/import/convert': 'duzenleyici', 'POST /api/ai/build': 'duzenleyici',
+  'POST /api/credentials': 'duzenleyici', 'POST /api/credentials/test': 'duzenleyici',
+  'POST /api/tables': 'duzenleyici', 'PUT /api/tables/:id': 'duzenleyici', 'DELETE /api/tables/:id': 'duzenleyici', 'POST /api/tables/:id/rows': 'duzenleyici', 'POST /api/tables/:id/import': 'duzenleyici',
+  'PUT /api/tables/:id/rows/:rowId': 'duzenleyici', 'DELETE /api/tables/:id/rows/:rowId': 'duzenleyici', 'POST /api/tables/:id/clear': 'duzenleyici',
+  'POST /api/kb': 'duzenleyici', 'PUT /api/kb/:id': 'duzenleyici', 'DELETE /api/kb/:id': 'duzenleyici', 'POST /api/kb/:id/docs': 'duzenleyici', 'DELETE /api/kb/:id/docs/:docId': 'duzenleyici',
+  'DELETE /api/executions': 'duzenleyici',
+  'GET /api/workflows/:id': { wf: 'gor' }, 'GET /api/workflows/:id/versions': { wf: 'gor' }, 'GET /api/workflows/:id/status': { wf: 'gor' }, 'POST /api/workflows/:id/duplicate': { wf: 'gor' },
+  'PUT /api/workflows/:id': { wf: 'duzenle' }, 'POST /api/workflows/:id/run': { wf: 'duzenle' }, 'POST /api/workflows/:id/versions/:vid/restore': { wf: 'duzenle' }, 'DELETE /api/workflows/:id/memory': { wf: 'duzenle' },
+  'DELETE /api/workflows/:id': { wf: 'sahip' }, 'PUT /api/workflows/:id/share': { wf: 'sahip' },
+  'GET /api/executions/:id': { exec: 'gor' }, 'POST /api/executions/:id/debug': { exec: 'duzenle' }, 'DELETE /api/executions/:id': { exec: 'duzenle' }, 'POST /api/executions/:id/stop': { exec: 'duzenle' }, 'POST /api/executions/:id/retry': { exec: 'duzenle' },
+  'GET /api/credentials/:id': { cred: 'sahip' }, 'PUT /api/credentials/:id': { cred: 'sahip' }, 'DELETE /api/credentials/:id': { cred: 'sahip' }, 'PUT /api/credentials/:id/share': { cred: 'sahip' },
+};
+const ROLE_MSG = { duzenleyici: 'Bu işlem için düzenleyici rolü gerekir', yonetici: 'Bu işlem için yönetici rolü gerekir' };
+function guard(r, user, params) {
+  const perm = PERMS[`${r.method} ${r.pattern}`] || 'yonetici';
+  if (perm === 'acik') return;
+  if (user === undefined) throw new HttpError(401, 'Giriş gerekli');
+  if (!user || perm === 'herkes') return;
+  if (typeof perm === 'string') { if (!users.atLeast(user, perm)) throw new HttpError(403, ROLE_MSG[perm]); return; }
+  let wf;
+  if (perm.wf) { wf = store.getWorkflow(params.id); if (!wf) throw new HttpError(404, 'Akış bulunamadı'); }
+  if (perm.exec) { const e = store.getExecution(params.id); if (!e) throw new HttpError(404, 'Çalıştırma bulunamadı'); wf = store.getWorkflow(e.workflowId); }
+  if (perm.wf || perm.exec) {
+    const need = perm.wf || perm.exec;
+    if (users.canWf(user, wf, need)) return;
+    throw users.canWf(user, wf, 'gor') ? new HttpError(403, need === 'sahip' ? 'Bunu yalnızca akışın sahibi ya da bir yönetici yapabilir' : 'Bu akışı düzenleme izniniz yok') : new HttpError(404, perm.exec ? 'Çalıştırma bulunamadı' : 'Akış bulunamadı');
+  }
+  if (perm.cred) {
+    const c = store.listCredentials().find(x => x.id === params.id);
+    if (!c || !users.canCred(user, c)) throw new HttpError(404, 'Kimlik bilgisi bulunamadı');
+    if (!users.canCred(user, c, 'sahip')) throw new HttpError(403, 'Bu kimlik bilgisini yalnızca sahibi ya da bir yönetici değiştirebilir');
+  }
+}
+/* what the activity log says about a change */
+const AUDIT_LABEL = {
+  'POST /api/workflows': 'Akış oluşturdu', 'PUT /api/workflows/:id': 'Akışı kaydetti', 'DELETE /api/workflows/:id': 'Akışı sildi', 'POST /api/workflows/:id/run': 'Akışı çalıştırdı',
+  'PUT /api/workflows/:id/share': 'Akışın paylaşımını değiştirdi', 'POST /api/workflows/:id/duplicate': 'Akışı kopyaladı', 'POST /api/workflows/:id/versions/:vid/restore': 'Akışın eski sürümüne döndü', 'POST /api/templates/:key': 'Şablondan akış oluşturdu',
+  'POST /api/credentials': 'Kimlik bilgisi ekledi', 'PUT /api/credentials/:id': 'Kimlik bilgisini değiştirdi', 'DELETE /api/credentials/:id': 'Kimlik bilgisini sildi', 'PUT /api/credentials/:id/share': 'Kimlik bilgisinin paylaşımını değiştirdi',
+  'POST /api/users': 'Kullanıcı ekledi', 'PUT /api/users/:id': 'Kullanıcıyı değiştirdi', 'DELETE /api/users/:id': 'Kullanıcıyı sildi', 'PUT /api/me/password': 'Şifresini değiştirdi',
+  'POST /api/backup': 'Yedek aldı', 'POST /api/restore': 'Yedekten geri yükledi', 'PUT /api/variables': 'Değişkenleri değiştirdi', 'PUT /api/notify': 'Hata bildirimlerini değiştirdi',
+  'DELETE /api/executions': 'Çalıştırma kayıtlarını sildi', 'POST /api/desktop/update/install': 'Programı güncelledi', 'DELETE /api/tables/:id': 'Veri tablosunu sildi', 'DELETE /api/kb/:id': 'Bilgi tabanını sildi',
+};
+function auditFor(r, user, params, body, out, before) {
+  const label = AUDIT_LABEL[`${r.method} ${r.pattern}`]; if (!label || !user) return;
+  let what = before || out?.name || out?.kullanici || '';
+  if (r.pattern === '/api/workflows/:id' && r.method === 'PUT' && typeof body.active === 'boolean') what += body.active ? ' (etkin)' : ' (kapalı)';
+  if (r.pattern.startsWith('/api/users/')) what = users.get(params.id)?.kullanici || what;
+  users.audit(user, label, what);
+}
+
 /* ---------------- server ---------------- */
+/* undefined: not signed in; null: single-user mode, everyone may do everything; otherwise the signed-in user */
+function authenticate(req) {
+  if (!users.enabled()) return authorized(req) ? null : undefined;
+  const u = users.fromToken(cookieOf(req)); if (u) return u;
+  const h = req.headers.authorization || '';
+  if (h.startsWith('Basic ')) { // scripts and tools: kullanıcı adı ve şifre
+    const [name, pass] = Buffer.from(h.slice(6), 'base64').toString().split(/:(.*)/s);
+    try { return users.verify(name, pass, clientIp(req)) || undefined; } catch { return undefined; }
+  }
+  return undefined;
+}
 function authorized(req) {
   if (!PASSWORD) return true;
   const h = req.headers.authorization || '';
@@ -704,7 +863,7 @@ const server = http.createServer(async (req, res) => {
     let m;
     if ((m = p.match(/^\/(webhook|webhook-test|form|form-test|sohbet|sohbet-test)\/(.+)$/))) {
       const test = m[1].endsWith('-test');
-      if (test && (!authorized(req) || !hostAllowed(req))) return UNAUTH(res); // test addresses run drafts: editor users only
+      if (test) { const u = authenticate(req); if (u === undefined || !users.atLeast(u, 'duzenleyici') || !hostAllowed(req)) return UNAUTH(res); } // test addresses run drafts: editor users only
       const kind = m[1].replace('-test', '');
       return await (kind === 'webhook' ? handleWebhook : kind === 'form' ? handleForm : handleChat)(req, res, cleanPath(m[2]), test);
     }
@@ -714,8 +873,13 @@ const server = http.createServer(async (req, res) => {
     if ((m = p.match(/^\/whatsapp\/(.+)$/))) return await handleWhatsapp(req, res, cleanPath(m[1]), url);
     if ((m = p.match(/^\/onay\/([A-Za-z0-9_-]{10,64})$/))) return await handleApproval(req, res, m[1]);
     if (!hostAllowed(req)) return send(res, 403, 'Bu adresten erişime izin verilmiyor. Başka bir adres kullanıyorsanız N8N8_ALLOWED_HOSTS ile ekleyin.');
-    if (!authorized(req)) return UNAUTH(res);
-    if (p === '/oauth/start') { res.writeHead(302, { Location: oauth.startUrl(url.searchParams.get('cred'), OAUTH_REDIRECT), 'Cache-Control': 'no-store' }); return res.end(); }
+    const user = authenticate(req);
+    const open = users.enabled() && (STATIC[p] || p === '/api/me' || p === '/api/login' || p === '/api/logout');
+    if (user === undefined && !open) return users.enabled() ? send(res, 401, p.startsWith('/api/') ? { hata: 'Giriş gerekli', giris: true } : 'Giriş gerekli') : UNAUTH(res);
+    if (p === '/oauth/start') {
+      const cr = store.listCredentials().find(c => c.id === url.searchParams.get('cred'));
+      if (user && !users.canCred(user, cr, 'sahip')) return send(res, 403, 'Bu kimlik bilgisini yalnızca sahibi ya da bir yönetici bağlayabilir');
+      res.writeHead(302, { Location: oauth.startUrl(url.searchParams.get('cred'), OAUTH_REDIRECT), 'Cache-Control': 'no-store' }); return res.end(); }
     if ((req.method === 'GET' || req.method === 'HEAD') && STATIC[p]) {
       const [file, type] = STATIC[p];
       return send(res, 200, readAsset(file), { 'Content-Type': type });
@@ -723,7 +887,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
       res.write(`data: ${JSON.stringify({ type: 'hello', running: engine.runningIds() })}\n\n`);
-      clients.add(res); req.on('close', () => clients.delete(res));
+      clients.set(res, user); req.on('close', () => clients.delete(res));
       return;
     }
     if (p.startsWith('/api/')) {
@@ -733,8 +897,12 @@ const server = http.createServer(async (req, res) => {
         if (r.method !== req.method) continue;
         const mm = p.match(r.re); if (!mm) continue;
         const body = ['POST', 'PUT'].includes(req.method) ? await readBody(req, p === '/api/restore' ? 256 * 1024 * 1024 : /^\/api\/(kb\/[^/]+\/docs|tables\/[^/]+\/import)$/.test(p) ? 40 * 1024 * 1024 : MAX_BODY) : {};
-        const out = await r.fn({ params: mm.groups || {}, query: Object.fromEntries(url.searchParams), body: typeof body === 'object' ? body : {} });
-        return send(res, 200, out);
+        const params = mm.groups || {}; const ctx = { params, query: Object.fromEntries(url.searchParams), body: typeof body === 'object' && body ? body : {}, user, req, cookies: [] };
+        guard(r, user, params);
+        const before = req.method === 'DELETE' && params.id ? (store.getWorkflow(params.id)?.name || store.listCredentials().find(c => c.id === params.id)?.name || '') : '';
+        const out = await r.fn(ctx);
+        if (req.method !== 'GET') auditFor(r, user, params, ctx.body, out, before);
+        return send(res, 200, out, ctx.cookies.length ? { 'Set-Cookie': ctx.cookies } : {});
       }
       throw new HttpError(404, 'Böyle bir API yok');
     }
@@ -747,12 +915,14 @@ const server = http.createServer(async (req, res) => {
 });
 
 function openBrowser(u) {
-  if (process.env.N8N8_NO_OPEN) return;
-  const cmd = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', u]] : process.platform === 'darwin' ? ['open', [u]] : ['xdg-open', [u]];
-  try { spawn(cmd[0], cmd[1], { detached: true, stdio: 'ignore' }).on('error', () => {}).unref(); } catch {}
+  if (process.env.N8N8_NO_OPEN || desktop.BACKGROUND) return;
+  desktop.openUrl(u);
 }
 
+let listenTries = 0;
 server.on('error', e => {
+  // after an update the new version may start a moment before the old one has let go of the port
+  if (e.code === 'EADDRINUSE' && process.env.N8N8_YENIDEN && ++listenTries < 40) return setTimeout(() => server.listen(PORT, HOST), 500);
   if (e.code === 'EADDRINUSE') { console.error(`\n  ${PORT} portu kullanımda. Auto-Move zaten açık olabilir: ${PUBLIC_URL}\n  Başka port için: PORT=5679 npm start\n`); openBrowser(PUBLIC_URL); setTimeout(() => process.exit(1), 300); }
   throw e;
 });
@@ -761,11 +931,21 @@ server.listen(PORT, HOST, () => {
   console.log(`\n  Auto-Move ${pkg.version} çalışıyor → ${PUBLIC_URL}`);
   console.log(`  Veri klasörü: ${store.DATA}`);
   if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !PASSWORD) console.log('  UYARI: Ağa açıksınız ama şifre yok. N8N8_PASSWORD ayarlayın.');
-  console.log('  Kapatmak için bu pencerede Ctrl+C\n');
-  openBrowser(PUBLIC_URL);
+  desktop.cleanupOld();
+  desktop.startTray({ url: PUBLIC_URL, onQuit: () => shutdown(), onUpdate: () => openBrowser(`${PUBLIC_URL}/#/hakkinda`) }).then(on => {
+    console.log(on ? '  Kapatmak için saatin yanındaki Auto-Move simgesine sağ tıklayıp Kapat\'ı seçin.\n' : '  Kapatmak için bu pencerede Ctrl+C\n');
+  });
+  desktop.scheduleChecks(PUBLIC_URL);
+  if (!process.env.N8N8_YENIDEN) openBrowser(PUBLIC_URL);
 });
 // one failed background save or a stray promise must not take every workflow down with it
 process.on('unhandledRejection', e => console.error('Beklenmeyen hata:', e));
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { console.log('\n  Auto-Move kapatılıyor…'); for (const id of engine.runningIds()) engine.stop(id); setTimeout(() => process.exit(0), 300); });
+function shutdown(restart = false) {
+  console.log(restart ? '\n  Auto-Move yeni sürümle yeniden başlıyor…' : '\n  Auto-Move kapatılıyor…');
+  for (const id of engine.runningIds()) engine.stop(id);
+  server.close(); desktop.stopTray();
+  setTimeout(() => { if (restart) desktop.relaunch(); process.exit(0); }, 300);
+}
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => shutdown());
 
 module.exports = { server };

@@ -1989,6 +1989,422 @@ test('Google Dokümanlar: şablondan sözleşme + PDF, yeni belge, metin ekle, d
   assert.deepEqual(to, { cevapId: 'r-new', tarih: '2026-10-22T10:00:00Z', 'Adınız nedir?': 'Ayşe', 'e-posta adresiniz?': 'ayse@ornek.com', 'Bizi nereden duydunuz?': 'Instagram', 'İlgi alanları': ['Mutfak', 'Bahçe'], gizli: { kaynak: 'instagram' }, puan: 7 });
 });
 
+test('Pazaryerleri: Hepsiburada, N11 ve Amazon (sipariş, paketleme, onay, stok/fiyat, sonuç) + tetikleyiciler ve stok eşitleme şablonu (sahte API)', async () => {
+  // Hepsiburada
+  const hb = await api('POST', '/api/credentials', { type: 'hepsiburadaApi', name: 'hb', data: { merchantId: 'mid-1', secretKey: 'hb-secret', userAgent: 'magaza_dev', stage: 'false' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'hepsiburadaApi', id: hb.id, data: { merchantId: 'mid-1', userAgent: 'magaza_dev', stage: 'false' } })).message, 'Bağlanıldı (canlı); 2 ürün');
+  assert.match((await api('POST', '/api/credentials/test', { type: 'hepsiburadaApi', data: { merchantId: 'mid-1', secretKey: 'yanlis' } })).message, /Merchant ID ya da servis anahtarı yanlış/);
+  const w = await api('POST', '/api/workflows', wf('hb', [
+    ['manual', {}],
+    ['hepsiburada', { credential: hb.id, op: 'orders', max: 10 }, { name: 'hsip' }],
+    ['filter', { conditions: [{ left: '{{ $json.siparisNo }}', op: 'eq', right: '4080001' }] }],
+    ['hepsiburada', { credential: hb.id, op: 'pack', lines: '{{ $json.urunler }}' }, { name: 'hpaket' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  let e = await waitExec((await api('POST', `/api/workflows/${w.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const hs = outOf(e, 'hsip');
+  assert.deepEqual(hs.map(o => [o.siparisNo, o.musteri, o.tutar, o.urunler.length, o.adres?.il, o.pazaryeri]), [['4080001', 'Ayşe Yılmaz', 399.9, 2, 'İstanbul', 'Hepsiburada'], ['4080002', 'Can Demir', 150, 1, 'Ankara', 'Hepsiburada']]);
+  assert.deepEqual(hs[0].urunler[0], { satirId: 'L1', ad: 'Seramik Kupa', barkod: '869001', stokKodu: 'KUP-1', hepsiburadaSku: 'HBV0000001', adet: 2, fiyat: 150, tutar: 300 });
+  assert.deepEqual(fakeMarket.hb.packs, [{ lineItemRequests: [{ id: 'L1', quantity: 2 }, { id: 'L2', quantity: 1 }] }]);
+  assert.deepEqual([outOf(e, 'hpaket')[0].paketId, outOf(e, 'hpaket')[0].takipNo], ['HB-PKG-1', 'HBX123']);
+  assert.ok(fakeMarket.hb.ua.every(x => x === 'magaza_dev'), 'User-Agent entegratör adı olmalı');
+  const w2 = await api('POST', '/api/workflows', wf('hb2', [
+    ['manual', { data: '[{"stokKodu":"KUP-1","stok":"12","fiyat":"1.250,50"},{"stokKodu":"YOK-1","stok":"3","fiyat":""}]' }],
+    ['hepsiburada', { credential: hb.id, op: 'stock', sku: '{{ $json.stokKodu }}', quantity: '{{ $json.stok }}', price: '{{ $json.fiyat }}' }, { name: 'hstok' }],
+    ['hepsiburada', { credential: hb.id, op: 'upload', uploadId: '{{ $json.islemNo }}' }, { name: 'hsonuc' }],
+    ['hepsiburada', { credential: hb.id, op: 'listings', max: 5 }, { name: 'hurun' }],
+    ['hepsiburada', { credential: hb.id, op: 'packages', max: 5 }, { name: 'hpkt' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4]]));
+  e = await waitExec((await api('POST', `/api/workflows/${w2.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(fakeMarket.hb.uploads, [[{ merchantSku: 'KUP-1', availableStock: 12, price: 1250.5 }, { merchantSku: 'YOK-1', availableStock: 3 }]]);
+  assert.deepEqual(outOf(e, 'hsonuc')[0], { islemNo: 'up-1', durum: 'Done', toplam: 2, hatali: 1, hatalar: [{ stokKodu: 'YOK-1', neden: 'Ürün bulunamadı' }] });
+  assert.deepEqual(outOf(e, 'hurun').map(x => [x.stokKodu, x.stok, x.fiyat, x.satista]), [['KUP-1', 7, 150, true], ['TAB-1', 0, 99.9, false]]);
+  assert.deepEqual([outOf(e, 'hpkt')[0].paketId, outOf(e, 'hpkt')[0].takipNo, outOf(e, 'hpkt')[0].urunler[0].satirId], ['HB-PKG-0', 'HBX000', 'L0']);
+
+  // N11
+  const n1 = await api('POST', '/api/credentials', { type: 'n11Api', name: 'n11', data: { appKey: 'n11-key', appSecret: 'n11-secret' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'n11Api', id: n1.id, data: { appKey: 'n11-key' } })).message, 'Bağlanıldı; 1 ürün');
+  assert.match((await api('POST', '/api/credentials/test', { type: 'n11Api', data: { appKey: 'n11-key', appSecret: 'x' } })).message, /App Key ya da App Secret yanlış/);
+  const w3 = await api('POST', '/api/workflows', wf('n11', [
+    ['manual', {}],
+    ['n11', { credential: n1.id, op: 'orders', status: 'Created', days: 7, max: 10 }, { name: 'nsip' }],
+    ['n11', { credential: n1.id, op: 'accept', lines: '{{ $json.urunler }}' }, { name: 'nonay' }],
+    ['n11', { credential: n1.id, op: 'products', productCode: '{{ $json.urunler[0].stokKodu }}' }, { name: 'nurun' }],
+    ['n11', { credential: n1.id, op: 'stock', sku: '{{ $json.urun.stokKodu }}', quantity: '5', price: '449,90', listPrice: '499,90' }, { name: 'nstok' }],
+    ['n11', { credential: n1.id, op: 'task', taskId: '{{ $json.islemNo }}' }, { name: 'nsonuc' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]));
+  e = await waitExec((await api('POST', `/api/workflows/${w3.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const ns = outOf(e, 'nsip')[0];
+  assert.deepEqual([ns.paketId, ns.siparisNo, ns.musteri, ns.tutar, ns.adres.ilce, ns.urunler[0].satirId, ns.tarih, ns.pazaryeri], [2100001, '205000001', 'Ece Kaya', 449.9, 'Konak', 991, '2025-10-28T10:00:00.000Z', 'N11']);
+  assert.deepEqual(fakeMarket.n11.updates, [{ lines: [{ lineId: 991 }], status: 'Picking' }]);
+  assert.equal(outOf(e, 'nonay')[0].durum, 'Picking');
+  assert.equal(outOf(e, 'nurun')[0].urun.stok, 4);
+  assert.deepEqual(fakeMarket.n11.tasks, [{ payload: { integrator: 'Auto-Move', skus: [{ stockCode: 'KUP-1', quantity: 5, salePrice: 449.9, listPrice: 499.9, currencyType: 'TL' }] } }]);
+  assert.deepEqual(outOf(e, 'nsonuc')[0], { islemNo: '9001', durum: 'PROCESSED', toplam: 2, hatali: 1, hatalar: [{ stokKodu: 'YOK-1', neden: 'Ürün bulunamadı' }] });
+
+  // Amazon
+  const am = await api('POST', '/api/credentials', { type: 'amazonSpApi', name: 'amz', data: { sellerId: 'SELLER1', marketplace: 'A33AVAJ2PDY3EV', clientId: 'amzn1.application-oa2-client.x', clientSecret: 'lwa-secret', refreshToken: 'Atzr|ok' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'amazonSpApi', id: am.id, data: { sellerId: 'SELLER1', marketplace: 'A33AVAJ2PDY3EV', clientId: 'amzn1.application-oa2-client.x' } })).message, 'Bağlanıldı; Türkiye (amazon.com.tr) mağazası açık');
+  assert.match((await api('POST', '/api/credentials/test', { type: 'amazonSpApi', data: { sellerId: 'SELLER1', clientId: 'amzn1.application-oa2-client.x', clientSecret: 'lwa-secret', refreshToken: 'Atzr|eski' } })).message, /refresh token geçersiz/);
+  const tok0 = fakeMarket.amz.tokens;
+  const w4 = await api('POST', '/api/workflows', wf('amz', [
+    ['manual', {}],
+    ['amazon', { credential: am.id, op: 'orders', status: 'Unshipped,PartiallyShipped', days: 7, max: 10, withItems: true }, { name: 'asip' }],
+    ['amazon', { credential: am.id, op: 'ship', orderId: '{{ $json.siparisNo }}', lines: '{{ $json.urunler }}', carrier: 'Yurtiçi Kargo', tracking: 'YK123456' }, { name: 'agonder' }],
+    ['amazon', { credential: am.id, op: 'listing', productSku: '{{ $json.urunler[0].stokKodu }}' }, { name: 'aurun' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  e = await waitExec((await api('POST', `/api/workflows/${w4.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const as = outOf(e, 'asip');
+  assert.equal(as.length, 1, 'yalnız gönderilmeyi bekleyen sipariş');
+  assert.deepEqual([as[0].siparisNo, as[0].musteri, as[0].tutar, as[0].paraBirimi, as[0].adres.il, as[0].gonderim, as[0].urunler[0]], ['407-1111111-2222222', 'Mert Can', 599.8, 'TRY', 'Bursa', 'Satıcı', { satirId: '55511122233344', ad: 'Seramik Kupa', asin: 'B0TEST0001', stokKodu: 'KUP-1', adet: 2, fiyat: 299.9, tutar: 599.8 }]);
+  const [shipId, ship] = fakeMarket.amz.ships[0];
+  assert.equal(shipId, '407-1111111-2222222');
+  assert.deepEqual([ship.marketplaceId, ship.packageDetail.carrierName, ship.packageDetail.trackingNumber, ship.packageDetail.orderItems], ['A33AVAJ2PDY3EV', 'Yurtiçi Kargo', 'YK123456', [{ orderItemId: '55511122233344', quantity: 2 }]]);
+  assert.deepEqual([outOf(e, 'aurun')[0].urun.asin, outOf(e, 'aurun')[0].urun.stok, outOf(e, 'aurun')[0].urun.fiyat], ['B0TEST0001', 12, 299.9]);
+  const w5 = await api('POST', '/api/workflows', wf('amz2', [['manual', { data: '[{"stokKodu":"KUP-1","stok":"9","fiyat":"299,90"}]' }], ['amazon', { credential: am.id, op: 'stock', sku: '{{ $json.stokKodu }}', quantity: '{{ $json.stok }}', price: '{{ $json.fiyat }}' }, { name: 'astok' }]], [[0, 1]]));
+  e = await waitExec((await api('POST', `/api/workflows/${w5.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(fakeMarket.amz.patches[0], ['KUP-1', 'A33AVAJ2PDY3EV', { productType: 'PRODUCT', patches: [{ op: 'replace', path: '/attributes/fulfillment_availability', value: [{ fulfillment_channel_code: 'DEFAULT', quantity: 9 }] }, { op: 'replace', path: '/attributes/purchasable_offer', value: [{ marketplace_id: 'A33AVAJ2PDY3EV', currency: 'TRY', our_price: [{ schedule: [{ value_with_tax: 299.9 }] }] }] }] }]);
+  assert.deepEqual(outOf(e, 'astok')[0], { stokKodu: 'KUP-1', durum: 'ACCEPTED', islemNo: 'sub-1', stok: 9, fiyat: 299.9, paraBirimi: 'TRY' });
+  const w6 = await api('POST', '/api/workflows', wf('amz3', [['manual', { data: '[{"stokKodu":"YOK-1","stok":"1"}]' }], ['amazon', { credential: am.id, op: 'stock', sku: '{{ $json.stokKodu }}', quantity: '{{ $json.stok }}', price: '' }]], [[0, 1]]));
+  assert.match((await waitExec((await api('POST', `/api/workflows/${w6.id}/run`, {})).executionId)).error, /YOK-1.*SKU bulunamadı/);
+  assert.equal(fakeMarket.amz.tokens - tok0, 0, 'Amazon jetonu önbellekten kullanılmalı');
+
+  // template: one stock change goes to every marketplace
+  const ty = await api('POST', '/api/credentials', { type: 'trendyolApi', name: 'ty-stok', data: { sellerId: '555', apiKey: 'ty-key', apiSecret: 'ty-secret', stage: 'false' } });
+  const tw = await api('POST', '/api/templates/stokEsitle', {});
+  const credOf = { trendyol: ty.id, hepsiburada: hb.id, n11: n1.id, amazon: am.id };
+  for (const n of tw.nodes) if (credOf[n.type]) n.params.credential = credOf[n.type];
+  await api('PUT', `/api/workflows/${tw.id}`, { ...tw, active: true });
+  const hook = await fetch(`${B}/webhook/stok`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stokKodu: 'KUP-1', barkod: '869001', stok: 4, fiyat: '' }) });
+  assert.equal(hook.status, 200);
+  await sleep(1500);
+  await api('PUT', `/api/workflows/${tw.id}`, { active: false });
+  { const { items } = await api('GET', `/api/executions?workflowId=${tw.id}`); const ex = items[0] && await waitExec(items[0].id); assert.equal(ex?.status, 'success', JSON.stringify(ex && { error: ex.error, items: items.length })); }
+  assert.deepEqual(fakeMore.ty.stock.at(-1), { barcode: '869001', quantity: 4 });
+  assert.deepEqual(fakeMarket.hb.uploads.at(-1), [{ merchantSku: 'KUP-1', availableStock: 4 }]);
+  assert.deepEqual(fakeMarket.n11.tasks.at(-1).payload.skus, [{ stockCode: 'KUP-1', quantity: 4, currencyType: 'TL' }]);
+  assert.deepEqual(fakeMarket.amz.patches.at(-1)[2].patches, [{ op: 'replace', path: '/attributes/fulfillment_availability', value: [{ fulfillment_channel_code: 'DEFAULT', quantity: 4 }] }]);
+  assert.ok((await api('POST', '/api/templates/pazaryeriSiparis', {})).nodes.length === 7);
+
+  // triggers: only orders added after the first check start the workflows
+  const trig = [];
+  for (const [type, cred] of [['hepsiburadaTrigger', hb.id], ['n11Trigger', n1.id], ['amazonTrigger', am.id]]) {
+    const t = await api('POST', '/api/workflows', wf(`${type}-t`, [[type, { credential: cred, every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+    await api('PUT', `/api/workflows/${t.id}`, { active: true }); trig.push(t);
+  }
+  await sleep(1300);
+  fakeMarket.hb.lines.unshift({ id: 'L9', orderNumber: '4080009', orderDate: '2026-10-29T09:00:00Z', merchantSku: 'KUP-1', productName: 'Seramik Kupa', quantity: 1, totalPrice: { amount: 150, currency: 'TRY' }, customerName: 'Yeni Müşteri' });
+  fakeMarket.n11.orders.unshift({ id: 2100009, orderNumber: '205000009', shipmentPackageStatus: 'Created', customerfullName: 'Yeni N11', totalAmount: 50, lines: [] });
+  fakeMarket.amz.orders.unshift({ AmazonOrderId: '407-9999999-9999999', OrderStatus: 'Unshipped', OrderTotal: { CurrencyCode: 'TRY', Amount: '75.00' }, ShippingAddress: { Name: 'Yeni Amazon', City: 'Adana' } });
+  fakeMarket.amz.items['407-9999999-9999999'] = [{ OrderItemId: '1', SellerSKU: 'KUP-1', Title: 'Seramik Kupa', QuantityOrdered: 1, ItemPrice: { Amount: '75.00' } }];
+  await sleep(4500);
+  const got = [];
+  for (const t of trig) {
+    await api('PUT', `/api/workflows/${t.id}`, { active: false });
+    const { items } = await api('GET', `/api/executions?workflowId=${t.id}`);
+    assert.equal(items.length, 1, `${t.name}: yalnız yeni sipariş akışı başlatmalı`);
+    const x = outOf(await waitExec(items[0].id), 'son')[0]; got.push([x.siparisNo, x.musteri, x.tutar, x.urunler.length]);
+  }
+  assert.deepEqual(got, [['4080009', 'Yeni Müşteri', 150, 1], ['205000009', 'Yeni N11', 50, 0], ['407-9999999-9999999', 'Yeni Amazon', 75, 1]]);
+});
+
+test('Sosyal medya ve reklam: YouTube (+ tetikleyici), Analytics, Google Ads, Meta reklamları, LinkedIn ve X (OAuth) (sahte API)', async () => {
+  const g = await api('POST', '/api/credentials', { type: 'googleOAuth', name: 'g-soc', data: { clientId: 'g', clientSecret: 'g', services: 'youtube,analytics,ads', access_token: 'g-soc' } });
+  fs.mkdirSync(path.join(DATA, 'dosyalar'), { recursive: true }); fs.writeFileSync(path.join(DATA, 'dosyalar', 'tanitim.mp4'), 'VIDEO-BAYTLARI');
+  const yw = await api('POST', '/api/workflows', wf('yt', [
+    ['manual', {}],
+    ['youtube', { credential: g.id, op: 'channel', channelId: '' }, { name: 'kanal' }],
+    ['youtube', { credential: g.id, op: 'videos', channelId: '', max: 10 }, { name: 'videolar' }],
+    ['limit', { max: 1 }],
+    ['youtube', { credential: g.id, op: 'update', videoId: 'vid00000001', title: 'Yeni başlık', description: '', tags: 'a, b' }, { name: 'guncelle' }],
+    ['youtube', { credential: g.id, op: 'upload', file: 'tanitim.mp4', title: 'Tanıtım', description: 'Açıklama', tags: 'kupa', privacy: 'unlisted' }, { name: 'yukle' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]));
+  let e = await waitExec((await api('POST', `/api/workflows/${yw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(outOf(e, 'kanal')[0], { id: 'UCbenim', ad: 'Kanalım', url: 'https://www.youtube.com/channel/UCbenim', abone: 1200, goruntulenme: 50000, videoSayisi: 2, olusturma: '2020-01-01T00:00:00Z' });
+  const v = outOf(e, 'videolar');
+  assert.deepEqual(v.map(x => [x.id, x.baslik, x.goruntulenme, x.sureSn]), [['vid00000002', 'İkinci video', 320, 253], ['vid00000001', 'İlk video', 1500, 253]]);
+  assert.deepEqual(fakeSoc.updates[0], { id: 'vid00000001', snippet: { title: 'Yeni başlık', description: '', categoryId: '27', tags: ['a', 'b'] } });
+  assert.equal(outOf(e, 'guncelle')[0].baslik, 'Yeni başlık');
+  assert.deepEqual(fakeSoc.uploadMeta, { body: { snippet: { title: 'Tanıtım', description: 'Açıklama', tags: ['kupa'], categoryId: '22' }, status: { privacyStatus: 'unlisted', selfDeclaredMadeForKids: false } }, type: 'video/mp4', len: '14' });
+  assert.deepEqual(fakeSoc.uploaded, [{ bytes: 'VIDEO-BAYTLARI', type: 'video/mp4' }]);
+  assert.deepEqual([outOf(e, 'yukle')[0].id, outOf(e, 'yukle')[0].gizlilik], ['vidYENI00001', 'unlisted']);
+  const cw = await api('POST', '/api/workflows', wf('ytc', [
+    ['manual', { data: '[{"id":"vid00000001"}]' }],
+    ['youtube', { credential: g.id, op: 'comments', videoId: 'https://youtu.be/{{ $json.id }}' }, { name: 'yorumlar' }],
+    ['youtube', { credential: g.id, op: 'reply', commentId: '{{ $json.yorumId }}', text: 'Teşekkürler {{ $json.yazar }}!' }, { name: 'yanit' }],
+    ['youtube', { credential: g.id, op: 'video', videoId: 'vidYOK000001' }],
+  ], [[0, 1], [1, 2], [2, 3]]));
+  e = await waitExec((await api('POST', `/api/workflows/${cw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'error'); assert.match(e.error, /Video bulunamadı: vidYOK000001/);
+  assert.deepEqual(outOf(e, 'yorumlar').map(x => [x.id, x.yorumId, x.yazar, x.metin]), [['th1', 'th1-c', 'Ayşe', 'Çok faydalı oldu']]);
+  assert.deepEqual(fakeSoc.replies, [{ snippet: { parentId: 'th1-c', textOriginal: 'Teşekkürler Ayşe!' } }]);
+
+  // Analytics
+  const aw = await api('POST', '/api/workflows', wf('ga', [
+    ['manual', {}],
+    ['googleAnalytics', { credential: g.id, op: 'report', property: '123456', dates: 'custom', start: '2026-10-27', end: '2026-10-28', dimensions: 'date', metrics: 'activeUsers, sessions', max: 50 }, { name: 'rapor' }],
+    ['googleAnalytics', { credential: g.id, op: 'realtime', property: 'properties/123456', dimensions: 'country', metrics: 'activeUsers' }, { name: 'simdi' }],
+  ], [[0, 1], [1, 2]]));
+  e = await waitExec((await api('POST', `/api/workflows/${aw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(outOf(e, 'rapor'), [{ date: '2026-10-27', activeUsers: 12, sessions: 15 }, { date: '2026-10-28', activeUsers: 20, sessions: 26 }]);
+  assert.deepEqual(fakeSoc.ga[0], ['/v1beta/properties/123456:runReport', { dateRanges: [{ startDate: '2026-10-27', endDate: '2026-10-28' }], dimensions: [{ name: 'date' }], metrics: [{ name: 'activeUsers' }, { name: 'sessions' }], limit: '50', orderBys: [{ dimension: { dimensionName: 'date' } }] }]);
+  assert.deepEqual(outOf(e, 'simdi'), [{ country: 'Turkey', activeUsers: 7 }, { country: 'Turkey', activeUsers: 7 }]);
+
+  // Google Ads
+  const ga = await api('POST', '/api/credentials', { type: 'googleAdsApi', name: 'ads', data: { customerId: '123-456-7890', developerToken: 'dev-tok', loginCustomerId: '111-222-3333', version: 'v26' } });
+  const gw = await api('POST', '/api/workflows', wf('ads', [
+    ['manual', {}],
+    ['googleAds', { credential: g.id, adsCredential: ga.id, op: 'campaigns', dates: 'last7' }, { name: 'kamp' }],
+    ['limit', { max: 1 }],
+    ['googleAds', { credential: g.id, adsCredential: ga.id, op: 'status', campaignId: '{{ $json.kampanyaId }}', status: 'PAUSED' }, { name: 'durdur' }],
+    ['googleAds', { credential: g.id, adsCredential: ga.id, op: 'query', gaql: 'SELECT ad_group.name, metrics.clicks FROM ad_group' }, { name: 'gaql' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4]]));
+  e = await waitExec((await api('POST', `/api/workflows/${gw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const k = outOf(e, 'kamp');
+  assert.equal(k.length, 2, 'iki sayfa');
+  const { baslangic, bitis, ...k0 } = k[0];
+  assert.match(baslangic, /^\d{4}-\d{2}-\d{2}$/); assert.ok(baslangic < bitis);
+  assert.deepEqual(k0, { kampanyaId: '111', kampanya: 'Marka', durum: 'ENABLED', gosterim: 1000, tiklama: 50, harcama: 125.5, donusum: 3, donusumDegeri: 900, tiklamaOrani: 5, ortalamaTbm: 2.51, paraBirimi: 'TRY', platform: 'Google Ads' });
+  assert.equal(k[1].harcama, 8);
+  assert.match(fakeSoc.ads[0].body.query, new RegExp(`BETWEEN '${baslangic}' AND '${bitis}'`));
+  assert.equal(fakeSoc.ads[0].cid, '1234567890'); assert.equal(fakeSoc.ads[0].login, '1112223333');
+  assert.deepEqual(fakeSoc.adsMutate[0], { operations: [{ update: { resourceName: 'customers/1234567890/campaigns/111', status: 'PAUSED' }, updateMask: 'status' }] });
+  assert.deepEqual(outOf(e, 'gaql'), [{ 'adGroup.resourceName': 'customers/1/adGroups/9', 'adGroup.name': 'G1', 'metrics.clicks': 7, 'metrics.costMicros': 1000000 }]);
+  const bad = await api('POST', '/api/credentials', { type: 'googleAdsApi', name: 'ads-bad', data: { customerId: '1234567890', developerToken: 'yanlis' } });
+  const bw = await api('POST', '/api/workflows', wf('adsbad', [['manual', {}], ['googleAds', { credential: g.id, adsCredential: bad.id, op: 'campaigns', dates: 'yesterday' }]], [[0, 1]]));
+  e = await waitExec((await api('POST', `/api/workflows/${bw.id}/run`, {})).executionId);
+  assert.match(e.error, /Google Ads \(401\).*developer token is not valid/);
+
+  // Meta ads
+  const ma = await api('POST', '/api/credentials', { type: 'metaAds', name: 'meta-ads', data: { adAccountId: 'act_555', token: 'meta-ads' } });
+  assert.equal((await api('POST', '/api/credentials/test', { type: 'metaAds', id: ma.id, data: { adAccountId: '555' } })).message, 'Reklam hesabı: Mağaza Reklam (TRY)');
+  const mw = await api('POST', '/api/workflows', wf('meta', [
+    ['manual', {}],
+    ['metaAds', { credential: ma.id, op: 'insights', level: 'campaign', dates: 'last7' }, { name: 'rapor' }],
+    ['limit', { max: 1 }],
+    ['metaAds', { credential: ma.id, op: 'status', campaignId: '{{ $json.kampanyaId }}', status: 'PAUSED' }, { name: 'durdur' }],
+    ['metaAds', { credential: ma.id, op: 'campaigns' }, { name: 'kamp' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4]]));
+  e = await waitExec((await api('POST', `/api/workflows/${mw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const r0 = outOf(e, 'rapor');
+  assert.equal(r0.length, 2, 'sayfalama');
+  assert.deepEqual([r0[0].kampanya, r0[0].harcama, r0[0].tiklama, r0[0].satinAlma, r0[0].satisDegeri, r0[0].roas, r0[0].eylemler.link_click, r0[1].harcama], ['Kupa kampanyası', 450.5, 120, 6, 1800, 4, 110, 150]);
+  const ins = fakeSoc.meta.find(x => x[1] === '/meta/act_555/insights');
+  assert.equal(ins[2].level, 'campaign'); assert.equal(ins[2].time_increment, 'all_days'); assert.match(ins[2].time_range, /"since":"\d{4}-\d{2}-\d{2}"/);
+  assert.deepEqual(fakeSoc.meta.find(x => x[0] === 'POST').slice(1).filter((_, i) => i !== 1), ['/meta/777001', 'status=PAUSED']);
+  assert.deepEqual(outOf(e, 'kamp')[0], { kampanyaId: '777001', kampanya: 'Kupa kampanyası', durum: 'ACTIVE', etkinDurum: 'ACTIVE', amac: 'OUTCOME_SALES', gunlukButce: 150, toplamButce: null, baslangic: null, bitis: null });
+
+  // LinkedIn: OpenID sign-in, text, link and image posts, delete
+  const li = await api('POST', '/api/credentials', { type: 'linkedinOAuth', name: 'li', data: { clientId: 'li-app', clientSecret: 'li-sec', pages: 'false' } });
+  let r = await fetch(`${B}/oauth/start?cred=${li.id}`, { redirect: 'manual' });
+  let loc = new URL(r.headers.get('location'));
+  assert.equal(loc.pathname, '/li-auth'); assert.equal(loc.searchParams.get('scope'), 'openid profile email w_member_social');
+  r = await fetch(`${B}/oauth/callback?code=likod&state=${loc.searchParams.get('state')}`); assert.match(await r.text(), /Bağlandı/);
+  assert.equal((await api('GET', `/api/credentials/${li.id}`)).account, 'ayse@ornek.com');
+  fs.writeFileSync(path.join(DATA, 'dosyalar', 'kupa.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
+  const lw = await api('POST', '/api/workflows', wf('li', [
+    ['manual', {}],
+    ['linkedin', { credential: li.id, op: 'post', as: 'me', text: 'Yeni ürün (kupa) #indirim @herkes', visibility: 'PUBLIC' }, { name: 'metin' }],
+    ['linkedin', { credential: li.id, op: 'post', as: 'org', orgId: '9876', text: 'Sitemiz', link: 'https://ornek.com', linkTitle: 'Ornek' }, { name: 'baglanti' }],
+    ['linkedin', { credential: li.id, op: 'post', as: 'me', text: 'Resimli', image: 'kupa.png', visibility: 'CONNECTIONS' }, { name: 'resim' }],
+    ['linkedin', { credential: li.id, op: 'delete', postId: '{{ $json.id }}' }, { name: 'sil' }],
+    ['linkedin', { credential: li.id, op: 'me' }, { name: 'ben' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]));
+  e = await waitExec((await api('POST', `/api/workflows/${lw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  const [p1, p2, p3] = fakeSoc.li.posts;
+  assert.deepEqual(p1, { author: 'urn:li:person:abc123', commentary: 'Yeni ürün \\(kupa\\) \\#indirim \\@herkes', visibility: 'PUBLIC', distribution: { feedDistribution: 'MAIN_FEED', targetEntities: [], thirdPartyDistributionChannels: [] }, lifecycleState: 'PUBLISHED', isReshareDisabledByAuthor: false });
+  assert.deepEqual([p2.author, p2.visibility, p2.content], ['urn:li:organization:9876', 'PUBLIC', { article: { source: 'https://ornek.com', title: 'Ornek' } }]);
+  assert.deepEqual([p3.visibility, p3.content], ['CONNECTIONS', { media: { id: 'urn:li:image:img1', altText: '' } }]);
+  assert.deepEqual(fakeSoc.li.images, [{ len: 8, type: 'image/png' }]);
+  assert.deepEqual(outOf(e, 'metin')[0], { id: 'urn:li:share:7001', url: 'https://www.linkedin.com/feed/update/urn:li:share:7001', yazar: 'urn:li:person:abc123', metin: 'Yeni ürün (kupa) #indirim @herkes' });
+  assert.deepEqual(fakeSoc.li.deleted, ['urn:li:share:7003']);
+  assert.equal(outOf(e, 'ben')[0].eposta, 'ayse@ornek.com');
+
+  // X: OAuth 2.0 with PKCE and Basic client auth, post with image, reply, delete, search, timeline
+  const xc = await api('POST', '/api/credentials', { type: 'xOAuth', name: 'x', data: { clientId: 'x-app', clientSecret: 'x-sec' } });
+  r = await fetch(`${B}/oauth/start?cred=${xc.id}`, { redirect: 'manual' });
+  loc = new URL(r.headers.get('location'));
+  assert.equal(loc.pathname, '/x-auth'); assert.match(loc.searchParams.get('scope'), /tweet\.write.*offline\.access/); assert.equal(loc.searchParams.get('code_challenge_method'), 'S256');
+  r = await fetch(`${B}/oauth/callback?code=xkod&state=${loc.searchParams.get('state')}`); assert.match(await r.text(), /Bağlandı/);
+  assert.equal((await api('GET', `/api/credentials/${xc.id}`)).account, '@automove');
+  assert.deepEqual(fakeSoc.x.tokenAuth[0], ['Basic ' + Buffer.from('x-app:x-sec').toString('base64'), null], 'gizli anahtar gövdede değil Basic başlığında gider');
+  const xw = await api('POST', '/api/workflows', wf('x', [
+    ['manual', {}],
+    ['x', { credential: xc.id, op: 'post', text: 'Merhaba dünya', image: 'kupa.png' }, { name: 'gonder' }],
+    ['x', { credential: xc.id, op: 'post', text: 'Ek bilgi', replyTo: '{{ $json.id }}' }, { name: 'yanit' }],
+    ['x', { credential: xc.id, op: 'delete', postId: '{{ $json.id }}' }, { name: 'sil' }],
+    ['x', { credential: xc.id, op: 'search', query: 'kupa', max: 10 }, { name: 'ara' }],
+    ['x', { credential: xc.id, op: 'timeline', username: '@baska', max: 5 }, { name: 'akis' }],
+    ['x', { credential: xc.id, op: 'me' }, { name: 'ben' }],
+  ], [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6]]));
+  e = await waitExec((await api('POST', `/api/workflows/${xw.id}/run`, {})).executionId);
+  assert.equal(e.status, 'success', e.error);
+  assert.deepEqual(fakeSoc.x.media.map(m => [m.hasFile, m.category]), [[true, 'tweet_image']]);
+  assert.deepEqual(fakeSoc.x.tweets, [{ text: 'Merhaba dünya', media: { media_ids: ['m-1'] } }, { text: 'Ek bilgi', reply: { in_reply_to_tweet_id: '1801' } }]);
+  assert.deepEqual(outOf(e, 'gonder')[0], { id: '1801', metin: 'Merhaba dünya', url: 'https://x.com/i/web/status/1801' });
+  assert.deepEqual(fakeSoc.x.deleted, ['1802']);
+  assert.deepEqual(outOf(e, 'ara').map(t => [t.id, t.yazar, t.begeni, t.url]), [['901', 'baska', 3, 'https://x.com/baska/status/901']]);
+  assert.deepEqual(outOf(e, 'akis').map(t => t.id), ['902', '903']);
+  assert.deepEqual(outOf(e, 'ben')[0].takipci, 10);
+
+  // templates
+  const st = await api('POST', '/api/templates/sosyalPaylas', {});
+  assert.deepEqual(st.nodes.map(n => n.type).sort(), ['facebook', 'form', 'linkedin', 'table', 'x']);
+  const rt = await api('POST', '/api/templates/reklamRaporu', {});
+  assert.deepEqual(rt.nodes.map(n => n.type), ['schedule', 'googleAds', 'metaAds', 'merge', 'table', 'aggregate', 'push']);
+
+  // trigger: a video uploaded after the first check starts the workflow
+  const t = await api('POST', '/api/workflows', wf('ytt', [['youtubeTrigger', { credential: g.id, event: 'video', channelId: 'UCbaska', every: 5, unit: 's' }], ['noop', {}, { name: 'son' }]], [[0, 1]]));
+  await api('PUT', `/api/workflows/${t.id}`, { active: true });
+  await sleep(1300);
+  fakeSoc.uploads.UUbaska.unshift('vidBASKA002');
+  await sleep(4500);
+  await api('PUT', `/api/workflows/${t.id}`, { active: false });
+  const { items } = await api('GET', `/api/executions?workflowId=${t.id}`);
+  assert.equal(items.length, 1, 'yalnız yeni video akışı başlatmalı');
+  const x = outOf(await waitExec(items[0].id), 'son')[0];
+  assert.deepEqual([x.id, x.kanal, x.url], ['vidBASKA002', 'Başka Kanal', 'https://www.youtube.com/watch?v=vidBASKA002']);
+});
+
+test('Ekip kullanımı: yönetici, düzenleyici ve izleyici; akış ve kimlik bilgisi paylaşımı, giriş, etkinlik kaydı (ayrı sunucu)', async () => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'am-ekip-')); const port = PORT + 1; const B2 = `http://127.0.0.1:${port}`;
+  const srv = spawn(process.env.N8N8_TEST_EXE || process.execPath, process.env.N8N8_TEST_EXE ? [] : [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: data, PORT: String(port), N8N8_NO_OPEN: '1', N8N8_TRAY: '0', N8N8_NO_UPDATE_CHECK: '1', N8N8_CONSOLE: '1', N8N8_PASSWORD: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
+  try {
+    await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('ikinci sunucu kapandı: ' + c))); });
+    const call = async (who, method, url, body) => {
+      const r = await fetch(B2 + url, { method, headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(who ? (who.startsWith('Basic ') ? { Authorization: who } : { Cookie: who }) : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
+      const t = await r.text(); let d; try { d = JSON.parse(t); } catch { d = t; }
+      const ck = (r.headers.get('set-cookie') || '').match(/am_oturum=([^;]*)/);
+      return { status: r.status, data: d, cookie: ck ? `am_oturum=${ck[1]}` : null, www: r.headers.get('www-authenticate') };
+    };
+    const ok = async (...a) => { const r = await call(...a); assert.ok(r.status === 200, `${a[1]} ${a[2]} → ${r.status} ${JSON.stringify(r.data)}`); return r; };
+    assert.deepEqual((await ok(null, 'GET', '/api/me')).data.ekip, false);
+    const starter = (await ok(null, 'GET', '/api/workflows')).data[0];
+    const s = await ok(null, 'POST', '/api/setup', { kullanici: 'Admin', ad: 'Yönetici', sifre: 'yonetici-sifre' });
+    const admin = s.cookie; assert.ok(admin);
+    assert.equal(s.data.kullanici.rol, 'yonetici'); assert.equal(s.data.kullanici.kullanici, 'admin');
+    assert.equal((await call(null, 'POST', '/api/setup', { kullanici: 'x', sifre: '12345678' })).status, 401);
+    // signed out: the page loads (login screen), data does not, and the browser's password box does not pop up
+    let r = await call(null, 'GET', '/api/workflows'); assert.equal(r.status, 401); assert.equal(r.data.giris, true); assert.equal(r.www, null);
+    assert.equal((await fetch(B2 + '/')).status, 200);
+    assert.deepEqual((await ok(null, 'GET', '/api/me')).data.kullanici, null);
+    assert.equal((await ok(admin, 'GET', '/api/workflows')).data[0].sahip, (await ok(admin, 'GET', '/api/me')).data.kullanici.id, 'eski akışlar ilk yöneticinin');
+    const ali = (await ok(admin, 'POST', '/api/users', { kullanici: 'ali', ad: 'Ali Kaya', sifre: 'ali-sifre-1', rol: 'duzenleyici' })).data;
+    const veli = (await ok(admin, 'POST', '/api/users', { kullanici: 'veli', ad: 'Veli', sifre: 'veli-sifre-1', rol: 'izleyici' })).data;
+    assert.equal((await call(admin, 'POST', '/api/users', { kullanici: 'ali', sifre: 'baska-sifre' })).status, 409);
+    assert.equal((await call(admin, 'POST', '/api/users', { kullanici: 'k', sifre: 'kisa' })).status, 400);
+    assert.equal((await call(null, 'POST', '/api/login', { kullanici: 'ali', sifre: 'yanlis' })).status, 401);
+    const a = (await ok(null, 'POST', '/api/login', { kullanici: 'ALI', sifre: 'ali-sifre-1' })).cookie;
+    const v = (await ok(null, 'POST', '/api/login', { kullanici: 'veli', sifre: 'veli-sifre-1' })).cookie;
+
+    // the editor sees only their own work; the admin's workflow is hidden
+    assert.deepEqual((await ok(a, 'GET', '/api/workflows')).data, []);
+    assert.equal((await call(a, 'GET', `/api/workflows/${starter.id}`)).status, 404);
+    const aw = (await ok(a, 'POST', '/api/workflows', { name: 'Ali akışı', nodes: [{ id: 'm', type: 'manual', name: 'Başla', x: 0, y: 0, params: { data: '[{"x":1}]' } }, { id: 'n', type: 'noop', name: 'son', x: 300, y: 0, params: {} }], edges: [{ id: 'e', from: 'm', fromPort: 0, to: 'n', toPort: 0 }] })).data;
+    assert.equal(aw.sahip, ali.id);
+    // credentials: own ones, and others only once shared
+    const ac = (await ok(admin, 'POST', '/api/credentials', { type: 'httpHeader', name: 'Yönetici anahtarı', data: { name: 'X-Key', value: 'gizli' } })).data;
+    const mine = (await ok(a, 'POST', '/api/credentials', { type: 'httpHeader', name: 'Ali anahtarı', data: { name: 'X-Key', value: 'ali' } })).data;
+    assert.deepEqual((await ok(a, 'GET', '/api/credentials')).data.map(c => [c.name, c.erisim]), [['Ali anahtarı', 'sahip']]);
+    const withCred = id => ({ ...aw, nodes: [...aw.nodes.slice(0, 2), { id: 'h', type: 'http', name: 'istek', x: 600, y: 0, params: { url: 'http://127.0.0.1:1/', auth: 'cred', credential: id } }] });
+    r = await call(a, 'PUT', `/api/workflows/${aw.id}`, withCred(ac.id)); assert.equal(r.status, 403); assert.match(r.data.hata, /Yönetici anahtarı.*izniniz yok/);
+    await ok(a, 'PUT', `/api/workflows/${aw.id}`, withCred(mine.id));
+    assert.equal((await call(a, 'GET', `/api/credentials/${ac.id}`)).status, 404);
+    assert.equal((await call(a, 'DELETE', `/api/credentials/${ac.id}`)).status, 404);
+    assert.deepEqual((await ok(admin, 'PUT', `/api/credentials/${ac.id}/share`, { paylasim: [ali.id, veli.id, 'yok'] })).data.paylasim, [ali.id], 'izleyiciyle kimlik bilgisi paylaşılmaz');
+    await ok(a, 'PUT', `/api/workflows/${aw.id}`, withCred(ac.id));
+    assert.equal((await call(a, 'GET', `/api/credentials/${ac.id}`)).status, 403, 'kullanabilir ama göremez');
+    assert.equal((await call(a, 'POST', `/api/credentials/test`, { type: 'httpHeader', id: ac.id, data: {} })).status, 200);
+
+    // sharing a workflow with a viewer: they can look, not change or run
+    assert.equal((await call(v, 'GET', `/api/workflows/${aw.id}`)).status, 404);
+    await ok(a, 'PUT', `/api/workflows/${aw.id}/share`, { paylasim: { [veli.id]: 'duzenle', [ali.id]: 'gor' } });
+    assert.deepEqual((await ok(a, 'GET', `/api/workflows/${aw.id}`)).data.paylasim, { [veli.id]: 'gor' }, 'izleyici düzenleyemez, sahip listeye girmez');
+    assert.deepEqual((await ok(v, 'GET', '/api/workflows')).data.map(w => [w.name, w.erisim]), [['Ali akışı', 'gor']]);
+    assert.equal((await call(v, 'PUT', `/api/workflows/${aw.id}`, { name: 'değişti' })).status, 403);
+    assert.equal((await call(v, 'POST', `/api/workflows/${aw.id}/run`, {})).status, 403);
+    assert.equal((await call(v, 'POST', '/api/workflows', { name: 'x', nodes: [], edges: [] })).status, 403);
+    assert.equal((await call(v, 'GET', '/api/credentials')).data.length, 0);
+    assert.equal((await call(a, 'DELETE', `/api/workflows/${starter.id}`)).status, 404);
+    assert.equal((await call(a, 'POST', '/api/users', { kullanici: 'x1', sifre: '12345678' })).status, 403);
+    assert.equal((await call(a, 'POST', '/api/backup', {})).status, 403);
+    // runs: the editor runs their workflow, the viewer sees that run, nobody sees the admin's runs
+    const run = (await ok(a, 'POST', `/api/workflows/${aw.id}/run`, { destinationId: 'n' })).data.executionId;
+    for (let i = 0; i < 50 && (await ok(a, 'GET', `/api/executions/${run}`)).data.status === 'running'; i++) await sleep(100);
+    const adminRun = (await ok(admin, 'POST', `/api/workflows/${starter.id}/run`, {})).data.executionId;
+    await sleep(500);
+    assert.deepEqual((await ok(v, 'GET', '/api/executions')).data.items.map(e => e.id), [run]);
+    assert.equal((await call(v, 'GET', `/api/executions/${adminRun}`)).status, 404);
+    assert.equal((await call(v, 'DELETE', `/api/executions/${run}`)).status, 403);
+    assert.equal((await ok(v, 'GET', '/api/stats')).data.toplam, 1);
+    assert.ok((await ok(admin, 'GET', '/api/executions')).data.items.length >= 2);
+    // passwords, Basic auth for scripts, sign-out
+    assert.equal((await call(a, 'PUT', '/api/me/password', { eski: 'yanlis', yeni: 'ali-yeni-sifre' })).status, 400);
+    await ok(a, 'PUT', '/api/me/password', { eski: 'ali-sifre-1', yeni: 'ali-yeni-sifre' });
+    assert.equal((await ok(a, 'GET', '/api/me')).data.kullanici.kullanici, 'ali', 'şifreyi değiştiren oturum açık kalır');
+    assert.equal((await call('Basic ' + Buffer.from('ali:ali-sifre-1').toString('base64'), 'GET', '/api/workflows')).status, 401);
+    assert.equal((await ok('Basic ' + Buffer.from('ali:ali-yeni-sifre').toString('base64'), 'GET', '/api/workflows')).data.length, 1);
+    assert.equal((await call(admin, 'PUT', `/api/users/${(await ok(admin, 'GET', '/api/me')).data.kullanici.id}`, { rol: 'izleyici' })).status, 400, 'son yönetici');
+    await ok(admin, 'PUT', `/api/users/${veli.id}`, { rol: 'duzenleyici' });
+    assert.equal((await ok(v, 'GET', '/api/workflows')).data[0].erisim, 'gor');
+    const out = await ok(v, 'POST', '/api/logout', {});
+    assert.equal(out.cookie, 'am_oturum=');
+    assert.equal((await call(v, 'GET', '/api/workflows')).status, 401);
+    await ok(admin, 'DELETE', `/api/users/${veli.id}`);
+    assert.deepEqual((await ok(a, 'GET', `/api/workflows/${aw.id}`)).data.paylasim, {});
+    // activity log
+    const log = (await ok(admin, 'GET', '/api/audit')).data;
+    const has = (k, e) => log.some(x => x.kullanici === k && x.eylem === e);
+    assert.ok(has('admin', 'Ekip kullanımını açtı') && has('ali', 'Akış oluşturdu') && has('ali', 'Akışın paylaşımını değiştirdi') && has('ali', 'Şifresini değiştirdi') && has('ali', 'Hatalı giriş denemesi') && has('admin', 'Kullanıcıyı sildi'), JSON.stringify(log.slice(0, 5)));
+    assert.equal(log.find(x => x.eylem === 'Akış oluşturdu').ayrinti, 'Ali akışı');
+    assert.equal((await call(a, 'GET', '/api/audit')).status, 403);
+    // sessions survive a restart (for example after an update)
+    assert.ok(fs.readFileSync(path.join(data, 'oturumlar.json'), 'utf8').length > 10);
+    assert.ok(!fs.readFileSync(path.join(data, 'kullanicilar.json'), 'utf8').includes('ali-yeni-sifre'));
+  } finally { srv.kill(); await sleep(200); fs.rmSync(data, { recursive: true, force: true }); }
+});
+
+test('Masaüstü: bilgisayar açılınca başlat, güncellemeyi denetle ve kur (sahte GitHub)', async () => {
+  let d = await api('GET', '/api/desktop');
+  assert.equal(d.autostart.on, false); assert.equal(d.tray, false);
+  const entry = path.join(DATA, 'autostart', 'auto-move.desktop');
+  d = await api('PUT', '/api/desktop', { autostart: true });
+  assert.equal(d.autostart.on, true);
+  const f = fs.readFileSync(entry, 'utf8');
+  assert.match(f, /--arka-plan/); assert.match(f, /N8N8_DATA=/); assert.match(f, /^Exec=/m);
+  d = await api('PUT', '/api/desktop', { autostart: false, guncellemeDenetle: false });
+  assert.equal(d.autostart.on, false); assert.equal(d.guncellemeDenetle, false); assert.ok(!fs.existsSync(entry));
+  await api('PUT', '/api/desktop', { guncellemeDenetle: true });
+
+  fakeUpd.tag = 'v1.0.0';
+  let u = await api('POST', '/api/desktop/update/check', {});
+  assert.equal(u.newer, false); assert.equal(u.latest, '1.0.0');
+  await assert.rejects(api('POST', '/api/desktop/update/install', {}), /en yeni sürüm/);
+  fakeUpd.tag = 'v99.1.0';
+  u = await api('POST', '/api/desktop/update/check', {});
+  assert.equal(u.newer, true); assert.equal(u.latest, '99.1.0'); assert.equal(u.canInstall, true); assert.match(u.notes, /Yenilikler/);
+  const exe = path.join(DATA, 'Auto-Move.exe');
+  fs.writeFileSync(exe, 'MZ eski sürüm');
+  const r = await api('POST', '/api/desktop/update/install', {});
+  assert.deepEqual(r, { ok: true, version: '99.1.0', restarting: false });
+  assert.equal(fs.readFileSync(exe, 'utf8'), 'MZ yeni sürüm'); assert.equal(fs.readFileSync(exe + '.old', 'utf8'), 'MZ eski sürüm');
+  assert.equal(fakeUpd.downloads, 1);
+  fakeUpd.asset = false;
+  u = await api('POST', '/api/desktop/update/check', {});
+  assert.equal(u.canInstall, false);
+  await assert.rejects(api('POST', '/api/desktop/update/install', {}), /Windows paketi yok/);
+  assert.equal((await api('GET', '/api/desktop')).update.latest, '99.1.0');
+});
+
 test('MCP aracı: Claude istemcisi akışı araç olarak listeler ve çağırır', async () => {
   const tok = await api('POST', '/api/credentials', { type: 'httpBearer', name: 'mcp-token', data: { token: 'mcp-gizli' } });
   const w = await api('POST', '/api/workflows', wf('mcp', [
@@ -2324,11 +2740,131 @@ function fakeTelegramApi(req, res) {
   }
   return json({ ok: true, result: {} });
 }
+const fakeSoc = {
+  vids: { vid00000001: { title: 'İlk video', views: '1500', tags: ['tanıtım'] }, vid00000002: { title: 'İkinci video', views: '320', tags: [] } },
+  uploads: { UUbenim: ['vid00000002', 'vid00000001'], UUbaska: ['vidBASKA001'] },
+  threads: [{ id: 'th1', videoId: 'vid00000001', author: 'Ayşe', text: 'Çok faydalı oldu' }],
+  replies: [], updates: [], uploaded: [], ga: [], ads: [], adsMutate: [], meta: [], li: { posts: [], images: [], deleted: [] }, x: { tweets: [], media: [], deleted: [], tokenAuth: [] },
+};
+function fakeSocialApi(req, res, raw) {
+  const u = new URL(req.url, 'http://x'); const p = u.pathname; let m; const qs = Object.fromEntries(u.searchParams);
+  const base = `http://127.0.0.1:${fakeClaude.port}`;
+  const json = (d, s = 200, h = {}) => { res.writeHead(s, { 'Content-Type': 'application/json', ...h }); res.end(d === null ? '' : JSON.stringify(d)); };
+  const auth = req.headers.authorization || '';
+  let body = null; if (raw.length && String(req.headers['content-type'] || '').includes('json')) body = JSON.parse(raw.toString());
+  const vid = id => { const v = fakeSoc.vids[id] || { title: id, views: '0', tags: [] }; return { id, snippet: { title: v.title, description: v.description || '', publishedAt: '2026-10-20T10:00:00Z', channelTitle: id.startsWith('vidBASKA') ? 'Başka Kanal' : 'Kanalım', channelId: id.startsWith('vidBASKA') ? 'UCbaska' : 'UCbenim', tags: v.tags, categoryId: '27' }, statistics: { viewCount: v.views, likeCount: '10', commentCount: '2' }, contentDetails: { duration: 'PT4M13S' }, status: { privacyStatus: v.privacy || 'public' } }; };
+  if (p.startsWith('/youtube/') || p.startsWith('/upload/youtube/') || p.startsWith('/v1beta/') || /^\/v\d+\/customers\//.test(p)) {
+    if (auth !== 'Bearer g-soc') return json({ error: { code: 401, message: 'Request had invalid authentication credentials.' } }, 401);
+  }
+  if (p === '/youtube/v3/channels') {
+    const id = qs.id || (qs.mine === 'true' ? 'UCbenim' : '');
+    if (id !== 'UCbenim' && id !== 'UCbaska') return json({ items: [] });
+    return json({ items: [{ id, snippet: { title: id === 'UCbenim' ? 'Kanalım' : 'Başka Kanal', publishedAt: '2020-01-01T00:00:00Z' }, statistics: { subscriberCount: '1200', viewCount: '50000', videoCount: String(fakeSoc.uploads[id === 'UCbenim' ? 'UUbenim' : 'UUbaska'].length) }, contentDetails: { relatedPlaylists: { uploads: id === 'UCbenim' ? 'UUbenim' : 'UUbaska' } } }] });
+  }
+  if (p === '/youtube/v3/playlistItems') return json({ items: (fakeSoc.uploads[qs.playlistId] || []).slice(0, Number(qs.maxResults)).map(videoId => ({ contentDetails: { videoId } })) });
+  if (p === '/youtube/v3/videos' && req.method === 'GET') return json({ items: qs.id.split(',').filter(id => fakeSoc.vids[id] || id.startsWith('vidBASKA')).map(vid) });
+  if (p === '/youtube/v3/videos' && req.method === 'PUT') { fakeSoc.updates.push(body); Object.assign(fakeSoc.vids[body.id], { title: body.snippet.title, description: body.snippet.description, tags: body.snippet.tags }); return json(vid(body.id)); }
+  if (p === '/youtube/v3/commentThreads') {
+    const list = fakeSoc.threads.filter(t => qs.videoId ? t.videoId === qs.videoId : qs.allThreadsRelatedToChannelId === 'UCbenim');
+    return json({ items: list.map(t => ({ id: t.id, snippet: { videoId: t.videoId, totalReplyCount: 0, topLevelComment: { id: t.id + '-c', snippet: { videoId: t.videoId, authorDisplayName: t.author, textOriginal: t.text, publishedAt: '2026-10-28T08:00:00Z', likeCount: 1 } } } })) });
+  }
+  if (p === '/youtube/v3/comments' && req.method === 'POST') { fakeSoc.replies.push(body); return json({ id: 'rep-1', snippet: { ...body.snippet, publishedAt: '2026-10-29T08:00:00Z' } }); }
+  if (p === '/upload/youtube/v3/videos' && qs.uploadType === 'resumable') {
+    fakeSoc.uploadMeta = { body, type: req.headers['x-upload-content-type'], len: req.headers['x-upload-content-length'] };
+    res.writeHead(200, { Location: `${base}/upload/youtube/v3/videos?upload_id=up-1` }); return res.end();
+  }
+  if (p === '/upload/youtube/v3/videos' && qs.upload_id === 'up-1') {
+    fakeSoc.uploaded.push({ bytes: raw.toString(), type: req.headers['content-type'] });
+    const m = fakeSoc.uploadMeta.body; fakeSoc.vids.vidYENI00001 = { title: m.snippet.title, description: m.snippet.description, tags: m.snippet.tags, views: '0', privacy: m.status.privacyStatus };
+    fakeSoc.uploads.UUbenim.unshift('vidYENI00001'); return json(vid('vidYENI00001'));
+  }
+  // Google Analytics Data API
+  if (/^\/v1beta\/properties\/\d+:run(Realtime)?Report$/.test(p)) {
+    fakeSoc.ga.push([p, body]);
+    if (p.endsWith('runRealtimeReport')) return json({ dimensionHeaders: [{ name: 'country' }], metricHeaders: [{ name: 'activeUsers', type: 'TYPE_INTEGER' }], rows: [{ dimensionValues: [{ value: 'Turkey' }], metricValues: [{ value: '7' }] }] });
+    return json({ dimensionHeaders: [{ name: 'date' }], metricHeaders: [{ name: 'activeUsers', type: 'TYPE_INTEGER' }, { name: 'sessions', type: 'TYPE_INTEGER' }], rows: [{ dimensionValues: [{ value: '20261027' }], metricValues: [{ value: '12' }, { value: '15' }] }, { dimensionValues: [{ value: '20261028' }], metricValues: [{ value: '20' }, { value: '26' }] }] });
+  }
+  // Google Ads API
+  if ((m = p.match(/^\/v26\/customers\/(\d+)\/(googleAds:search|campaigns:mutate)$/))) {
+    if (req.headers['developer-token'] !== 'dev-tok') return json({ error: { code: 401, message: 'Request is missing required authentication credential.', details: [{ errors: [{ message: 'The developer token is not valid.' }] }] } }, 401);
+    fakeSoc.ads.push({ cid: m[1], login: req.headers['login-customer-id'] || null, body });
+    if (m[2] === 'campaigns:mutate') { fakeSoc.adsMutate.push(body); return json({ results: [{ resourceName: body.operations[0].update.resourceName }] }); }
+    if (/FROM campaign/.test(body.query)) {
+      const r1 = { campaign: { resourceName: 'customers/1234567890/campaigns/111', id: '111', name: 'Marka', status: 'ENABLED' }, customer: { currencyCode: 'TRY' }, metrics: { impressions: '1000', clicks: '50', costMicros: '125500000', conversions: 3, conversionsValue: 900, ctr: 0.05, averageCpc: '2510000' } };
+      const r2 = { campaign: { resourceName: 'customers/1234567890/campaigns/222', id: '222', name: 'Genel', status: 'PAUSED' }, customer: { currencyCode: 'TRY' }, metrics: { impressions: '200', clicks: '4', costMicros: '8000000' } };
+      return json(body.pageToken === 'p2' ? { results: [r2] } : { results: [r1], nextPageToken: 'p2' });
+    }
+    return json({ results: [{ adGroup: { resourceName: 'customers/1/adGroups/9', name: 'G1' }, metrics: { clicks: '7', costMicros: '1000000' } }] });
+  }
+  // Meta Marketing API
+  if (p.startsWith('/meta/act_') || p === '/meta/777001') {
+    if (auth !== 'Bearer meta-ads' && qs.access_token !== 'meta-ads') return json({ error: { message: 'Invalid OAuth access token.', type: 'OAuthException', code: 190 } }, 401);
+    fakeSoc.meta.push([req.method, p, qs, raw.toString()]);
+    if (p === '/meta/act_555') return json({ name: 'Mağaza Reklam', currency: 'TRY', account_status: 1, id: 'act_555' });
+    if (p === '/meta/act_555/insights') {
+      if (qs.after === 'c2') return json({ data: [{ campaign_id: '777002', campaign_name: 'Yeniden hedefleme', impressions: '800', reach: '500', clicks: '20', spend: '150.00', ctr: '2.5', cpc: '7.5', cpm: '187.5', account_currency: 'TRY', date_start: '2026-10-22', date_stop: '2026-10-28' }], paging: {} });
+      return json({ data: [{ campaign_id: '777001', campaign_name: 'Kupa kampanyası', impressions: '5000', reach: '3200', clicks: '120', spend: '450.50', ctr: '2.4', cpc: '3.754167', cpm: '90.1', account_currency: 'TRY', actions: [{ action_type: 'link_click', value: '110' }, { action_type: 'purchase', value: '6' }], action_values: [{ action_type: 'purchase', value: '1800' }], date_start: '2026-10-22', date_stop: '2026-10-28' }], paging: { next: `${base}/meta/act_555/insights?access_token=meta-ads&after=c2` } });
+    }
+    if (p === '/meta/act_555/campaigns') return json({ data: [{ id: '777001', name: 'Kupa kampanyası', status: 'ACTIVE', effective_status: 'ACTIVE', objective: 'OUTCOME_SALES', daily_budget: '15000' }] });
+    if (p === '/meta/777001' && req.method === 'POST') return json({ success: true });
+  }
+  // LinkedIn
+  if (p === '/li-token') {
+    const b = Object.fromEntries(new URLSearchParams(raw.toString()));
+    if (b.client_id !== 'li-app' || b.client_secret !== 'li-sec' || b.code !== 'likod') return json({ error: 'invalid_request' }, 400);
+    const idt = ['{"alg":"none"}', JSON.stringify({ sub: 'abc123', email: 'ayse@ornek.com' })].map(x => Buffer.from(x).toString('base64url')).join('.') + '.x';
+    return json({ access_token: 'li-at', expires_in: 5184000, id_token: idt, scope: 'openid,profile,email,w_member_social' });
+  }
+  if (p.startsWith('/li/') || p.startsWith('/li-up/')) {
+    if (auth !== 'Bearer li-at') return json({ message: 'Invalid access token', status: 401 }, 401);
+    if (p.startsWith('/li/rest/') && (!/^\d{6}$/.test(req.headers['linkedin-version'] || '') || req.headers['x-restli-protocol-version'] !== '2.0.0')) return json({ message: 'missing version', status: 426 }, 426);
+    if (p === '/li/v2/userinfo') return json({ sub: 'abc123', name: 'Ayşe Yılmaz', email: 'ayse@ornek.com' });
+    if (p === '/li/rest/images' && qs.action === 'initializeUpload') return json({ value: { uploadUrl: `${base}/li-up/img1`, image: 'urn:li:image:img1' } });
+    if (p === '/li-up/img1') { fakeSoc.li.images.push({ len: raw.length, type: req.headers['content-type'] }); return json(null, 201); }
+    if (p === '/li/rest/posts' && req.method === 'POST') { fakeSoc.li.posts.push(body); return json(null, 201, { 'x-restli-id': `urn:li:share:700${fakeSoc.li.posts.length}` }); }
+    if (p.startsWith('/li/rest/posts/') && req.method === 'DELETE') { fakeSoc.li.deleted.push(decodeURIComponent(p.slice(15))); return json(null, 204); }
+  }
+  // X
+  if (p === '/x-token') {
+    const b = Object.fromEntries(new URLSearchParams(raw.toString()));
+    fakeSoc.x.tokenAuth.push([auth, b.client_secret || null]);
+    if (auth !== 'Basic ' + Buffer.from('x-app:x-sec').toString('base64') || b.client_id !== 'x-app') return json({ error: 'unauthorized_client' }, 401);
+    if (b.grant_type === 'authorization_code' && (b.code !== 'xkod' || !b.code_verifier)) return json({ error: 'invalid_request' }, 400);
+    return json({ access_token: 'x-at', refresh_token: 'x-rt', expires_in: 7200, token_type: 'bearer', scope: 'tweet.read tweet.write users.read media.write offline.access' });
+  }
+  if (p.startsWith('/xapi/')) {
+    if (auth !== 'Bearer x-at') return json({ title: 'Unauthorized', detail: 'Unauthorized', status: 401 }, 401);
+    if (p === '/xapi/2/users/me') return json({ data: { id: '42', username: 'automove', name: 'Auto Move', description: 'otomasyon', public_metrics: { followers_count: 10, following_count: 3, tweet_count: 5 } } });
+    if (p === '/xapi/2/media/upload') { const t = raw.toString('latin1'); fakeSoc.x.media.push({ hasFile: /name="media"; filename=/.test(t), category: (t.match(/name="media_category"\r\n\r\n([^\r]+)/) || [])[1], len: raw.length }); return json({ data: { id: 'm-1', media_key: '3_1' } }); }
+    if (p === '/xapi/2/tweets' && req.method === 'POST') { fakeSoc.x.tweets.push(body); if (body.text && body.text.length > 280) return json({ title: 'Invalid Request', detail: 'Tweet text is too long.' }, 400); return json({ data: { id: String(1800 + fakeSoc.x.tweets.length), text: body.text || '' } }, 201); }
+    if (p.startsWith('/xapi/2/tweets/') && req.method === 'DELETE') { fakeSoc.x.deleted.push(p.slice(15)); return json({ data: { deleted: true } }); }
+    const tw = (id, text, a) => ({ id, text, author_id: a, created_at: '2026-10-28T10:00:00.000Z', lang: 'tr', public_metrics: { like_count: 3, reply_count: 1, retweet_count: 0, impression_count: 90 } });
+    if (p === '/xapi/2/tweets/search/recent') return json({ data: [tw('901', `${qs.query} harika`, '77')], includes: { users: [{ id: '77', username: 'baska', name: 'Başka' }] } });
+    if (p === '/xapi/2/users/by/username/baska') return json({ data: { id: '77', username: 'baska' } });
+    if (p === '/xapi/2/users/77/tweets') return json({ data: [tw('902', 'Merhaba', '77'), tw('903', 'Yeni ürün', '77')], includes: { users: [{ id: '77', username: 'baska', name: 'Başka' }] } });
+  }
+  return json({ error: { message: 'yok: ' + p } }, 404);
+}
+
+const fakeUpd = { tag: 'v1.0.0', asset: true, downloads: 0 };
+function fakeUpdApi(req, res) {
+  const u = `http://127.0.0.1:${fakeClaude.port}`;
+  if (req.url === '/upd/repos/MustafaCanDere/AutoHook/releases/latest') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ tag_name: fakeUpd.tag, body: '## Yenilikler\n- daha hızlı', html_url: 'https://github.com/MustafaCanDere/AutoHook/releases/tag/' + fakeUpd.tag, assets: fakeUpd.asset ? [{ name: 'Auto-Move-windows.zip', browser_download_url: `${u}/upd/dl/Auto-Move-windows.zip` }] : [] }));
+  }
+  if (req.url === '/upd/dl/Auto-Move-windows.zip') { fakeUpd.downloads++; res.writeHead(200, { 'Content-Type': 'application/zip' }); return res.end(require('../lib/zip').zip({ 'Auto-Move/README.md': 'oku', 'Auto-Move/Auto-Move.exe': 'MZ yeni sürüm' })); }
+  res.writeHead(404); res.end();
+}
+
 const fakeServer = require('http').createServer((req, res) => {
+  if (req.url.startsWith('/upd/')) return fakeUpdApi(req, res);
+  if (/^\/(youtube|upload\/youtube|v1beta|v\d+\/customers|li|li-up|li-token|x-token|xapi)(\/|$)|^\/meta\/(act_|777001)/.test(req.url.split('?')[0])) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeSocialApi(req, res, Buffer.concat(ch))); }
   if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
   const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp], [/^\/(stripe|shop|woo|trello|jira|hubspot|mc|twilio|netgsm|tcmb|geo|meteo)\//, fakeBizApi], [/^\/(pushover\/|ntfy|iyzico\/|graphql|urun\.html)/, fakeMiscApi], [/^\/(es|supa|odoo|ty|parasut|ollama)(\/|$)/, fakeMoreApi]];
   if (req.url.startsWith('/s3/')) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeS3Api(req, res, Buffer.concat(ch))); }
   if (/^\/(dbx|graph-upload\/|graph\/me\/drive|pd\/|asana\/|cu\/|deepl\/|zd\/|meta\/)/.test(req.url)) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeWorkApi(req, res, Buffer.concat(ch))); }
+  if (/^\/(hb|n11|amz)\/|^\/amz-auth$/.test(req.url.split('?')[0])) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeMarketApi(req, res, raw)); }
   if (/^\/(oai|teams|brevo|todoist|jotform|typeform|noco)\/|^\/v1\/documents\/|^\/drive\/v3\/files\/doc\w+\/(copy|export)|^\/drive\/v3\/files\?fields=id,name,webViewLink$/.test(req.url)) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeMore3Api(req, res, Buffer.concat(ch))); }
   for (const [re, fn] of routes) if (re.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fn(req, res, raw)); }
   if (/^\/(oauth-token|gmail\/|drive\/|upload\/|calendar\/)/.test(req.url)) { let raw = ''; req.on('data', d => { raw += d; }); return req.on('end', () => fakeGoogleOAuth(req, res, raw)); }
@@ -3012,6 +3548,62 @@ const sshServer = (() => {
 })();
 
 /* OpenAI-compatible model, Teams webhook, Brevo, Todoist, Jotform, Typeform, NocoDB, Google Docs */
+/* Hepsiburada (OMS + listing), N11 (REST) and Amazon SP-API (LWA token + orders/listings) */
+const fakeMarket = {
+  hb: { ua: [], packs: [], uploads: [], lines: [
+    { id: 'L1', orderNumber: '4080001', orderDate: '2026-10-28T09:15:00Z', merchantSku: 'KUP-1', hepsiburadaSku: 'HBV0000001', productName: 'Seramik Kupa', productBarcode: '869001', quantity: 2, unitPrice: { amount: 150, currency: 'TRY' }, totalPrice: { amount: 300, currency: 'TRY' }, customerName: 'Ayşe Yılmaz', shippingAddress: { name: 'Ayşe Yılmaz', phoneNumber: '05321112233', email: 'ayse@ornek.com', city: 'İstanbul', town: 'Kadıköy', address: 'Moda Cd. 1' }, cargoCompany: 'HepsiJet' },
+    { id: 'L2', orderNumber: '4080001', orderDate: '2026-10-28T09:15:00Z', merchantSku: 'TAB-1', hepsiburadaSku: 'HBV0000002', productName: 'Tabak', quantity: 1, unitPrice: { amount: 99.9, currency: 'TRY' }, totalPrice: { amount: 99.9, currency: 'TRY' }, customerName: 'Ayşe Yılmaz', shippingAddress: { name: 'Ayşe Yılmaz', city: 'İstanbul', town: 'Kadıköy', address: 'Moda Cd. 1' } },
+    { id: 'L3', orderNumber: '4080002', orderDate: '2026-10-28T10:00:00Z', merchantSku: 'KUP-1', productName: 'Seramik Kupa', quantity: 1, unitPrice: { amount: 150, currency: 'TRY' }, totalPrice: { amount: 150, currency: 'TRY' }, customerName: 'Can Demir', shippingAddress: { name: 'Can Demir', city: 'Ankara', town: 'Çankaya', address: 'Tunalı 3' } },
+  ] },
+  n11: { updates: [], tasks: [], orders: [{ id: 2100001, orderNumber: '205000001', shipmentPackageStatus: 'Created', customerfullName: 'Ece Kaya', customerEmail: 'ece@ornek.com', totalAmount: 449.9, createdDate: 1761645600000, cargoProviderName: 'Yurtiçi Kargo', shippingAddress: { fullName: 'Ece Kaya', gsm: '05330001122', city: 'İzmir', district: 'Konak', address: 'Alsancak 7' }, lines: [{ orderLineId: 991, productName: 'Seramik Kupa', barcode: '869001', stockCode: 'KUP-1', quantity: 1, price: 449.9 }] }, { id: 2100000, orderNumber: '205000000', shipmentPackageStatus: 'Shipped', customerfullName: 'Eski', totalAmount: 10, lines: [] }] },
+  amz: { tokens: 0, ships: [], patches: [], orders: [{ AmazonOrderId: '407-1111111-2222222', PurchaseDate: '2026-10-28T08:00:00Z', OrderStatus: 'Unshipped', FulfillmentChannel: 'MFN', OrderTotal: { CurrencyCode: 'TRY', Amount: '599.80' }, ShipServiceLevel: 'Std TR Dom', LatestShipDate: '2026-10-30T20:59:59Z', ShippingAddress: { Name: 'Mert Can', City: 'Bursa', County: 'Nilüfer', AddressLine1: 'FSM Blv. 10', PostalCode: '16110', CountryCode: 'TR' }, BuyerInfo: { BuyerEmail: 'x@marketplace.amazon.com.tr' } }, { AmazonOrderId: '407-0000000-0000000', OrderStatus: 'Shipped', OrderTotal: { CurrencyCode: 'TRY', Amount: '10' } }],
+    items: { '407-1111111-2222222': [{ OrderItemId: '55511122233344', ASIN: 'B0TEST0001', SellerSKU: 'KUP-1', Title: 'Seramik Kupa', QuantityOrdered: 2, ItemPrice: { CurrencyCode: 'TRY', Amount: '599.80' } }] } },
+};
+function fakeMarketApi(req, res, raw) {
+  const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(o === undefined ? '' : JSON.stringify(o)); };
+  const u = new URL(req.url, 'http://x'); const p = u.pathname; const q = u.searchParams; const body = (() => { try { return JSON.parse(raw || 'null'); } catch { return null; } })();
+  let m;
+  if (p.startsWith('/hb/')) {
+    if (req.headers.authorization !== `Basic ${Buffer.from('mid-1:hb-secret').toString('base64')}`) return json({ message: 'Unauthorized' }, 401);
+    fakeMarket.hb.ua.push(req.headers['user-agent']);
+    if (p === '/hb/oms/orders/merchantid/mid-1') return json({ totalCount: fakeMarket.hb.lines.length, limit: Number(q.get('limit')), offset: 0, items: fakeMarket.hb.lines });
+    if (p === '/hb/oms/packages/merchantid/mid-1' && req.method === 'GET') return json([{ packageNumber: 'HB-PKG-0', status: 'Packaged', recipientName: 'Ali Veli', barcode: 'HBX000', cargoCompany: 'HepsiJet', totalPrice: { amount: 75, currency: 'TRY' }, items: [{ lineItemId: 'L0', orderNumber: '4079999', merchantSku: 'KUP-1', quantity: 1, price: { amount: 75 } }] }]);
+    if (p === '/hb/oms/packages/merchantid/mid-1' && req.method === 'POST') { fakeMarket.hb.packs.push(body); return json({ packageNumber: `HB-PKG-${fakeMarket.hb.packs.length}`, barcode: 'HBX123', cargoCompany: 'HepsiJet' }); }
+    if (p === '/hb/listing/listings/merchantid/mid-1') return json({ totalCount: 2, listings: [{ hepsiburadaSku: 'HBV0000001', merchantSku: 'KUP-1', availableStock: 7, price: 150, isSalable: true, dispatchTime: 1 }, { hepsiburadaSku: 'HBV0000002', merchantSku: 'TAB-1', availableStock: 0, price: 99.9, isSalable: false }] });
+    if (p === '/hb/listing/listings/merchantid/mid-1/inventory-uploads') { fakeMarket.hb.uploads.push(body); return json({ id: 'up-1' }); }
+    if (p === '/hb/listing/listings/merchantid/mid-1/inventory-uploads/id/up-1') return json({ id: 'up-1', status: 'Done', total: 2, errors: [{ merchantSku: 'YOK-1', message: 'Ürün bulunamadı' }] });
+    return json({ message: `no route ${p}` }, 404);
+  }
+  if (p.startsWith('/n11/')) {
+    if (req.headers.appkey !== 'n11-key' || req.headers.appsecret !== 'n11-secret') return json({ message: 'Unauthorized' }, 401);
+    if (p === '/n11/rest/delivery/v1/shipmentPackages') { const list = fakeMarket.n11.orders.filter(o => !q.get('status') || o.shipmentPackageStatus === q.get('status')); return json({ content: list, totalPages: 1, totalElements: list.length }); }
+    if (p === '/n11/rest/order/v1/update' && req.method === 'PUT') { fakeMarket.n11.updates.push(body); return json({ content: [{ lineId: body.lines[0].lineId, status: 'SUCCESS' }] }); }
+    if (p === '/n11/ms/product-query') return json({ totalElements: 1, content: [{ n11ProductId: 7001, title: 'Seramik Kupa', stockCode: 'KUP-1', quantity: 4, salePrice: 449.9, listPrice: 499.9, status: 'Active' }].filter(x => !q.get('stockCode') || x.stockCode === q.get('stockCode')) });
+    if (p === '/n11/ms/product/tasks/price-stock-update') { fakeMarket.n11.tasks.push(body); return json({ id: 9001, type: 'SKU_UPDATE', status: 'IN_QUEUE' }); }
+    if (p === '/n11/ms/product/task-details/page-query') return body?.taskId === 9001 ? json({ taskId: 9001, status: 'PROCESSED', skus: { content: [{ itemCode: 'KUP-1', status: 'SUCCESS', reasons: [] }, { itemCode: 'YOK-1', status: 'FAIL', reasons: ['Ürün bulunamadı'] }] } }) : json({ message: 'task yok' }, 404);
+    return json({ message: `no route ${p}` }, 404);
+  }
+  if (p === '/amz-auth') {
+    const f = new URLSearchParams(raw); fakeMarket.amz.tokens++;
+    if (f.get('client_id') !== 'amzn1.application-oa2-client.x' || f.get('client_secret') !== 'lwa-secret') return json({ error: 'invalid_client', error_description: 'Client authentication failed' }, 401);
+    if (f.get('grant_type') !== 'refresh_token' || f.get('refresh_token') !== 'Atzr|ok') return json({ error: 'invalid_grant', error_description: 'The request has an invalid grant parameter' }, 400);
+    return json({ access_token: 'Atza|amz-at', token_type: 'bearer', expires_in: 3600 });
+  }
+  if (p.startsWith('/amz/')) {
+    if (req.headers['x-amz-access-token'] !== 'Atza|amz-at') return json({ errors: [{ code: 'Unauthorized', message: 'Access to requested resource is denied.' }] }, 403);
+    if (p === '/amz/sellers/v1/marketplaceParticipations') return json({ payload: [{ marketplace: { id: 'A33AVAJ2PDY3EV', name: 'Amazon.com.tr' }, participation: { isParticipating: true } }] });
+    if (p === '/amz/orders/v0/orders') { if (q.get('MarketplaceIds') !== 'A33AVAJ2PDY3EV' || !q.get('CreatedAfter')) return json({ errors: [{ code: 'InvalidInput', message: 'bad query' }] }, 400); const st = q.get('OrderStatuses')?.split(','); return json({ payload: { Orders: fakeMarket.amz.orders.filter(o => !st || st.includes(o.OrderStatus)) } }); }
+    if ((m = p.match(/^\/amz\/orders\/v0\/orders\/([\d-]+)\/orderItems$/))) return json({ payload: { AmazonOrderId: m[1], OrderItems: fakeMarket.amz.items[m[1]] || [] } });
+    if ((m = p.match(/^\/amz\/orders\/v0\/orders\/([\d-]+)\/shipmentConfirmation$/))) { fakeMarket.amz.ships.push([m[1], body]); res.writeHead(204); return res.end(); }
+    if ((m = p.match(/^\/amz\/listings\/2021-08-01\/items\/SELLER1\/([^/]+)$/))) {
+      const sku = decodeURIComponent(m[1]);
+      if (req.method === 'PATCH') { fakeMarket.amz.patches.push([sku, q.get('marketplaceIds'), body]); return sku === 'YOK-1' ? json({ sku, status: 'INVALID', submissionId: 'sub-x', issues: [{ code: '4000003', message: 'SKU bulunamadı', severity: 'ERROR' }] }) : json({ sku, status: 'ACCEPTED', submissionId: 'sub-1', issues: [] }); }
+      return json({ sku, summaries: [{ marketplaceId: 'A33AVAJ2PDY3EV', asin: 'B0TEST0001', itemName: 'Seramik Kupa', status: ['BUYABLE', 'DISCOVERABLE'] }], offers: [{ marketplaceId: 'A33AVAJ2PDY3EV', offerType: 'B2C', price: { currencyCode: 'TRY', amount: '299.90' } }], fulfillmentAvailability: [{ fulfillmentChannelCode: 'DEFAULT', quantity: 12 }], issues: [] });
+    }
+    return json({ errors: [{ message: `no route ${p}` }] }, 404);
+  }
+  json({ message: 'no route' }, 404);
+}
 const fakeMore3 = { bodies: [], teams: [], docs: new Map([['docTEMPLATE0000000000000001', { title: 'Sözleşme şablonu', text: 'SÖZLEŞME\nMüşteri: {{ad}}\nTutar: {{tutar}} TL\nTarih: {{tarih}}\n' }]]), todo: [], noco: [{ Id: 1, Ad: 'Ayşe', Durum: 'yeni', Tutar: 120 }, { Id: 2, Ad: 'Can', Durum: 'eski', Tutar: 80 }, { Id: 3, Ad: 'Ece', Durum: 'yeni', Tutar: 300 }], jf: [{ id: '5900000000000000001', created_at: '2026-10-22 09:00:00', status: 'ACTIVE', answers: { 3: { name: 'adSoyad', text: 'Ad Soyad', type: 'control_fullname', answer: { first: 'Eski', last: 'Kayıt' } } } }], tf: [{ response_id: 'r-old', submitted_at: '2026-10-22T08:00:00Z', answers: [{ field: { id: 'f1', type: 'short_text' }, type: 'text', text: 'Eski' }] }] };
 function fakeMore3Api(req, res, rawBuf) {
   const json = (o, st = 200) => { res.writeHead(st, { 'Content-Type': 'application/json' }); res.end(o === undefined ? '' : JSON.stringify(o)); };
@@ -3215,7 +3807,7 @@ function fakeMoreApi(req, res, raw) {
   await new Promise(r => sshServer.listen(0, '127.0.0.1', r)); fakeSsh.port = sshServer.address().port;
   await new Promise(r => amqpServer.listen(0, '127.0.0.1', r)); fakeAmqp.port = amqpServer.address().port;
   // N8N8_TEST_EXE=<path> runs the same tests against a built 8n8 executable
-  const srv = spawn(process.env.N8N8_TEST_EXE || process.execPath, process.env.N8N8_TEST_EXE ? [] : [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, N8N8_DROPBOX_CONTENT: `http://127.0.0.1:${fakeClaude.port}/dbxc`, N8N8_DROPBOX_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-auth`, N8N8_DROPBOX_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-token`, ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut', DROPBOX: 'dbx', PIPEDRIVE: 'pd', ASANA: 'asana', CLICKUP: 'cu', DEEPL: 'deepl', ZENDESK: 'zd', META: 'meta', BREVO: 'brevo', TODOIST: 'todoist', JOTFORM: 'jotform', TYPEFORM: 'typeform' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const srv = spawn(process.env.N8N8_TEST_EXE || process.execPath, process.env.N8N8_TEST_EXE ? [] : [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, N8N8_DROPBOX_CONTENT: `http://127.0.0.1:${fakeClaude.port}/dbxc`, N8N8_DROPBOX_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-auth`, N8N8_DROPBOX_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-token`, N8N8_AMAZON_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/amz-auth`, N8N8_LINKEDIN_API: `http://127.0.0.1:${fakeClaude.port}/li`, N8N8_LINKEDIN_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/li-auth`, N8N8_LINKEDIN_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/li-token`, N8N8_X_API: `http://127.0.0.1:${fakeClaude.port}/xapi`, N8N8_X_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/x-auth`, N8N8_X_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/x-token`, N8N8_UPDATE_API: `http://127.0.0.1:${fakeClaude.port}/upd`, N8N8_UPDATE_TARGET: path.join(DATA, 'Auto-Move.exe'), N8N8_NO_RESTART: '1', N8N8_AUTOSTART_DIR: path.join(DATA, 'autostart'), N8N8_TRAY: '0', N8N8_NO_UPDATE_CHECK: '1', N8N8_CONSOLE: '1', ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut', DROPBOX: 'dbx', PIPEDRIVE: 'pd', ASANA: 'asana', CLICKUP: 'cu', DEEPL: 'deepl', ZENDESK: 'zd', META: 'meta', BREVO: 'brevo', TODOIST: 'todoist', JOTFORM: 'jotform', TYPEFORM: 'typeform', HEPSIBURADA: 'hb', N11: 'n11', AMAZON: 'amz' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0, ran = 0;

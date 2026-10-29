@@ -58,6 +58,12 @@ svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-widt
 .navlink.on { background: var(--accent-soft); color: var(--fg); }
 .navlink .badge { margin-left: auto; font: 600 11px var(--mono); background: var(--accent); color: var(--accent-fg); border-radius: 9px; padding: 0 6px; }
 .nav-foot { margin-top: auto; font-size: 11.5px; color: var(--muted); padding: 8px 10px; line-height: 1.5; }
+#who { display: block; margin-bottom: 6px; }
+#who b { color: var(--fg); font-weight: 600; }
+#who button { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; }
+.login { max-width: 360px; margin: 12vh auto 0; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+.login h1 { margin: 0; font-size: 20px; }
+.ro-banner { font-size: 12px; color: var(--muted); }
 .conn { display: inline-flex; align-items: center; gap: 6px; }
 .conn::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 .conn.off::before { background: var(--err); }
@@ -376,7 +382,7 @@ kbd { font: 500 11px var(--mono); border: 1px solid var(--line); border-bottom-w
     <a class="navlink" href="#/bilgi" data-nav="bilgi"><svg class="i" viewBox="0 0 24 24"><path d="M4 4h6a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H4zM20 4h-6a3 3 0 0 0-3 3v13a2 2 0 0 1 2-2h7z"/></svg>Bilgi tabanı</a>
     <a class="navlink" href="#/degiskenler" data-nav="degiskenler"><svg class="i" viewBox="0 0 24 24"><path d="M7 4c-2 0-2 2-2 4s-2 4-2 4 2 2 2 4 0 4 2 4M17 4c2 0 2 2 2 4s2 4 2 4-2 2-2 4 0 4-2 4M9 15l6-6M9 9l6 6"/></svg>Değişkenler</a>
     <a class="navlink" href="#/hakkinda" data-nav="hakkinda"><svg class="i" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 11v6M12 7.5v.5"/></svg>Ayarlar</a>
-    <div class="nav-foot"><span class="conn" id="conn">Bağlı</span><br><span id="ver"></span></div>
+    <div class="nav-foot"><span id="who" hidden></span><span class="conn" id="conn">Bağlı</span><br><span id="ver"></span></div>
   </nav>
   <main id="view"></main>
 </div>
@@ -406,9 +412,16 @@ async function api(method, url, body) {
   const res = await fetch(url, { method, headers: body !== undefined ? { 'Content-Type': 'application/json' } : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
   const text = await res.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
+  if (res.status === 401 && data?.giris && G.me?.kullanici) { location.reload(); return new Promise(() => {}); }
   if (!res.ok) throw new Error(data?.hata || data || `HTTP ${res.status}`);
   return data;
 }
+/* team use: who is signed in and what they may do. With no users everything is allowed, as before. */
+const me = () => G.me?.kullanici || null;
+const isAdmin = () => !me() || me().rol === 'yonetici';
+const canEdit = () => !me() || me().rol !== 'izleyici';
+const userName = id => (G.users || []).find(u => u.id === id)?.ad || '';
+async function loadUsers() { G.users = me() && canEdit() ? await api('GET', '/api/users').catch(() => []) : []; return G.users; }
 function toast(msg, err) {
   const t = document.createElement('div'); t.className = 't' + (err ? ' err' : ''); t.textContent = msg;
   $('#toast').appendChild(t); setTimeout(() => t.remove(), err ? 5500 : 2600);
@@ -442,6 +455,8 @@ const ICONS = {
   card: 'M3 6h18v12H3zM3 10h18M6 15h4', cart: 'M3 4h3l2.5 11h10L21 7H7M9 19a1 1 0 1 0 0 .1M17 19a1 1 0 1 0 0 .1', phone: 'M8 3h8v18H8zM11 18h2', board: 'M4 4h16v16H4zM8 7v8M12 7v5M16 7v10',
   coin: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM9 8h4.5a2 2 0 0 1 0 4H9h5a2 2 0 0 1 0 4H9M11 6v12', sun: 'M12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8zM12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5', qr: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2', shield: 'M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z',
   wand: 'M5 19L15 9M14 4v3M19 9h-3M17.5 5.5l-2 2M11 5l.6 1.4L13 7l-1.4.6L11 9l-.6-1.4L9 7l1.4-.6z',
+  video: 'M3 6h18v12H3zM10 9.5l4.5 2.5-4.5 2.5z', chart: 'M4 4v16h16M8 16v-4M12 16V8M16 16v-6', megaphone: 'M3 10v4h3l8 4V6l-8 4M17 9a3 3 0 0 1 0 6',
+  linkedin: 'M4 4h16v16H4zM8 11v5M8 8v.5M12 16v-5M12 13.5a2.5 2.5 0 0 1 5 0V16', xlogo: 'M5 4l14 16M19 4L5 20',
   trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13', ext: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6', pin: 'M9 4h6l-1 6 3 3H7l3-3zM12 13v7', chev: 'M6 15l6-6 6 6',
 };
 const icon = k => `<svg class="i" viewBox="0 0 24 24"><path d="${ICONS[k] || ICONS.dot}"/></svg>`;
@@ -523,16 +538,16 @@ function updateBadge() { const b = $('#run-badge'); b.hidden = !G.running.size; 
 
 /* ================= workflows page ================= */
 async function pageWorkflows() {
-  G.workflows = await api('GET', '/api/workflows');
+  [G.workflows] = await Promise.all([api('GET', '/api/workflows'), loadUsers()]);
   const q = { s: '', tag: '', state: '' };
   const allTags = () => [...new Set(G.workflows.flatMap(w => w.tags || []))].sort((a, b) => a.localeCompare(b, 'tr'));
   view.innerHTML = `<div class="page"><div class="page-in">
     <div class="page-head"><h1>Akışlar</h1>
       <input class="inp" id="wf-search" placeholder="Ara…" style="width:200px" aria-label="Akışlarda ara">
-      <button class="btn" id="wf-import">${icon('upload')}<span class="lbl">İçe aktar</span></button>
+      ${canEdit() ? `<button class="btn" id="wf-import">${icon('upload')}<span class="lbl">İçe aktar</span></button>
       <button class="btn" id="wf-tpl">${icon('grid')}<span class="lbl">Şablonlar</span></button>
       <button class="btn" id="wf-ai">${icon('wand')}<span class="lbl">Claude ile oluştur</span></button>
-      <button class="btn primary" id="wf-new">${icon('plus')}Yeni akış</button></div>
+      <button class="btn primary" id="wf-new">${icon('plus')}Yeni akış</button>` : ''}</div>
     <div class="wf-filters"><div class="seg" id="wf-state">${[['', 'Hepsi'], ['on', 'Etkin'], ['off', 'Kapalı']].map(([k, l]) => `<button data-st="${k}" class="${k ? '' : 'on'}">${l}</button>`).join('')}</div><div id="wf-tags" class="tagbar"></div></div>
     <p class="lead">Etkin akışlar program açık olduğu sürece zamanlayıcı, webhook ve formlardan kendiliğinden çalışır. Manuel akışlar editörden çalıştırılır.<span id="wf-trash"></span></p>
     <div class="card list" id="wf-list"></div></div></div>`;
@@ -546,15 +561,16 @@ async function pageWorkflows() {
       const last = w.lastExecution;
       return `<div class="lrow" data-id="${w.id}">
         <a class="ttl" href="#/akis/${w.id}">${esc(w.name)}</a>
-        <div class="meta">${(w.tags || []).map(t => `<button class="tag usertag" data-tagf="${esc(t)}">#${esc(t)}</button>`).join('')}${trig}<span>${w.nodeCount} node</span><span>güncellendi ${ago(w.updatedAt)}</span>
+        <div class="meta">${(w.tags || []).map(t => `<button class="tag usertag" data-tagf="${esc(t)}">#${esc(t)}</button>`).join('')}${trig}${me() && w.sahip && w.sahip !== me().id ? `<span title="Akışın sahibi">${esc(w.sahipAd || 'başka bir kullanıcı')}</span>` : ''}${me() && w.erisim === 'gor' ? '<span class="tag">yalnızca görüntüleme</span>' : ''}<span>${w.nodeCount} node</span><span>güncellendi ${ago(w.updatedAt)}</span>
           ${last ? `<span><span class="pill ${last.status}">${statusLabel(last.status)}</span> ${ago(last.startedAt)}</span>` : '<span>henüz çalışmadı</span>'}</div>
         <div class="acts">
-          <label class="switch" title="Etkin akışlar kendiliğinden tetiklenir"><input type="checkbox" data-act="active" ${w.active ? 'checked' : ''}><span class="track"></span><span class="lbl">Etkin</span></label>
-          <button class="btn sm" data-act="dup">Çoğalt</button>
+          ${w.erisim !== 'gor' ? `<label class="switch" title="Etkin akışlar kendiliğinden tetiklenir"><input type="checkbox" data-act="active" ${w.active ? 'checked' : ''}><span class="track"></span><span class="lbl">Etkin</span></label>` : ''}
+          ${canEdit() ? '<button class="btn sm" data-act="dup">Çoğalt</button>' : ''}
           <button class="btn sm" data-act="export">Dışa aktar</button>
-          <button class="btn sm danger" data-act="del" aria-label="Sil">${icon('trash')}</button>
+          ${me() && w.erisim === 'sahip' ? '<button class="btn sm" data-act="share">Paylaş</button>' : ''}
+          ${w.erisim !== 'gor' && w.erisim !== 'duzenle' ? `<button class="btn sm danger" data-act="del" aria-label="Sil">${icon('trash')}</button>` : ''}
         </div></div>`;
-    }).join('') : `<div class="empty">${G.workflows.length ? 'Seçime uyan akış yok.' : 'Henüz akış yok.<button class="btn primary" id="wf-new2">İlk akışı oluştur</button>'}</div>`;
+    }).join('') : `<div class="empty">${G.workflows.length ? 'Seçime uyan akış yok.' : canEdit() ? 'Henüz akış yok.<button class="btn primary" id="wf-new2">İlk akışı oluştur</button>' : 'Sizinle paylaşılan bir akış yok.'}</div>`;
     $('#wf-new2')?.addEventListener('click', newWorkflow);
   };
   draw();
@@ -563,10 +579,10 @@ async function pageWorkflows() {
   $('#wf-search').addEventListener('input', e => { q.s = e.target.value.toLocaleLowerCase('tr'); draw(); });
   $('#wf-state').addEventListener('click', e => { const b = e.target.closest('[data-st]'); if (!b) return; q.state = b.dataset.st; $('#wf-state').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); draw(); });
   view.querySelector('.page-in').addEventListener('click', e => { const b = e.target.closest('[data-tagf]'); if (!b) return; q.tag = q.tag === b.dataset.tagf ? '' : b.dataset.tagf; draw(); });
-  $('#wf-new').addEventListener('click', newWorkflow);
-  $('#wf-tpl').addEventListener('click', openTemplates);
-  $('#wf-ai').addEventListener('click', () => openAIBuild(null));
-  $('#wf-import').addEventListener('click', () => openImport(async wf => { const saved = await api('POST', '/api/workflows', wf); location.hash = `#/akis/${saved.id}`; }));
+  $('#wf-new')?.addEventListener('click', newWorkflow);
+  $('#wf-tpl')?.addEventListener('click', openTemplates);
+  $('#wf-ai')?.addEventListener('click', () => openAIBuild(null));
+  $('#wf-import')?.addEventListener('click', () => openImport(async wf => { const saved = await api('POST', '/api/workflows', wf); location.hash = `#/akis/${saved.id}`; }));
   $('#wf-list').addEventListener('change', async e => {
     if (e.target.dataset.act !== 'active') return;
     const id = e.target.closest('[data-id]').dataset.id;
@@ -578,6 +594,7 @@ async function pageWorkflows() {
     const id = b.closest('[data-id]').dataset.id; const w = G.workflows.find(x => x.id === id);
     if (b.dataset.act === 'dup') { await api('POST', `/api/workflows/${id}/duplicate`); toast('Kopyası oluşturuldu'); }
     if (b.dataset.act === 'export') { const wf = await api('GET', `/api/workflows/${id}`); download(`${w.name}.8n8.json`, exportJSON(wf)); }
+    if (b.dataset.act === 'share') return openShare(await api('GET', `/api/workflows/${id}`), async () => { G.workflows = await api('GET', '/api/workflows'); draw(); });
     if (b.dataset.act === 'del') { if (!confirm(`"${w.name}" çöp kutusuna taşınsın mı? 30 gün içinde geri alabilirsiniz.`)) return; await api('DELETE', `/api/workflows/${id}`); toast('Akış çöp kutusuna taşındı'); trashLink(); }
     G.workflows = await api('GET', '/api/workflows'); draw();
   });
@@ -714,7 +731,7 @@ function uniqueName(base) { const names = new Set(ED.wf.nodes.map(n => n.name));
 function makeNode(type, x, y) { return { id: uid(), type, name: uniqueName(T(type).label), x: Math.round(x), y: Math.round(y), params: defaults(type), disabled: false, settings: {} }; }
 function pruneEdges() { ED.wf.edges = ED.wf.edges.filter(e => { const a = nodeById(e.from), b = nodeById(e.to); return a && b && e.fromPort < outsOf(a).length && e.toPort < T(b.type).inputs; }); }
 
-function markDirty() { ED.dirty = true; setSaveState('Kaydediliyor…'); clearTimeout(ED.saveT); ED.saveT = setTimeout(saveNow, 600); }
+function markDirty() { if (ED.readonly) { setSaveState('Yalnızca görüntüleme: değişiklikler kaydedilmez', true); return; } ED.dirty = true; setSaveState('Kaydediliyor…'); clearTimeout(ED.saveT); ED.saveT = setTimeout(saveNow, 600); }
 async function saveNow() {
   clearTimeout(ED.saveT);
   while (ED.saving) await new Promise(r => setTimeout(r, 100)); // wait for the save in flight, then save what changed since
@@ -746,13 +763,14 @@ async function openEditor(id) {
   try { wf.polls = (await api('GET', `/api/workflows/${id}/status`)).polls; } catch {}
   try { G.approvals = await api('GET', '/api/approvals'); } catch { G.approvals = []; }
   for (const n of wf.nodes) if (T(n.type)) n.params = { ...defaults(n.type), ...(n.params || {}) }; // nodes made through the API or by Claude may lack some settings
+  ED.readonly = wf.erisim === 'gor';
   Object.assign(ED, { wf, sel: new Set(), selEdge: null, panelOpen: false, tab: 'params', execs: ex.items, viewId: null, cache: new Map(), live: null, hist: { past: [], future: [] }, dirty: false });
   ED.drawer = ED.drawer && ex.items.length > 0;
   view.innerHTML = `<div class="editor">
     <div class="ebar">
       <a class="btn icon" href="#/akislar" title="Akışlara dön" aria-label="Akışlara dön">${icon('back')}</a>
       <input id="wf-name" class="wf-name" aria-label="Akış adı" spellcheck="false" value="${esc(wf.name)}">
-      <span class="savestate" id="savestate">Kaydedildi</span>
+      <span class="savestate" id="savestate">${ED.readonly ? 'Yalnızca görüntüleme' : 'Kaydedildi'}</span>
       <div class="tools">
         <button class="btn icon" id="btn-undo" title="Geri al (Ctrl+Z)" aria-label="Geri al">${icon('undo')}</button>
         <button class="btn icon" id="btn-redo" title="Yinele (Ctrl+Shift+Z)" aria-label="Yinele">${icon('redo')}</button>
@@ -763,10 +781,11 @@ async function openEditor(id) {
         <button class="btn" id="btn-versions" title="Önceki sürümler">${icon('history')}<span class="lbl">Sürümler</span></button>
         <button class="btn" id="btn-settings" title="Akış ayarları">${icon('gear')}<span class="lbl">Ayarlar</span></button>
         <button class="btn" id="btn-export" title="Dışa aktar">${icon('download')}<span class="lbl">Dışa aktar</span></button>
+        ${me() && wf.erisim === 'sahip' ? `<button class="btn" id="btn-share" title="Akışı ekip arkadaşlarıyla paylaşın">${icon('send')}<span class="lbl">Paylaş</span></button>` : ''}
         <span class="sep"></span>
-        <label class="switch" title="Etkin akış zamanlayıcı, webhook ve formlardan kendiliğinden çalışır"><input type="checkbox" id="ed-active" ${wf.active ? 'checked' : ''}><span class="track"></span><span class="lbl">Etkin</span></label>
+        <label class="switch" title="Etkin akış zamanlayıcı, webhook ve formlardan kendiliğinden çalışır"${ED.readonly ? ' hidden' : ''}><input type="checkbox" id="ed-active" ${wf.active ? 'checked' : ''}><span class="track"></span><span class="lbl">Etkin</span></label>
       </div>
-      <button class="btn primary" id="btn-run" title="Çalıştır (Ctrl+Enter)">${icon('play')}Çalıştır</button>
+      <button class="btn primary" id="btn-run" title="Çalıştır (Ctrl+Enter)"${ED.readonly ? ' hidden' : ''}>${icon('play')}Çalıştır</button>
     </div>
     <div class="emain">
       <div id="canvas" tabindex="0" aria-label="Akış tuvali">
@@ -1031,6 +1050,8 @@ function bindEditor() {
   $('#btn-export').addEventListener('click', () => download(`${ED.wf.name}.8n8.json`, exportJSON(ED.wf)));
   $('#btn-versions').addEventListener('click', openVersions);
   $('#btn-settings').addEventListener('click', openWfSettings);
+  $('#btn-share')?.addEventListener('click', () => openShare(ED.wf));
+  if (ED.readonly) ['#btn-undo', '#btn-redo', '#btn-add', '#btn-ai', '#btn-layout', '#btn-versions', '#btn-settings'].forEach(k => { $(k).hidden = true; });
   $('#btn-run').addEventListener('click', () => { const t = pickTrigger(); if (!t) toast('Akışta etkin bir tetikleyici yok', true); else runTrigger(t); });
   $('#z-in').addEventListener('click', () => { const r = canvas.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, ED.vp.z * 1.2); });
   $('#z-out').addEventListener('click', () => { const r = canvas.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, ED.vp.z / 1.2); });
@@ -1642,18 +1663,51 @@ async function pageExecution(id) {
 }
 
 /* ================= credentials ================= */
+/* ================= team: sharing ================= */
+async function openShare(wf, onDone) {
+  const list = (await loadUsers()).filter(u => u.id !== wf.sahip);
+  const p = wf.paylasim || {};
+  openModal(`<div class="mhead"><h2>"${esc(wf.name)}" paylaşımı</h2><button class="icon-btn" data-close aria-label="Kapat">${icon('x')}</button></div>
+    <div class="mbody">
+      <p class="help">Sahibi: <b>${esc(userName(wf.sahip) || '-')}</b>. Görüntüleyen kişi akışı ve çalıştırmalarını görür; düzenleyen kişi değiştirip çalıştırabilir. Yöneticiler bütün akışları zaten görür.</p>
+      ${list.length ? `<div class="card list">${list.map(u => `<div class="lrow"><span class="ttl">${esc(u.ad)} <span class="help">${esc(u.kullanici)} · ${esc(G.me.roller[u.rol])}</span></span>
+        <div class="acts"><select class="inp" data-u="${u.id}" aria-label="${esc(u.ad)} için erişim" style="width:auto">${[['', 'Erişim yok'], ['gor', 'Görüntüleyebilir'], ['duzenle', 'Düzenleyebilir']].filter(([k]) => !(k === 'duzenle' && u.rol === 'izleyici')).map(([k, l]) => `<option value="${k}"${(p[u.id] || '') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>`).join('')}</div>` : '<div class="empty">Paylaşılacak başka kullanıcı yok. Ayarlar sayfasındaki Ekip bölümünden ekleyin.</div>'}
+      ${isAdmin() && list.length ? `<div class="field"><label for="sh-owner">Sahibi değiştir</label><select class="inp" id="sh-owner"><option value="">Aynı kalsın</option>${list.filter(u => u.rol !== 'izleyici').map(u => `<option value="${u.id}">${esc(u.ad)}</option>`).join('')}</select></div>` : ''}
+    </div><div class="mfoot"><span class="x" id="sh-err" role="status"></span><button class="btn" data-close>Vazgeç</button><button class="btn primary" id="sh-save">Kaydet</button></div>`);
+  $('#sh-save').addEventListener('click', async () => {
+    const paylasim = {}; $('#modal').querySelectorAll('[data-u]').forEach(s => { if (s.value) paylasim[s.dataset.u] = s.value; });
+    const sahip = $('#sh-owner')?.value || undefined;
+    try {
+      const saved = await api('PUT', `/api/workflows/${wf.id}/share`, { paylasim, sahip });
+      wf.paylasim = saved.paylasim; wf.sahip = saved.sahip; closeModal(); toast('Paylaşım kaydedildi'); onDone?.();
+    } catch (e) { $('#sh-err').textContent = e.message; }
+  });
+}
+async function openCredShare(c) {
+  const list = (await loadUsers()).filter(u => u.id !== c.sahip && u.rol !== 'izleyici');
+  openModal(`<div class="mhead"><h2>"${esc(c.name)}" paylaşımı</h2><button class="icon-btn" data-close aria-label="Kapat">${icon('x')}</button></div>
+    <div class="mbody"><p class="help">Seçtiğiniz kişiler bu kimlik bilgisini kendi akışlarındaki node'larda kullanabilir. Anahtar ya da şifreyi göremez, değiştiremezler.</p>
+      ${list.length ? list.map(u => `<label class="help" style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-u="${u.id}"${(c.paylasim || []).includes(u.id) ? ' checked' : ''}>${esc(u.ad)} (${esc(u.kullanici)})</label>`).join('') : '<div class="empty">Paylaşılabilecek düzenleyici ya da yönetici yok.</div>'}
+    </div><div class="mfoot"><span class="x" id="sh-err" role="status"></span><button class="btn" data-close>Vazgeç</button><button class="btn primary" id="sh-save">Kaydet</button></div>`);
+  $('#sh-save').addEventListener('click', async () => {
+    const paylasim = [...$('#modal').querySelectorAll('[data-u]:checked')].map(i => i.dataset.u);
+    try { await api('PUT', `/api/credentials/${c.id}/share`, { paylasim }); closeModal(); toast('Paylaşım kaydedildi'); pageCredentials(); }
+    catch (e) { $('#sh-err').textContent = e.message; }
+  });
+}
 async function pageCredentials() {
-  G.creds = await api('GET', '/api/credentials');
+  [G.creds] = await Promise.all([api('GET', '/api/credentials'), loadUsers()]);
   const ct = G.types.credentialTypes;
   view.innerHTML = `<div class="page"><div class="page-in">
-    <div class="page-head"><h1>Kimlik bilgileri</h1><button class="btn primary" id="c-new">${icon('plus')}Yeni kimlik bilgisi</button></div>
+    <div class="page-head"><h1>Kimlik bilgileri</h1>${canEdit() ? `<button class="btn primary" id="c-new">${icon('plus')}Yeni kimlik bilgisi</button>` : ''}</div>
     <p class="lead">API anahtarları ve şifreler bilgisayarınızdaki veri klasöründe AES-256 ile şifreli saklanır ve editöre geri gönderilmez.</p>
-    <div class="card list">${G.creds.length ? G.creds.map(c => `<div class="lrow" data-id="${c.id}"><span class="ttl">${esc(c.name)}</span><div class="meta"><span class="tag">${esc(ct[c.type]?.label || c.type)}</span><span>güncellendi ${ago(c.updatedAt)}</span></div>
-      <div class="acts"><button class="btn sm" data-act="edit">Düzenle</button><button class="btn sm danger" data-act="del" aria-label="Sil">${icon('trash')}</button></div></div>`).join('') : '<div class="empty">Henüz kimlik bilgisi yok. Claude, Telegram, e-posta ya da API anahtarı gerektiren HTTP istekleri için ekleyin.</div>'}</div></div></div>`;
-  $('#c-new').addEventListener('click', () => openCredential(null, null, () => pageCredentials()));
+    <div class="card list">${G.creds.length ? G.creds.map(c => `<div class="lrow" data-id="${c.id}"><span class="ttl">${esc(c.name)}</span><div class="meta"><span class="tag">${esc(ct[c.type]?.label || c.type)}</span><span>güncellendi ${ago(c.updatedAt)}</span>${me() && c.erisim === 'kullan' ? `<span class="tag">${esc(c.sahipAd || 'bir ekip arkadaşı')} paylaştı</span>` : ''}${me() && c.erisim === 'sahip' && c.paylasim?.length ? `<span>${c.paylasim.length} kişiyle paylaşıldı</span>` : ''}</div>
+      <div class="acts">${c.erisim === 'kullan' ? '' : `${me() ? '<button class="btn sm" data-act="share">Paylaş</button>' : ''}<button class="btn sm" data-act="edit">Düzenle</button><button class="btn sm danger" data-act="del" aria-label="Sil">${icon('trash')}</button>`}</div></div>`).join('') : '<div class="empty">Henüz kimlik bilgisi yok. Claude, Telegram, e-posta ya da API anahtarı gerektiren HTTP istekleri için ekleyin.</div>'}</div></div></div>`;
+  $('#c-new')?.addEventListener('click', () => openCredential(null, null, () => pageCredentials()));
   view.querySelector('.list').addEventListener('click', async e => {
     const b = e.target.closest('[data-act]'); if (!b) return; const id = b.closest('[data-id]').dataset.id;
     if (b.dataset.act === 'edit') openCredential(id, null, () => pageCredentials());
+    if (b.dataset.act === 'share') openCredShare(G.creds.find(c => c.id === id));
     if (b.dataset.act === 'del') { if (!confirm('Bu kimlik bilgisi silinsin mi? Onu kullanan node\'lar çalışmaz.')) return; await api('DELETE', `/api/credentials/${id}`); pageCredentials(); }
   });
 }
@@ -1960,7 +2014,8 @@ function parseCSVText(text) {
 
 /* ================= about / settings ================= */
 async function pageAbout() {
-  const [info, files, nt, creds] = await Promise.all([api('GET', '/api/info'), api('GET', '/api/files'), api('GET', '/api/notify'), api('GET', '/api/credentials')]);
+  const [info, files, nt, creds, dk] = await Promise.all([api('GET', '/api/info'), api('GET', '/api/files'), api('GET', '/api/notify'), api('GET', '/api/credentials'), api('GET', '/api/desktop')]);
+  const admin = isAdmin();
   const NK = { telegram: ['telegramApi', 'Telegram sohbet kimliği', '123456789'], email: ['smtp', 'Gidecek e-posta adresi', 'siz@ornek.com'], webhook: ['webhookUrl', '', ''] };
   const theme = (() => { try { return localStorage.getItem('8n8.theme') || ''; } catch { return ''; } })();
   view.innerHTML = `<div class="page"><div class="page-in">
@@ -1970,15 +2025,23 @@ async function pageAbout() {
       <dt>Adres</dt><dd>${esc(info.url)}</dd>
       <dt>Veri klasörü</dt><dd>${esc(info.data)}</dd>
       <dt>Dosya klasörü</dt><dd>${esc(info.files)}</dd>
-      <dt>Şifre koruması</dt><dd>${info.password ? 'Açık' : 'Kapalı (yalnızca bu bilgisayardan erişilebilir)'}</dd>
+      <dt>Şifre koruması</dt><dd>${me() ? 'Ekip kullanımı açık: herkes kendi hesabıyla giriyor' : info.password ? 'Açık' : 'Kapalı (yalnızca bu bilgisayardan erişilebilir)'}</dd>
     </dl></div>
-    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><b>Yedekleme</b>
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px" id="team"></div>
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"${admin ? '' : ' hidden'}><b>Bilgisayar ve güncellemeler</b>
+      <label class="help" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="dk-oto"${dk.autostart.on ? ' checked' : ''}>${dk.platform === 'win32' ? 'Windows' : 'Bilgisayar'} açılınca Auto-Move'u arka planda başlat</label>
+      <label class="help" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="dk-den"${dk.guncellemeDenetle ? ' checked' : ''}>Yeni sürümleri günde bir kez denetle${dk.tray ? ' ve saatin yanında haber ver' : ''}</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn" id="dk-check">Güncellemeleri denetle</button><span id="dk-up" class="help"></span></div>
+      ${dk.tray ? '<span class="help">Auto-Move saatin yanındaki simgede çalışıyor. Simgeye sağ tıklayıp açabilir ya da kapatabilirsiniz. Akışlar hata verince orada da haber verilir.</span>' : ''}
+      ${dk.log ? `<span class="help">Program kayıtları: ${esc(dk.log)}</span>` : ''}
+      <div id="dk-msg" role="status"></div></div>
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"${admin ? '' : ' hidden'}><b>Yedekleme</b>
       <span class="help">Akışlar, veri tabloları, bilgi tabanları ve değişkenler tek bir dosyaya kaydedilir. Kimlik bilgilerini de almak için bir şifre girin; bilgiler bu şifreyle şifrelenir ve dosyayı başka bir bilgisayara taşıyabilirsiniz. Çalıştırma kayıtları ve dosya klasörü yedeğe girmez.</span>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input class="inp" id="bk-pass" type="password" autocomplete="new-password" placeholder="Şifre (isteğe bağlı, en az 8 karakter)" style="flex:1;min-width:220px"><button class="btn primary" id="bk-make">${icon('download')}Yedeği indir</button></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid var(--line);padding-top:10px"><b style="font-size:13px">Geri yükle</b><input type="file" id="rs-file" accept=".json,application/json" class="inp" style="flex:1;min-width:200px"><input class="inp" id="rs-pass" type="password" autocomplete="off" placeholder="Yedek şifresi" style="width:180px"><button class="btn" id="rs-go">Geri yükle</button></div>
       <span class="help">Geri yükleme mevcut verileri silmez: aynı kimlikteki akış, tablo ve kimlik bilgileri yedektekiyle değişir, diğerleri eklenir. Değişen akışların önceki hali Sürümler'de kalır.</span>
       <div id="bk-msg" role="status"></div></div>
-    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><b>Hata bildirimleri</b>
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"${admin ? '' : ' hidden'}><b>Hata bildirimleri</b>
       <span class="help">Etkin bir akış hata verince size haber verilir; ayrı bir hata akışı kurmanız gerekmez. Aynı akış için en fazla belirlediğiniz sıklıkta bildirim gelir, aradaki hatalar sayılıp bir sonraki mesajda yazılır.</span>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <select class="inp" id="nt-kanal" style="width:auto" aria-label="Bildirim kanalı">${[['', 'Kapalı'], ['telegram', 'Telegram'], ['email', 'E-posta (SMTP)'], ['webhook', 'Slack / Discord webhook']].map(([k, l]) => `<option value="${k}"${nt.kanal === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
@@ -1993,9 +2056,30 @@ async function pageAbout() {
       <div class="seg" id="theme">${[['', 'Sistem'], ['light', 'Açık'], ['dark', 'Koyu']].map(([k, l]) => `<button data-th="${k}" class="${theme === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><b>Dosya klasöründekiler</b><span class="help">"Dosya oku" ve "Dosyaya yaz" node'ları yalnızca bu klasörde çalışır.</span>
       ${files.length ? `<div class="tablewrap-x"><table class="grid"><thead><tr><th>Dosya</th><th>Boyut</th><th>Değişti</th></tr></thead><tbody>${files.map(f => `<tr><td>${esc(f.ad)}</td><td class="num">${(f.boyut / 1024).toFixed(1)} KB</td><td class="num">${new Date(f.degisti).toLocaleString('tr-TR')}</td></tr>`).join('')}</tbody></table></div>` : '<span class="help">Klasör boş.</span>'}</div>
-    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:8px;line-height:1.55"><b>Ortam değişkenleri</b>
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:8px;line-height:1.55"${admin ? '' : ' hidden'}><b>Ortam değişkenleri</b>
       <span class="help"><code>PORT</code> (varsayılan 5678), <code>N8N8_HOST</code> (ağa açmak için 0.0.0.0), <code>N8N8_PASSWORD</code> (giriş şifresi), <code>N8N8_URL</code> (dışarıdan erişilen adres, webhook bağlantıları için), <code>N8N8_DATA</code> (veri klasörü), <code>N8N8_NO_OPEN=1</code> (tarayıcıyı otomatik açma).</span></div>
   </div></div>`;
+  drawTeam();
+  const dkMsg = (h, err) => { $('#dk-msg').innerHTML = h ? `<div class="${err ? 'err-box' : 'info-box'}">${h}</div>` : ''; };
+  const dkPut = async body => { try { Object.assign(dk, await api('PUT', '/api/desktop', body)); dkMsg('Kaydedildi.'); } catch (e) { dkMsg(esc(e.message), true); } $('#dk-oto').checked = dk.autostart.on; };
+  $('#dk-oto').addEventListener('change', e => dkPut({ autostart: e.target.checked }));
+  $('#dk-den').addEventListener('change', e => dkPut({ guncellemeDenetle: e.target.checked }));
+  const dkShow = u => {
+    if (!u) return;
+    if (!u.newer) { $('#dk-up').textContent = `En yeni sürümü kullanıyorsunuz (${u.current}).`; return; }
+    $('#dk-up').innerHTML = `Yeni sürüm var: <b>${esc(u.latest)}</b> (şu an ${esc(u.current)}). ${u.canInstall ? '<button class="btn primary" id="dk-install">Şimdi güncelle</button>' : `<a href="${esc(u.page)}" target="_blank" rel="noopener">İndirme sayfası</a>`}`;
+    $('#dk-install')?.addEventListener('click', async e => {
+      if (!confirm(`Auto-Move ${u.latest} sürümüne güncellensin mi? Program kapanıp yeni sürümle yeniden açılır; çalışan akışlar durur.`)) return;
+      e.target.disabled = true; dkMsg('Yeni sürüm indiriliyor…');
+      try {
+        const r = await api('POST', '/api/desktop/update/install', {});
+        dkMsg(r.restarting ? `Auto-Move ${esc(r.version)} kuruldu, program yeniden başlıyor. Sayfa birkaç saniye içinde yenilenecek.` : `Auto-Move ${esc(r.version)} kuruldu. Programı kapatıp yeniden açın.`);
+        if (r.restarting) setTimeout(function wait() { fetch('/api/info').then(x => x.ok ? location.reload() : setTimeout(wait, 1500), () => setTimeout(wait, 1500)); }, 3000);
+      } catch (err) { dkMsg(esc(err.message), true); e.target.disabled = false; }
+    });
+  };
+  dkShow(dk.update);
+  $('#dk-check').addEventListener('click', async e => { e.target.disabled = true; dkMsg(''); try { dkShow(await api('POST', '/api/desktop/update/check', {})); } catch (err) { dkMsg(esc(err.message), true); } finally { e.target.disabled = false; } });
   $('#theme').addEventListener('click', e => { const b = e.target.closest('[data-th]'); if (!b) return; setTheme(b.dataset.th); pageAbout(); });
   const ntDraw = () => {
     const k = $('#nt-kanal').value, [type, lab, ph] = NK[k] || [];
@@ -2029,12 +2113,86 @@ async function pageAbout() {
     } catch (err) { msg(esc(err.message), true); } finally { e.target.disabled = false; }
   });
 }
+/* Ekip card: turn team use on, manage people, change one's own password, read the activity log */
+async function drawTeam() {
+  const box = $('#team'); if (!box) return;
+  const msg = (h, err) => { const m = $('#tm-msg'); if (m) m.innerHTML = h ? `<div class="${err ? 'err-box' : 'info-box'}">${h}</div>` : ''; };
+  const roleOpts = sel => Object.entries(G.me.roller).map(([k, l]) => `<option value="${k}"${k === sel ? ' selected' : ''}>${l}</option>`).join('');
+  if (!G.me.ekip) {
+    box.innerHTML = `<b>Ekip kullanımı</b>
+      <span class="help">Auto-Move'u birden fazla kişi kullanacaksa ekip kullanımını açın. Herkes kendi kullanıcı adı ve şifresiyle girer; akışları ve kimlik bilgilerini kimin göreceğini siz belirlersiniz. Yaptığınız değişiklikler etkinlik kaydına yazılır. Önce kendi yönetici hesabınızı oluşturun; şu anki bütün akışlar ve kimlik bilgileri bu hesaba geçer.</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><input class="inp" id="tm-k" placeholder="Kullanıcı adı" autocomplete="username" style="flex:1;min-width:140px"><input class="inp" id="tm-ad" placeholder="Adınız" style="flex:1;min-width:140px"><input class="inp" id="tm-s" type="password" placeholder="Şifre (en az 8 karakter)" autocomplete="new-password" style="flex:1;min-width:160px"><button class="btn primary" id="tm-setup">Ekip kullanımını aç</button></div>
+      <div id="tm-msg" role="status"></div>`;
+    $('#tm-setup').addEventListener('click', async () => {
+      try { await api('POST', '/api/setup', { kullanici: $('#tm-k').value, ad: $('#tm-ad').value, sifre: $('#tm-s').value }); location.reload(); }
+      catch (e) { msg(esc(e.message), true); }
+    });
+    return;
+  }
+  const u = me();
+  const admin = isAdmin();
+  const [list, log] = await Promise.all([admin ? api('GET', '/api/users') : [], admin ? api('GET', '/api/audit?limit=100') : []]);
+  box.innerHTML = `<b>Ekip kullanımı</b>
+    <span class="help">${esc(u.ad)} (${esc(u.kullanici)}) olarak giriş yaptınız. Rolünüz: <b>${esc(G.me.roller[u.rol])}</b>. ${u.rol === 'izleyici' ? 'Yalnızca sizinle paylaşılan akışları ve çalıştırmalarını görebilirsiniz.' : u.rol === 'duzenleyici' ? 'Kendi akışlarınızı ve sizinle paylaşılanları düzenleyebilirsiniz.' : 'Bütün akışları, kimlik bilgilerini ve ayarları yönetebilirsiniz.'}</span>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><b style="font-size:13px">Şifremi değiştir</b><input class="inp" id="tm-eski" type="password" placeholder="Mevcut şifre" autocomplete="current-password" style="flex:1;min-width:140px"><input class="inp" id="tm-yeni" type="password" placeholder="Yeni şifre" autocomplete="new-password" style="flex:1;min-width:140px"><button class="btn" id="tm-pw">Değiştir</button></div>
+    ${admin ? `<div style="border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:8px"><b style="font-size:13px">Kullanıcılar</b>
+      <span class="help">Yönetici her şeyi yönetir. Düzenleyici kendi akışlarını ve kimlik bilgilerini oluşturur, kendisiyle paylaşılanları kullanır. İzleyici yalnızca kendisiyle paylaşılan akışları görür.</span>
+      <div class="tablewrap-x"><table class="grid"><thead><tr><th>Ad</th><th>Kullanıcı adı</th><th>Rol</th><th>Son giriş</th><th></th></tr></thead><tbody>${list.map(x => `<tr data-uid="${x.id}"><td>${esc(x.ad)}</td><td>${esc(x.kullanici)}</td>
+        <td><select class="inp" data-rol style="width:auto" aria-label="${esc(x.ad)} rolü">${roleOpts(x.rol)}</select></td><td class="num">${x.sonGiris ? ago(x.sonGiris) : 'hiç'}</td>
+        <td style="white-space:nowrap"><button class="btn sm" data-act="pw">Şifre ver</button>${x.id === u.id ? '' : ` <button class="btn sm danger" data-act="del" aria-label="${esc(x.ad)} sil">${icon('trash')}</button>`}</td></tr>`).join('')}</tbody></table></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><input class="inp" id="tm-k" placeholder="Kullanıcı adı" autocomplete="off" style="flex:1;min-width:120px"><input class="inp" id="tm-ad" placeholder="Ad soyad" style="flex:1;min-width:120px"><input class="inp" id="tm-s" type="password" placeholder="Şifre (en az 8)" autocomplete="new-password" style="flex:1;min-width:120px"><select class="inp" id="tm-rol" style="width:auto" aria-label="Rol">${roleOpts('duzenleyici')}</select><button class="btn primary" id="tm-add">${icon('plus')}Kullanıcı ekle</button></div></div>
+    <details style="border-top:1px solid var(--line);padding-top:10px"><summary><b style="font-size:13px">Etkinlik kaydı</b> <span class="help">(son ${log.length})</span></summary>
+      ${log.length ? `<div class="tablewrap-x" style="max-height:320px;overflow:auto;margin-top:8px"><table class="grid"><thead><tr><th>Zaman</th><th>Kim</th><th>Ne yaptı</th><th>Ayrıntı</th></tr></thead><tbody>${log.map(l => `<tr><td class="num">${fmtDate(l.zaman)}</td><td>${esc(l.ad || l.kullanici)}</td><td>${esc(l.eylem)}</td><td>${esc(l.ayrinti)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Henüz kayıt yok.</p>'}</details>` : ''}
+    <div id="tm-msg" role="status"></div>`;
+  $('#tm-pw').addEventListener('click', async () => {
+    try { await api('PUT', '/api/me/password', { eski: $('#tm-eski').value, yeni: $('#tm-yeni').value }); $('#tm-eski').value = $('#tm-yeni').value = ''; msg('Şifreniz değişti. Diğer cihazlardaki oturumlar kapandı.'); }
+    catch (e) { msg(esc(e.message), true); }
+  });
+  if (!admin) return;
+  $('#tm-add').addEventListener('click', async () => {
+    try { const n = await api('POST', '/api/users', { kullanici: $('#tm-k').value, ad: $('#tm-ad').value, sifre: $('#tm-s').value, rol: $('#tm-rol').value }); toast(`${n.ad} eklendi`); drawTeam(); }
+    catch (e) { msg(esc(e.message), true); }
+  });
+  box.querySelectorAll('[data-rol]').forEach(s => s.addEventListener('change', async () => {
+    const id = s.closest('[data-uid]').dataset.uid;
+    try { await api('PUT', `/api/users/${id}`, { rol: s.value }); toast('Rol değişti'); drawTeam(); } catch (e) { msg(esc(e.message), true); drawTeam(); }
+  }));
+  box.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
+    const x = list.find(y => y.id === b.closest('[data-uid]').dataset.uid);
+    try {
+      if (b.dataset.act === 'pw') { const pw = prompt(`${x.ad} için yeni şifre (en az 8 karakter). Diğer oturumları kapanır.`); if (!pw) return; await api('PUT', `/api/users/${x.id}`, { sifre: pw }); toast('Şifre değişti'); }
+      if (b.dataset.act === 'del') { if (!confirm(`${x.ad} silinsin mi? Akışları ve kimlik bilgileri silinmez, size kalır.`)) return; await api('DELETE', `/api/users/${x.id}`); toast('Kullanıcı silindi'); drawTeam(); }
+    } catch (e) { msg(esc(e.message), true); }
+  }));
+}
 function setTheme(t) { try { localStorage.setItem('8n8.theme', t); } catch {} if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; }
+
+/* ================= sign-in ================= */
+function showLogin() {
+  $('#nav').hidden = true;
+  view.innerHTML = `<form class="card login" id="login"><h1>Auto-<b>Move</b></h1><span class="help">Devam etmek için giriş yapın.</span>
+    <input class="inp" id="lg-k" placeholder="Kullanıcı adı" autocomplete="username" autofocus aria-label="Kullanıcı adı">
+    <input class="inp" id="lg-s" type="password" placeholder="Şifre" autocomplete="current-password" aria-label="Şifre">
+    <button class="btn primary" type="submit">Giriş yap</button><div id="lg-err" class="x" role="status"></div>
+    <span class="help">Şifrenizi unuttuysanız yöneticinizden yenisini isteyin.</span></form>`;
+  $('#login').addEventListener('submit', async e => {
+    e.preventDefault();
+    try { await api('POST', '/api/login', { kullanici: $('#lg-k').value, sifre: $('#lg-s').value }); location.reload(); }
+    catch (err) { $('#lg-err').innerHTML = `<div class="err-box">${esc(err.message)}</div>`; }
+  });
+}
 
 /* ================= boot ================= */
 (async function boot() {
   try { const t = localStorage.getItem('8n8.theme'); if (t) document.documentElement.dataset.theme = t; } catch {}
   try {
+    G.me = await api('GET', '/api/me');
+    if (G.me.ekip && !G.me.kullanici) return showLogin();
+    if (G.me.kullanici) {
+      $('#who').hidden = false;
+      $('#who').innerHTML = `<b>${esc(G.me.kullanici.ad)}</b> · ${esc(G.me.roller[G.me.kullanici.rol])}<br><button id="logout">Çıkış yap</button>`;
+      $('#logout').addEventListener('click', async () => { await api('POST', '/api/logout', {}).catch(() => {}); location.reload(); });
+    }
     [G.types, G.info] = await Promise.all([api('GET', '/api/node-types'), api('GET', '/api/info')]);
     $('#ver').textContent = `sürüm ${G.info.version}`;
     connectEvents();
