@@ -43,6 +43,19 @@ jobs:
           Get-Content "$env:RUNNER_TEMP\out.txt", "$env:RUNNER_TEMP\err.txt"
           Stop-Process -Id $p.Id -Force
           if (-not $ok) { throw 'Auto-Move.exe açılmadı' }
+      - name: Saat yanındaki simge betiği açılıyor mu
+        shell: pwsh
+        run: |
+          node -e "require('fs').writeFileSync(process.env.RUNNER_TEMP + '/tepsi.ps1', '\ufeff' + require('./lib/desktop').TRAY_PS1)"
+          $errs = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("$env:RUNNER_TEMP\tepsi.ps1", [ref]$null, [ref]$errs)
+          if ($errs) { $errs | Format-List | Out-String | Write-Host; throw 'tepsi.ps1 sözdizimi hatalı' }
+          $msg = "$env:RUNNER_TEMP\mesaj.txt"; Set-Content -LiteralPath $msg -Value "Auto-Move`tDeneme bildirimi" -Encoding UTF8
+          $p = Start-Process powershell.exe -PassThru -ArgumentList '-NoProfile','-NonInteractive','-STA','-ExecutionPolicy','Bypass','-File',"$env:RUNNER_TEMP\tepsi.ps1",'-Exe',"$PWD\dist\Auto-Move.exe",'-Msg',$msg,'-ParentPid',$PID,'-Oto','0' -RedirectStandardError "$env:RUNNER_TEMP\tepsi-err.txt"
+          Start-Sleep 6
+          $alive = -not $p.HasExited; Get-Content "$env:RUNNER_TEMP\tepsi-err.txt"
+          if ($alive) { Stop-Process -Id $p.Id -Force }
+          if (-not $alive) { throw "tepsi.ps1 kapandı (çıkış kodu $($p.ExitCode))" }
+          if (Test-Path -LiteralPath $msg) { throw 'bildirim dosyası okunmadı' }
       - name: Bütün testler exe'ye karşı
         continue-on-error: true
         env:

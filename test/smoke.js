@@ -2112,6 +2112,38 @@ test('Pazaryerleri: Hepsiburada, N11 ve Amazon (sipariş, paketleme, onay, stok/
   assert.deepEqual(got, [['4080009', 'Yeni Müşteri', 150, 1], ['205000009', 'Yeni N11', 50, 0], ['407-9999999-9999999', 'Yeni Amazon', 75, 1]]);
 });
 
+test('Masaüstü: bilgisayar açılınca başlat, güncellemeyi denetle ve kur (sahte GitHub)', async () => {
+  let d = await api('GET', '/api/desktop');
+  assert.equal(d.autostart.on, false); assert.equal(d.tray, false);
+  const entry = path.join(DATA, 'autostart', 'auto-move.desktop');
+  d = await api('PUT', '/api/desktop', { autostart: true });
+  assert.equal(d.autostart.on, true);
+  const f = fs.readFileSync(entry, 'utf8');
+  assert.match(f, /--arka-plan/); assert.match(f, /N8N8_DATA=/); assert.match(f, /^Exec=/m);
+  d = await api('PUT', '/api/desktop', { autostart: false, guncellemeDenetle: false });
+  assert.equal(d.autostart.on, false); assert.equal(d.guncellemeDenetle, false); assert.ok(!fs.existsSync(entry));
+  await api('PUT', '/api/desktop', { guncellemeDenetle: true });
+
+  fakeUpd.tag = 'v1.0.0';
+  let u = await api('POST', '/api/desktop/update/check', {});
+  assert.equal(u.newer, false); assert.equal(u.latest, '1.0.0');
+  await assert.rejects(api('POST', '/api/desktop/update/install', {}), /en yeni sürüm/);
+  fakeUpd.tag = 'v99.1.0';
+  u = await api('POST', '/api/desktop/update/check', {});
+  assert.equal(u.newer, true); assert.equal(u.latest, '99.1.0'); assert.equal(u.canInstall, true); assert.match(u.notes, /Yenilikler/);
+  const exe = path.join(DATA, 'Auto-Move.exe');
+  fs.writeFileSync(exe, 'MZ eski sürüm');
+  const r = await api('POST', '/api/desktop/update/install', {});
+  assert.deepEqual(r, { ok: true, version: '99.1.0', restarting: false });
+  assert.equal(fs.readFileSync(exe, 'utf8'), 'MZ yeni sürüm'); assert.equal(fs.readFileSync(exe + '.old', 'utf8'), 'MZ eski sürüm');
+  assert.equal(fakeUpd.downloads, 1);
+  fakeUpd.asset = false;
+  u = await api('POST', '/api/desktop/update/check', {});
+  assert.equal(u.canInstall, false);
+  await assert.rejects(api('POST', '/api/desktop/update/install', {}), /Windows paketi yok/);
+  assert.equal((await api('GET', '/api/desktop')).update.latest, '99.1.0');
+});
+
 test('MCP aracı: Claude istemcisi akışı araç olarak listeler ve çağırır', async () => {
   const tok = await api('POST', '/api/credentials', { type: 'httpBearer', name: 'mcp-token', data: { token: 'mcp-gizli' } });
   const w = await api('POST', '/api/workflows', wf('mcp', [
@@ -2447,7 +2479,19 @@ function fakeTelegramApi(req, res) {
   }
   return json({ ok: true, result: {} });
 }
+const fakeUpd = { tag: 'v1.0.0', asset: true, downloads: 0 };
+function fakeUpdApi(req, res) {
+  const u = `http://127.0.0.1:${fakeClaude.port}`;
+  if (req.url === '/upd/repos/MustafaCanDere/AutoHook/releases/latest') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ tag_name: fakeUpd.tag, body: '## Yenilikler\n- daha hızlı', html_url: 'https://github.com/MustafaCanDere/AutoHook/releases/tag/' + fakeUpd.tag, assets: fakeUpd.asset ? [{ name: 'Auto-Move-windows.zip', browser_download_url: `${u}/upd/dl/Auto-Move-windows.zip` }] : [] }));
+  }
+  if (req.url === '/upd/dl/Auto-Move-windows.zip') { fakeUpd.downloads++; res.writeHead(200, { 'Content-Type': 'application/zip' }); return res.end(require('../lib/zip').zip({ 'Auto-Move/README.md': 'oku', 'Auto-Move/Auto-Move.exe': 'MZ yeni sürüm' })); }
+  res.writeHead(404); res.end();
+}
+
 const fakeServer = require('http').createServer((req, res) => {
+  if (req.url.startsWith('/upd/')) return fakeUpdApi(req, res);
   if (req.url.startsWith('/tg/')) return fakeTelegramApi(req, res);
   const routes = [[/^\/notion\//, fakeNotion], [/^\/slack\//, fakeSlack], [/^\/(ms-token|graph\/)/, fakeMicrosoft], [/^\/gh\//, fakeGithub], [/^\/at\//, fakeAirtable], [/^\/dc\//, fakeDiscord], [/^\/wa\//, fakeWhatsapp], [/^\/(stripe|shop|woo|trello|jira|hubspot|mc|twilio|netgsm|tcmb|geo|meteo)\//, fakeBizApi], [/^\/(pushover\/|ntfy|iyzico\/|graphql|urun\.html)/, fakeMiscApi], [/^\/(es|supa|odoo|ty|parasut|ollama)(\/|$)/, fakeMoreApi]];
   if (req.url.startsWith('/s3/')) { const ch = []; req.on('data', d => ch.push(d)); return req.on('end', () => fakeS3Api(req, res, Buffer.concat(ch))); }
@@ -3395,7 +3439,7 @@ function fakeMoreApi(req, res, raw) {
   await new Promise(r => sshServer.listen(0, '127.0.0.1', r)); fakeSsh.port = sshServer.address().port;
   await new Promise(r => amqpServer.listen(0, '127.0.0.1', r)); fakeAmqp.port = amqpServer.address().port;
   // N8N8_TEST_EXE=<path> runs the same tests against a built 8n8 executable
-  const srv = spawn(process.env.N8N8_TEST_EXE || process.execPath, process.env.N8N8_TEST_EXE ? [] : [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, N8N8_DROPBOX_CONTENT: `http://127.0.0.1:${fakeClaude.port}/dbxc`, N8N8_DROPBOX_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-auth`, N8N8_DROPBOX_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-token`, N8N8_AMAZON_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/amz-auth`, ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut', DROPBOX: 'dbx', PIPEDRIVE: 'pd', ASANA: 'asana', CLICKUP: 'cu', DEEPL: 'deepl', ZENDESK: 'zd', META: 'meta', BREVO: 'brevo', TODOIST: 'todoist', JOTFORM: 'jotform', TYPEFORM: 'typeform', HEPSIBURADA: 'hb', N11: 'n11', AMAZON: 'amz' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const srv = spawn(process.env.N8N8_TEST_EXE || process.execPath, process.env.N8N8_TEST_EXE ? [] : [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, N8N8_DATA: DATA, PORT: String(PORT), N8N8_NO_OPEN: '1', N8N8_ALLOW_COMMANDS: '1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_SHEETS_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_TELEGRAM_API: `http://127.0.0.1:${fakeClaude.port}/tg`, N8N8_GOOGLE_API: `http://127.0.0.1:${fakeClaude.port}`, N8N8_GOOGLE_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-auth`, N8N8_GOOGLE_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/oauth-token`, N8N8_NOTION_API: `http://127.0.0.1:${fakeClaude.port}/notion`, N8N8_SLACK_API: `http://127.0.0.1:${fakeClaude.port}/slack`, N8N8_GRAPH_API: `http://127.0.0.1:${fakeClaude.port}/graph`, N8N8_MS_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/ms-auth`, N8N8_MS_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/ms-token`, N8N8_GITHUB_API: `http://127.0.0.1:${fakeClaude.port}/gh`, N8N8_AIRTABLE_API: `http://127.0.0.1:${fakeClaude.port}/at`, N8N8_DISCORD_API: `http://127.0.0.1:${fakeClaude.port}/dc`, N8N8_WHATSAPP_API: `http://127.0.0.1:${fakeClaude.port}/wa`, N8N8_DROPBOX_CONTENT: `http://127.0.0.1:${fakeClaude.port}/dbxc`, N8N8_DROPBOX_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-auth`, N8N8_DROPBOX_TOKEN_URL: `http://127.0.0.1:${fakeClaude.port}/dbx-token`, N8N8_AMAZON_AUTH_URL: `http://127.0.0.1:${fakeClaude.port}/amz-auth`, N8N8_UPDATE_API: `http://127.0.0.1:${fakeClaude.port}/upd`, N8N8_UPDATE_TARGET: path.join(DATA, 'Auto-Move.exe'), N8N8_NO_RESTART: '1', N8N8_AUTOSTART_DIR: path.join(DATA, 'autostart'), N8N8_TRAY: '0', N8N8_NO_UPDATE_CHECK: '1', N8N8_CONSOLE: '1', ...Object.fromEntries(Object.entries({ STRIPE: 'stripe', SHOPIFY: 'shop', WOO: 'woo', TRELLO: 'trello', JIRA: 'jira', HUBSPOT: 'hubspot', MAILCHIMP: 'mc', TWILIO: 'twilio', NETGSM: 'netgsm', TCMB: 'tcmb', GEO: 'geo', WEATHER: 'meteo', PUSHOVER: 'pushover', IYZICO: 'iyzico', TRENDYOL: 'ty', PARASUT: 'parasut', DROPBOX: 'dbx', PIPEDRIVE: 'pd', ASANA: 'asana', CLICKUP: 'cu', DEEPL: 'deepl', ZENDESK: 'zd', META: 'meta', BREVO: 'brevo', TODOIST: 'todoist', JOTFORM: 'jotform', TYPEFORM: 'typeform', HEPSIBURADA: 'hb', N11: 'n11', AMAZON: 'amz' }).map(([k, v]) => [`N8N8_${k}_API`, `http://127.0.0.1:${fakeClaude.port}/${v}`])) }, stdio: ['ignore', 'pipe', 'inherit'] });
   process.on('exit', () => srv.kill());
   await new Promise((res, rej) => { srv.stdout.on('data', d => { if (String(d).includes('çalışıyor')) res(); }); srv.on('exit', c => rej(new Error('sunucu kapandı: ' + c))); });
   let fail = 0, ran = 0;

@@ -6,7 +6,6 @@ if (Number(process.versions.node.split('.')[0]) < 20) { console.error(`\n  Auto-
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 const store = require('./lib/store');
 const engine = require('./lib/engine');
 const { AI, MAIL, NODES, describe, defaults, CREDENTIAL_TYPES, testCredential } = require('./lib/nodes');
@@ -22,6 +21,7 @@ const aiBuilder = require('./lib/ai-builder');
 const n8n = require('./lib/n8n-import');
 const pkg = require('./package.json');
 const { readAsset } = require('./lib/sea');
+const desktop = require('./lib/desktop');
 
 const PORT = Number(process.env.PORT || process.env.N8N8_PORT || 5678);
 const HOST = process.env.N8N8_HOST || '127.0.0.1';
@@ -379,8 +379,22 @@ route('POST', '/api/restore', ({ body }) => {
 });
 route('DELETE', '/api/workflows/:id', ({ params }) => { disarm(params.id); store.deleteWorkflow(params.id); return { ok: true }; });
 /* error notifications (settings page) */
-engine.onEnd((wf, exec) => notify.onEnd(wf, exec, PUBLIC_URL));
+engine.onEnd((wf, exec) => { notify.onEnd(wf, exec, PUBLIC_URL); desktop.onEnd(wf, exec, PUBLIC_URL); });
 route('GET', '/api/notify', () => notify.get());
+/* desktop: start with the computer, updates */
+route('GET', '/api/desktop', () => desktop.info());
+route('PUT', '/api/desktop', async ({ body }) => {
+  if ('guncellemeDenetle' in body) desktop.saveSettings({ guncellemeDenetle: !!body.guncellemeDenetle });
+  if ('autostart' in body) await desktop.setAutostart(!!body.autostart);
+  return desktop.info();
+});
+route('POST', '/api/desktop/update/check', () => desktop.checkUpdate());
+route('POST', '/api/desktop/update/install', async () => {
+  const r = await desktop.installUpdate();
+  r.restarting = require('./lib/sea').inSea && !process.env.N8N8_NO_RESTART;
+  if (r.restarting) setTimeout(() => shutdown(true), 500);
+  return r;
+});
 route('PUT', '/api/notify', ({ body }) => notify.set(body));
 route('POST', '/api/notify/test', async ({ body }) => {
   const s = { ...notify.get(), ...body };
@@ -747,12 +761,14 @@ const server = http.createServer(async (req, res) => {
 });
 
 function openBrowser(u) {
-  if (process.env.N8N8_NO_OPEN) return;
-  const cmd = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', u]] : process.platform === 'darwin' ? ['open', [u]] : ['xdg-open', [u]];
-  try { spawn(cmd[0], cmd[1], { detached: true, stdio: 'ignore' }).on('error', () => {}).unref(); } catch {}
+  if (process.env.N8N8_NO_OPEN || desktop.BACKGROUND) return;
+  desktop.openUrl(u);
 }
 
+let listenTries = 0;
 server.on('error', e => {
+  // after an update the new version may start a moment before the old one has let go of the port
+  if (e.code === 'EADDRINUSE' && process.env.N8N8_YENIDEN && ++listenTries < 40) return setTimeout(() => server.listen(PORT, HOST), 500);
   if (e.code === 'EADDRINUSE') { console.error(`\n  ${PORT} portu kullanımda. Auto-Move zaten açık olabilir: ${PUBLIC_URL}\n  Başka port için: PORT=5679 npm start\n`); openBrowser(PUBLIC_URL); setTimeout(() => process.exit(1), 300); }
   throw e;
 });
@@ -761,11 +777,21 @@ server.listen(PORT, HOST, () => {
   console.log(`\n  Auto-Move ${pkg.version} çalışıyor → ${PUBLIC_URL}`);
   console.log(`  Veri klasörü: ${store.DATA}`);
   if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !PASSWORD) console.log('  UYARI: Ağa açıksınız ama şifre yok. N8N8_PASSWORD ayarlayın.');
-  console.log('  Kapatmak için bu pencerede Ctrl+C\n');
-  openBrowser(PUBLIC_URL);
+  desktop.cleanupOld();
+  desktop.startTray({ url: PUBLIC_URL, onQuit: () => shutdown(), onUpdate: () => openBrowser(`${PUBLIC_URL}/#/hakkinda`) }).then(on => {
+    console.log(on ? '  Kapatmak için saatin yanındaki Auto-Move simgesine sağ tıklayıp Kapat\'ı seçin.\n' : '  Kapatmak için bu pencerede Ctrl+C\n');
+  });
+  desktop.scheduleChecks(PUBLIC_URL);
+  if (!process.env.N8N8_YENIDEN) openBrowser(PUBLIC_URL);
 });
 // one failed background save or a stray promise must not take every workflow down with it
 process.on('unhandledRejection', e => console.error('Beklenmeyen hata:', e));
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { console.log('\n  Auto-Move kapatılıyor…'); for (const id of engine.runningIds()) engine.stop(id); setTimeout(() => process.exit(0), 300); });
+function shutdown(restart = false) {
+  console.log(restart ? '\n  Auto-Move yeni sürümle yeniden başlıyor…' : '\n  Auto-Move kapatılıyor…');
+  for (const id of engine.runningIds()) engine.stop(id);
+  server.close(); desktop.stopTray();
+  setTimeout(() => { if (restart) desktop.relaunch(); process.exit(0); }, 300);
+}
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => shutdown());
 
 module.exports = { server };
